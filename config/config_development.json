@@ -1,0 +1,41 @@
+{
+  "database": {
+    "host": "localhost",
+    "port": 5432,
+    "database": "festival_intelligence",
+    "username": "postgres",
+    "password": "",
+    "ssl_mode": "prefer",
+    "pool_size": 10,
+    "max_overflow": 20
+  },
+  "monid": {
+    "api_key": "",
+    "base_url": "https://api.monid.ai",
+    "mcp_url": "https://mcp.monid.ai/v1",
+    "workspace_id": null,
+    "timeout": 30,
+    "max_retries": 3
+  },
+  "streaming": {
+    "spotify_client_id": null,
+    "spotify_client_secret": null,
+    "apple_music_key_id": null,
+    "apple_music_team_id": null,
+    "apple_music_private_key": null
+  },
+  "social": {
+    "twitter_bearer_token": null,
+    "twitter_api_key": null,
+    "twitter_api_secret": null,
+    "instagram_access_token": null,
+    "tiktok_access_token": null
+  },
+  "logging": {
+    "level": "INFO",
+    "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    "file_path": "logs/festival_intelligence.log",
+    "max_bytes": 10485760,
+    "backup_count": 5
+  }
+}

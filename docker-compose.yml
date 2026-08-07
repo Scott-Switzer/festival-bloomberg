@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: festival-intelligence-db
+    environment:
+      POSTGRES_DB: festival_intelligence
+      POSTGRES_USER: festival_user
+      POSTGRES_PASSWORD: festival_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./warehouse/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U festival_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # FastAPI Backend
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    container_name: festival-intelligence-api
+    environment:
+      DATABASE_URL: postgresql://festival_user:festival_password@postgres:5432/festival_intelligence
+      MUSICBRAINZ_USER_AGENT: festival-intelligence/1.0 (your-email@example.com)
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./apps/api:/app
+      - ./warehouse:/app/warehouse
+      - ./pipelines:/app/pipelines
+      - ./models:/app/models
+      - ./contracts:/app/contracts
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+  # Next.js Frontend
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+    container_name: festival-intelligence-web
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    volumes:
+      - ./apps/web:/app
+      - /app/node_modules
+      - /app/.next
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    command: npm run dev
+
+volumes:
+  postgres_data:
