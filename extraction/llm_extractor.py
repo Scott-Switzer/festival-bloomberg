@@ -204,8 +204,13 @@ class LLMExtractor:
         
         self._client = OpenAI(api_key=api_key, base_url=base_url)
         
-        # Patch the client with Instructor
-        self._instructor_client = instructor.from_openai(self._client)
+        # Patch the client with Instructor only if not using NVIDIA
+        # NVIDIA API doesn't support function calling used by Instructor
+        if use_nvidia:
+            self._instructor_client = None
+            logger.warning("Instructor disabled for NVIDIA API (function calling not supported)")
+        else:
+            self._instructor_client = instructor.from_openai(self._client)
         
         # Cost tracking
         self._cost_tracker = {
@@ -241,6 +246,116 @@ class LLMExtractor:
         
         return input_cost + output_cost
     
+    def _get_schema_fields(self, schema: Type[T]) -> str:
+        """Get field names and types from Pydantic schema for prompt"""
+        if hasattr(schema, '__fields__'):
+            field_info = []
+            for field_name, field in schema.__fields__.items():
+                field_type = field.annotation.__name__ if hasattr(field.annotation, '__name__') else str(field.annotation)
+                field_info.append(f"{field_name} ({field_type})")
+            return ', '.join(field_info)
+        return 'name, description, and other relevant fields'
+    
+    def _extract_without_instructor(self, 
+                                   content: str, 
+                                   schema: Type[T], 
+                                   prompt: str, 
+                                   max_retries: int) -> T:
+        """Extract using standard OpenAI client without Instructor (for NVIDIA)"""
+        import json
+        import re
+        
+        for attempt in range(max_retries):
+            try:
+                response = self._client.chat.completions.create(
+                    model=self.model.value,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.1,
+                    max_tokens=2000
+                )
+                
+                # Extract JSON from response
+                response_text = response.choices[0].message.content.strip()
+                
+                # Try to parse JSON
+                # Handle potential markdown code blocks
+                if response_text.startswith('```json'):
+                    response_text = response_text[7:]
+                elif response_text.startswith('```'):
+                    response_text = response_text[3:]
+                if response_text.endswith('```'):
+                    response_text = response_text[:-3]
+                
+                response_text = response_text.strip()
+                data = json.loads(response_text)
+                
+                # Clean data for schema validation
+                data = self._clean_data_for_schema(data, schema)
+                
+                # Validate with Pydantic schema
+                return schema(**data)
+                
+            except json.JSONDecodeError as e:
+                logger.warning(f"JSON parse error on attempt {attempt + 1}: {e}")
+                if attempt == max_retries - 1:
+                    raise
+                # Retry with more explicit instruction
+                prompt = f"{prompt}\n\nIMPORTANT: Return ONLY valid JSON, no markdown, no explanations."
+            except Exception as e:
+                logger.warning(f"Extraction error on attempt {attempt + 1}: {e}")
+                if attempt == max_retries - 1:
+                    raise
+    
+    def _clean_data_for_schema(self, data: dict, schema: Type[T]) -> dict:
+        """Clean extracted data to match schema types"""
+        if not hasattr(schema, '__fields__'):
+            return data
+        
+        cleaned = {}
+        for field_name, field in schema.__fields__.items():
+            if field_name not in data:
+                # Use default value if available, otherwise None
+                if field.default is not None and not callable(field.default):
+                    cleaned[field_name] = field.default
+                else:
+                    cleaned[field_name] = None
+                continue
+            
+            value = data[field_name]
+            
+            # Handle integer fields
+            if field.annotation == int:
+                if isinstance(value, str):
+                    # Extract numbers from text (handle commas and spaces)
+                    numbers = re.findall(r'\d+[,\d]*', str(value))
+                    if numbers:
+                        # Remove commas and convert to int
+                        cleaned[field_name] = int(numbers[0].replace(',', ''))
+                        logger.debug(f"Converted '{value}' to {cleaned[field_name]} for field {field_name}")
+                    else:
+                        cleaned[field_name] = field.default if field.default is not None and not callable(field.default) else None
+                        logger.warning(f"Could not extract number from '{value}' for field {field_name}")
+                elif isinstance(value, (int, float)):
+                    cleaned[field_name] = int(value)
+                else:
+                    cleaned[field_name] = field.default if field.default is not None and not callable(field.default) else None
+            # Handle float fields
+            elif field.annotation == float:
+                if isinstance(value, str):
+                    numbers = re.findall(r'\d+\.?\d*', str(value))
+                    if numbers:
+                        cleaned[field_name] = float(numbers[0])
+                    else:
+                        cleaned[field_name] = field.default if field.default is not None and not callable(field.default) else None
+                elif isinstance(value, (int, float)):
+                    cleaned[field_name] = float(value)
+                else:
+                    cleaned[field_name] = field.default if field.default is not None and not callable(field.default) else None
+            else:
+                cleaned[field_name] = value
+        
+        return cleaned
+    
     def extract(self, 
                 content: str,
                 schema: Type[T],
@@ -263,28 +378,55 @@ class LLMExtractor:
         try:
             # Build default prompt if not provided
             if prompt is None:
-                prompt = f"""
-                Extract structured information from the following content.
-                Return the data in the specified schema format.
-                Only include information that is explicitly stated or strongly implied in the content.
-                If information is not available, leave the field as null.
-                
-                Content:
-                {content}
-                """
+                if self.use_nvidia:
+                    # NVIDIA: Use JSON format instruction with type hints
+                    prompt = f"""
+                    Extract structured information from the following content.
+                    Return the data as a JSON object with these fields and types: {self._get_schema_fields(schema)}.
+                    
+                    IMPORTANT TYPE REQUIREMENTS:
+                    - Integer fields: Return only numbers (e.g., 1991, 100000)
+                    - String fields: Return text (e.g., "Chicago", "alternative rock")
+                    - List fields: Return arrays (e.g., ["rock", "pop"])
+                    - If information is not available, use null (not "null" string, not "N/A")
+                    
+                    Only include information that is explicitly stated or strongly implied in the content.
+                    For numbers, extract only the numeric value, not text descriptions.
+                    
+                    Content:
+                    {content}
+                    
+                    Return only valid JSON, no markdown, no explanations.
+                    """
+                else:
+                    # OpenAI: Use Instructor's default prompt
+                    prompt = f"""
+                    Extract structured information from the following content.
+                    Return the data in the specified schema format.
+                    Only include information that is explicitly stated or strongly implied in the content.
+                    If information is not available, leave the field as null.
+                    
+                    Content:
+                    {content}
+                    """
             
             # Perform extraction
-            result = self._instructor_client.chat.completions.create(
-                model=self.model.value,
-                response_model=schema,
-                messages=[{"role": "user", "content": prompt}],
-                max_retries=max_retries
-            )
+            if self.use_nvidia:
+                # Use standard OpenAI client for NVIDIA (no Instructor)
+                result = self._extract_without_instructor(content, schema, prompt, max_retries)
+            else:
+                # Use Instructor for OpenAI
+                result = self._instructor_client.chat.completions.create(
+                    model=self.model.value,
+                    response_model=schema,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_retries=max_retries
+                )
             
             # Calculate metrics
             extraction_time = (datetime.utcnow() - start_time).total_seconds()
             
-            # Estimate tokens (Instructor doesn't always return token count)
+            # Estimate tokens
             estimated_tokens = len(content.split()) + len(str(result).split())
             cost = self._estimate_cost(estimated_tokens, self.model)
             

@@ -1,12 +1,14 @@
 """
 Cloudflare R2 Object Storage Client
 Implements R2 integration for immutable object storage per Festival Bloomberg spec
+R2 is optional - falls back to local storage if not configured
 """
 import os
 import hashlib
 import logging
 from typing import Optional, BinaryIO, Dict, Any
 from datetime import datetime
+from pathlib import Path
 import boto3
 from botocore.exceptions import ClientError, BotoCoreError
 from dataclasses import dataclass
@@ -17,24 +19,37 @@ logger = logging.getLogger(__name__)
 @dataclass
 class R2Config:
     """R2 configuration"""
-    account_id: str
-    access_key_id: str
-    secret_access_key: str
-    bucket_name: str
+    account_id: Optional[str] = None
+    access_key_id: Optional[str] = None
+    secret_access_key: Optional[str] = None
+    bucket_name: Optional[str] = None
     region: str = "auto"
+    
+    def is_configured(self) -> bool:
+        """Check if R2 is properly configured"""
+        return all([self.account_id, self.access_key_id, self.secret_access_key, self.bucket_name])
 
 
 class R2Client:
     """
     Cloudflare R2 client for Festival Bloomberg object storage
     Implements tiered storage patterns and content hashing
+    Falls back to local storage if R2 is not configured
     """
     
-    def __init__(self, config: R2Config):
-        self.config = config
-        self.endpoint_url = f"https://{config.account_id}.r2.cloudflarestorage.com"
-        self._client = None
-        self._initialize_client()
+    def __init__(self, config: Optional[R2Config] = None, local_storage_dir: Optional[str] = None):
+        self.config = config or R2Config()
+        self.use_r2 = self.config.is_configured()
+        self.local_storage_dir = Path(local_storage_dir or "data/local_storage")
+        
+        if self.use_r2:
+            self.endpoint_url = f"https://{self.config.account_id}.r2.cloudflarestorage.com"
+            self._client = None
+            self._initialize_client()
+        else:
+            logger.warning("R2 not configured, using local storage")
+            self.local_storage_dir.mkdir(parents=True, exist_ok=True)
+            self._client = None
     
     def _initialize_client(self):
         """Initialize boto3 S3 client for R2"""
@@ -104,6 +119,7 @@ class R2Client:
                           metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Upload raw content to R2 with content hashing
+        Falls back to local storage if R2 not configured
         Returns object key and metadata
         """
         try:
@@ -131,24 +147,31 @@ class R2Client:
             if metadata:
                 upload_metadata.update(metadata)
             
-            # Upload to R2
-            self.client.put_object(
-                Bucket=self.config.bucket_name,
-                Key=object_key,
-                Body=content,
-                Metadata=upload_metadata,
-                ContentType=upload_metadata['content_type']
-            )
-            
-            logger.info(f"Uploaded raw content to R2: {object_key}")
+            if self.use_r2:
+                # Upload to R2
+                self.client.put_object(
+                    Bucket=self.config.bucket_name,
+                    Key=object_key,
+                    Body=content,
+                    Metadata=upload_metadata,
+                    ContentType=upload_metadata['content_type']
+                )
+                logger.info(f"Uploaded raw content to R2: {object_key}")
+            else:
+                # Save to local storage
+                local_path = self.local_storage_dir / object_key
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+                local_path.write_bytes(content)
+                logger.info(f"Saved raw content to local storage: {local_path}")
             
             return {
                 'object_key': object_key,
                 'content_hash': content_hash,
                 'content_length': len(content),
-                'r2_uri': f"r2://{self.config.bucket_name}/{object_key}",
+                'r2_uri': f"r2://{self.config.bucket_name}/{object_key}" if self.use_r2 else f"file://{local_path}",
                 'uploaded_at': now.isoformat(),
-                'metadata': upload_metadata
+                'metadata': upload_metadata,
+                'storage_type': 'r2' if self.use_r2 else 'local'
             }
             
         except (ClientError, BotoCoreError) as e:
@@ -182,15 +205,20 @@ class R2Client:
     def download_content(self, object_key: str) -> bytes:
         """
         Download content from R2 by object key
+        Falls back to local storage if R2 not configured
         """
         try:
-            response = self.client.get_object(
-                Bucket=self.config.bucket_name,
-                Key=object_key
-            )
-            
-            content = response['Body'].read()
-            logger.info(f"Downloaded content from R2: {object_key}")
+            if self.use_r2:
+                response = self.client.get_object(
+                    Bucket=self.config.bucket_name,
+                    Key=object_key
+                )
+                content = response['Body'].read()
+                logger.info(f"Downloaded content from R2: {object_key}")
+            else:
+                local_path = self.local_storage_dir / object_key
+                content = local_path.read_bytes()
+                logger.info(f"Downloaded content from local storage: {local_path}")
             
             return content
             
@@ -198,7 +226,7 @@ class R2Client:
             logger.error(f"R2 download failed for {object_key}: {e}")
             raise
         except Exception as e:
-            logger.error(f"Unexpected error during R2 download: {e}")
+            logger.error(f"Unexpected error during download: {e}")
             raise
     
     def download_to_file(self, object_key: str, file_path: str) -> None:
