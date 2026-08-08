@@ -1,8 +1,23 @@
 /**
- * DuckDB and Supabase interfaces/adapters.
- * R2 storage intentionally omitted. Integrations are optional and degrade gracefully.
+ * DuckDB (authoritative local cost/telemetry warehouse) and optional Supabase adapters.
+ * R2 storage intentionally omitted. Integrations degrade gracefully when unconfigured.
  */
-import type { CostEvent, Lineup, Observation, TelemetryEvent } from "./schemas";
+import { createHash } from "node:crypto";
+import { mkdirSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import duckdb from "duckdb";
+import {
+  parseCostEvent,
+  parseLineup,
+  parseObservation,
+  parseTelemetryEvent,
+  type CostEvent,
+  type Lineup,
+  type Observation,
+  type TelemetryEvent,
+} from "./schemas";
+
+export const DEFAULT_WAREHOUSE_PATH = "data/warehouse/festival_bloomberg.duckdb";
 
 export type ScraperRepositories = {
   observations: ObservationRepo;
@@ -41,28 +56,31 @@ export function createMemoryRepos(): ScraperRepositories {
   return {
     observations: {
       async upsert(obs) {
-        observations.set(obs.id, obs);
+        observations.set(obs.id, parseObservation(obs));
       },
       async getById(id) {
-        return observations.get(id) ?? null;
+        const row = observations.get(id);
+        return row ? parseObservation(row) : null;
       },
       async listByFestival(festivalId, limit = 100) {
         return [...observations.values()]
           .filter((o) => o.festivalId === festivalId)
-          .slice(0, limit);
+          .slice(0, limit)
+          .map((o) => parseObservation(o));
       },
     },
     lineups: {
       async upsert(lineup) {
-        lineups.set(`${lineup.festivalId}:${lineup.editionId}`, lineup);
+        lineups.set(`${lineup.festivalId}:${lineup.editionId}`, parseLineup(lineup));
       },
       async get(festivalId, editionId) {
-        return lineups.get(`${festivalId}:${editionId}`) ?? null;
+        const row = lineups.get(`${festivalId}:${editionId}`);
+        return row ? parseLineup(row) : null;
       },
     },
     costs: {
       async append(event) {
-        costs.push(event);
+        costs.push(parseCostEvent(event));
       },
       async sumUsd(sinceIso) {
         const since = sinceIso ? Date.parse(sinceIso) : 0;
@@ -73,7 +91,7 @@ export function createMemoryRepos(): ScraperRepositories {
     },
     telemetry: {
       async append(event) {
-        telemetry.push(event);
+        telemetry.push(parseTelemetryEvent(event));
       },
     },
   };
@@ -82,6 +100,7 @@ export function createMemoryRepos(): ScraperRepositories {
 export type DuckDbClientLike = {
   run: (sql: string, ...params: unknown[]) => Promise<void> | void;
   all: <T = Record<string, unknown>>(sql: string, ...params: unknown[]) => Promise<T[]> | T[];
+  close?: () => Promise<void> | void;
 };
 
 export type DuckDbAdapterOptions = {
@@ -91,9 +110,133 @@ export type DuckDbAdapterOptions = {
   ensureSchema?: boolean;
 };
 
+type ObservationRow = {
+  id: string;
+  source_url: string;
+  raw_content: string | null;
+  content_hash: string | null;
+  retrieved_at: string;
+  status: string | null;
+  kind: string;
+  festival_id: string | null;
+  edition_id: string | null;
+  source_domain: string;
+  tier: string | null;
+  evidence_json: string | null;
+  payload_json: string | null;
+};
+
+type LineupRow = {
+  id: string;
+  festival_id: string;
+  edition_id: string;
+  raw_artists: string | null;
+  parsed_artists: string | null;
+  confidence: number | null;
+  extracted_at: string | null;
+  source_domain: string;
+  announced_at: string | null;
+};
+
+type CostRow = {
+  id: string;
+  provider: string;
+  endpoint: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  estimated_cost_usd: number | null;
+  timestamp: string;
+  operation: string;
+  units: number | null;
+  unit_cost_usd: number | null;
+  currency: string | null;
+  meta_json: string | null;
+};
+
+type TelemetryRow = {
+  id: string;
+  event_type: string;
+  duration_ms: number | null;
+  status: string | null;
+  error: string | null;
+  timestamp: string;
+  level: string | null;
+  domain: string | null;
+  url: string | null;
+  tier: string | null;
+  meta_json: string | null;
+};
+
+function iso(value: unknown): string {
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === "string") {
+    const ms = Date.parse(value);
+    if (!Number.isNaN(ms)) return new Date(ms).toISOString();
+    return value;
+  }
+  return String(value);
+}
+
+function lineupId(festivalId: string, editionId: string): string {
+  return `${festivalId}:${editionId}`;
+}
+
+function observationFromRow(row: ObservationRow): Observation {
+  return parseObservation({
+    id: row.id,
+    kind: row.kind,
+    festivalId: row.festival_id ?? undefined,
+    editionId: row.edition_id ?? undefined,
+    sourceDomain: row.source_domain,
+    url: row.source_url,
+    observedAt: iso(row.retrieved_at),
+    payload: JSON.parse(row.payload_json ?? row.raw_content ?? "null"),
+    evidence: JSON.parse(row.evidence_json ?? "[]"),
+    tier: row.tier ?? undefined,
+    contentHash: row.content_hash ?? undefined,
+  });
+}
+
+function lineupFromRow(row: LineupRow): Lineup {
+  return parseLineup({
+    festivalId: row.festival_id,
+    editionId: row.edition_id,
+    announcedAt: row.announced_at ? iso(row.announced_at) : undefined,
+    slots: JSON.parse(row.parsed_artists ?? "[]"),
+    sourceDomain: row.source_domain,
+    confidence: row.confidence ?? 0.5,
+  });
+}
+
+function costFromRow(row: CostRow): CostEvent {
+  const meta = {
+    ...(JSON.parse(row.meta_json ?? "{}") as Record<string, unknown>),
+  };
+  if (row.input_tokens != null) meta.input_tokens = row.input_tokens;
+  if (row.output_tokens != null) meta.output_tokens = row.output_tokens;
+  if (row.endpoint != null) meta.endpoint = row.endpoint;
+  return parseCostEvent({
+    id: row.id,
+    provider: row.provider,
+    operation: row.operation,
+    units: row.units ?? 1,
+    unitCostUsd: row.unit_cost_usd ?? 0,
+    totalCostUsd: row.estimated_cost_usd ?? 0,
+    currency: row.currency ?? "USD",
+    at: iso(row.timestamp),
+    meta,
+  });
+}
+
+function telemetryStatus(event: TelemetryEvent): string {
+  if (event.ok === false) return "error";
+  if (event.ok === true) return "ok";
+  return event.level;
+}
+
 /**
- * DuckDB adapter — optional. Does not import `duckdb` itself to keep deps light.
- * Pass a client that matches DuckDbClientLike when available.
+ * DuckDB adapter — authoritative local warehouse for observations, lineups,
+ * costs, and telemetry. Validates rows with Zod schemas on read.
  */
 export class DuckDbAdapter implements ScraperRepositories {
   readonly observations: ObservationRepo;
@@ -114,30 +257,64 @@ export class DuckDbAdapter implements ScraperRepositories {
       upsert: async (obs) => {
         await this.ready;
         if (!this.client) return;
+        const parsed = parseObservation(obs);
+        const payloadJson = JSON.stringify(parsed.payload ?? null);
+        const rawContent =
+          typeof parsed.payload === "string" ? parsed.payload : payloadJson;
+        const contentHash =
+          parsed.contentHash ??
+          createHash("sha256").update(rawContent).digest("hex");
         await this.client.run(
-          `INSERT OR REPLACE INTO observations (id, json) VALUES (?, ?)`,
-          obs.id,
-          JSON.stringify(obs),
+          `INSERT INTO observations (
+            id, source_url, raw_content, content_hash, retrieved_at, status,
+            kind, festival_id, edition_id, source_domain, tier, evidence_json, payload_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT (id) DO UPDATE SET
+            source_url = EXCLUDED.source_url,
+            raw_content = EXCLUDED.raw_content,
+            content_hash = EXCLUDED.content_hash,
+            retrieved_at = EXCLUDED.retrieved_at,
+            status = EXCLUDED.status,
+            kind = EXCLUDED.kind,
+            festival_id = EXCLUDED.festival_id,
+            edition_id = EXCLUDED.edition_id,
+            source_domain = EXCLUDED.source_domain,
+            tier = EXCLUDED.tier,
+            evidence_json = EXCLUDED.evidence_json,
+            payload_json = EXCLUDED.payload_json`,
+          parsed.id,
+          parsed.url,
+          rawContent,
+          contentHash,
+          parsed.observedAt,
+          "ok",
+          parsed.kind,
+          parsed.festivalId ?? null,
+          parsed.editionId ?? null,
+          parsed.sourceDomain,
+          parsed.tier ?? null,
+          JSON.stringify(parsed.evidence ?? []),
+          payloadJson,
         );
       },
       getById: async (id) => {
         await this.ready;
         if (!this.client) return null;
-        const rows = await this.client.all<{ json: string }>(
-          `SELECT json FROM observations WHERE id = ? LIMIT 1`,
+        const rows = await this.client.all<ObservationRow>(
+          `SELECT * FROM observations WHERE id = ? LIMIT 1`,
           id,
         );
-        return rows[0] ? (JSON.parse(rows[0].json) as Observation) : null;
+        return rows[0] ? observationFromRow(rows[0]) : null;
       },
       listByFestival: async (festivalId, limit = 100) => {
         await this.ready;
         if (!this.client) return [];
-        const rows = await this.client.all<{ json: string }>(
-          `SELECT json FROM observations WHERE json_extract_string(json, '$.festivalId') = ? LIMIT ?`,
+        const rows = await this.client.all<ObservationRow>(
+          `SELECT * FROM observations WHERE festival_id = ? LIMIT ?`,
           festivalId,
           limit,
         );
-        return rows.map((r) => JSON.parse(r.json) as Observation);
+        return rows.map(observationFromRow);
       },
     };
 
@@ -145,22 +322,44 @@ export class DuckDbAdapter implements ScraperRepositories {
       upsert: async (lineup) => {
         await this.ready;
         if (!this.client) return;
+        const parsed = parseLineup(lineup);
+        const id = lineupId(parsed.festivalId, parsed.editionId);
+        const parsedArtists = JSON.stringify(parsed.slots ?? []);
+        const rawArtists = (parsed.slots ?? []).map((s) => s.artistName).join(", ");
         await this.client.run(
-          `INSERT OR REPLACE INTO lineups (festival_id, edition_id, json) VALUES (?, ?, ?)`,
-          lineup.festivalId,
-          lineup.editionId,
-          JSON.stringify(lineup),
+          `INSERT INTO lineups (
+            id, festival_id, edition_id, raw_artists, parsed_artists,
+            confidence, extracted_at, source_domain, announced_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT (id) DO UPDATE SET
+            festival_id = EXCLUDED.festival_id,
+            edition_id = EXCLUDED.edition_id,
+            raw_artists = EXCLUDED.raw_artists,
+            parsed_artists = EXCLUDED.parsed_artists,
+            confidence = EXCLUDED.confidence,
+            extracted_at = EXCLUDED.extracted_at,
+            source_domain = EXCLUDED.source_domain,
+            announced_at = EXCLUDED.announced_at`,
+          id,
+          parsed.festivalId,
+          parsed.editionId,
+          rawArtists,
+          parsedArtists,
+          parsed.confidence,
+          new Date().toISOString(),
+          parsed.sourceDomain,
+          parsed.announcedAt ?? null,
         );
       },
       get: async (festivalId, editionId) => {
         await this.ready;
         if (!this.client) return null;
-        const rows = await this.client.all<{ json: string }>(
-          `SELECT json FROM lineups WHERE festival_id = ? AND edition_id = ? LIMIT 1`,
+        const rows = await this.client.all<LineupRow>(
+          `SELECT * FROM lineups WHERE festival_id = ? AND edition_id = ? LIMIT 1`,
           festivalId,
           editionId,
         );
-        return rows[0] ? (JSON.parse(rows[0].json) as Lineup) : null;
+        return rows[0] ? lineupFromRow(rows[0]) : null;
       },
     };
 
@@ -168,21 +367,51 @@ export class DuckDbAdapter implements ScraperRepositories {
       append: async (event) => {
         await this.ready;
         if (!this.client) return;
+        const parsed = parseCostEvent(event);
+        const meta = parsed.meta ?? {};
         await this.client.run(
-          `INSERT INTO cost_events (id, json) VALUES (?, ?)`,
-          event.id,
-          JSON.stringify(event),
+          `INSERT INTO costs (
+            id, provider, endpoint, input_tokens, output_tokens, estimated_cost_usd,
+            timestamp, operation, units, unit_cost_usd, currency, meta_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT (id) DO UPDATE SET
+            provider = EXCLUDED.provider,
+            endpoint = EXCLUDED.endpoint,
+            input_tokens = EXCLUDED.input_tokens,
+            output_tokens = EXCLUDED.output_tokens,
+            estimated_cost_usd = EXCLUDED.estimated_cost_usd,
+            timestamp = EXCLUDED.timestamp,
+            operation = EXCLUDED.operation,
+            units = EXCLUDED.units,
+            unit_cost_usd = EXCLUDED.unit_cost_usd,
+            currency = EXCLUDED.currency,
+            meta_json = EXCLUDED.meta_json`,
+          parsed.id,
+          parsed.provider,
+          (meta.endpoint as string | undefined) ?? parsed.operation,
+          typeof meta.input_tokens === "number" ? meta.input_tokens : null,
+          typeof meta.output_tokens === "number" ? meta.output_tokens : null,
+          parsed.totalCostUsd,
+          parsed.at,
+          parsed.operation,
+          parsed.units,
+          parsed.unitCostUsd,
+          parsed.currency,
+          JSON.stringify(meta),
         );
       },
       sumUsd: async (sinceIso) => {
         await this.ready;
         if (!this.client) return 0;
-        const rows = await this.client.all<{ json: string }>(`SELECT json FROM cost_events`);
-        const since = sinceIso ? Date.parse(sinceIso) : 0;
-        return rows
-          .map((r) => JSON.parse(r.json) as CostEvent)
-          .filter((c) => Date.parse(c.at) >= since)
-          .reduce((a, c) => a + c.totalCostUsd, 0);
+        const rows = sinceIso
+          ? await this.client.all<{ total: number | null }>(
+              `SELECT COALESCE(SUM(estimated_cost_usd), 0) AS total FROM costs WHERE timestamp >= ?`,
+              sinceIso,
+            )
+          : await this.client.all<{ total: number | null }>(
+              `SELECT COALESCE(SUM(estimated_cost_usd), 0) AS total FROM costs`,
+            );
+        return Number(rows[0]?.total ?? 0);
       },
     };
 
@@ -190,10 +419,34 @@ export class DuckDbAdapter implements ScraperRepositories {
       append: async (event) => {
         await this.ready;
         if (!this.client) return;
+        const parsed = parseTelemetryEvent(event);
         await this.client.run(
-          `INSERT INTO telemetry_events (id, json) VALUES (?, ?)`,
-          event.id,
-          JSON.stringify(event),
+          `INSERT INTO telemetry (
+            id, event_type, duration_ms, status, error, timestamp,
+            level, domain, url, tier, meta_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT (id) DO UPDATE SET
+            event_type = EXCLUDED.event_type,
+            duration_ms = EXCLUDED.duration_ms,
+            status = EXCLUDED.status,
+            error = EXCLUDED.error,
+            timestamp = EXCLUDED.timestamp,
+            level = EXCLUDED.level,
+            domain = EXCLUDED.domain,
+            url = EXCLUDED.url,
+            tier = EXCLUDED.tier,
+            meta_json = EXCLUDED.meta_json`,
+          parsed.id,
+          parsed.name,
+          parsed.durationMs ?? null,
+          telemetryStatus(parsed),
+          parsed.errorCode ?? null,
+          parsed.at,
+          parsed.level,
+          parsed.domain ?? null,
+          parsed.url ?? null,
+          parsed.tier ?? null,
+          JSON.stringify(parsed.meta ?? {}),
         );
       },
     };
@@ -203,37 +456,162 @@ export class DuckDbAdapter implements ScraperRepositories {
     return this.client != null;
   }
 
+  async close(): Promise<void> {
+    await this.ready;
+    await this.client?.close?.();
+  }
+
+  /** Idempotent schema creation / migration. */
   private async migrate(): Promise<void> {
     if (!this.client) return;
-    await this.client.run(
-      `CREATE TABLE IF NOT EXISTS observations (id VARCHAR PRIMARY KEY, json VARCHAR)`,
-    );
-    await this.client.run(
-      `CREATE TABLE IF NOT EXISTS lineups (festival_id VARCHAR, edition_id VARCHAR, json VARCHAR, PRIMARY KEY (festival_id, edition_id))`,
-    );
-    await this.client.run(
-      `CREATE TABLE IF NOT EXISTS cost_events (id VARCHAR PRIMARY KEY, json VARCHAR)`,
-    );
-    await this.client.run(
-      `CREATE TABLE IF NOT EXISTS telemetry_events (id VARCHAR PRIMARY KEY, json VARCHAR)`,
-    );
+    await this.client.run(`
+      CREATE TABLE IF NOT EXISTS observations (
+        id VARCHAR PRIMARY KEY,
+        source_url VARCHAR NOT NULL,
+        raw_content VARCHAR,
+        content_hash VARCHAR,
+        retrieved_at TIMESTAMP NOT NULL,
+        status VARCHAR,
+        kind VARCHAR NOT NULL,
+        festival_id VARCHAR,
+        edition_id VARCHAR,
+        source_domain VARCHAR NOT NULL,
+        tier VARCHAR,
+        evidence_json VARCHAR,
+        payload_json VARCHAR
+      )
+    `);
+    await this.client.run(`
+      CREATE TABLE IF NOT EXISTS lineups (
+        id VARCHAR PRIMARY KEY,
+        festival_id VARCHAR NOT NULL,
+        edition_id VARCHAR NOT NULL,
+        raw_artists VARCHAR,
+        parsed_artists VARCHAR,
+        confidence DOUBLE,
+        extracted_at TIMESTAMP,
+        source_domain VARCHAR NOT NULL,
+        announced_at TIMESTAMP,
+        UNIQUE (festival_id, edition_id)
+      )
+    `);
+    await this.client.run(`
+      CREATE TABLE IF NOT EXISTS costs (
+        id VARCHAR PRIMARY KEY,
+        provider VARCHAR NOT NULL,
+        endpoint VARCHAR,
+        input_tokens INTEGER,
+        output_tokens INTEGER,
+        estimated_cost_usd DOUBLE,
+        timestamp TIMESTAMP NOT NULL,
+        operation VARCHAR NOT NULL,
+        units DOUBLE,
+        unit_cost_usd DOUBLE,
+        currency VARCHAR,
+        meta_json VARCHAR
+      )
+    `);
+    await this.client.run(`
+      CREATE TABLE IF NOT EXISTS telemetry (
+        id VARCHAR PRIMARY KEY,
+        event_type VARCHAR NOT NULL,
+        duration_ms DOUBLE,
+        status VARCHAR,
+        error VARCHAR,
+        timestamp TIMESTAMP NOT NULL,
+        level VARCHAR,
+        domain VARCHAR,
+        url VARCHAR,
+        tier VARCHAR,
+        meta_json VARCHAR
+      )
+    `);
   }
 }
 
+function promisifyDuckDb(db: duckdb.Database): DuckDbClientLike {
+  const run = (sql: string, ...params: unknown[]): Promise<void> =>
+    new Promise((resolvePromise, reject) => {
+      db.run(sql, ...params, (err: Error | null) => {
+        if (err) reject(err);
+        else resolvePromise();
+      });
+    });
+
+  const all = <T = Record<string, unknown>>(
+    sql: string,
+    ...params: unknown[]
+  ): Promise<T[]> =>
+    new Promise((resolvePromise, reject) => {
+      const cb = (err: Error | null, rows: duckdb.TableData) => {
+        if (err) reject(err);
+        else resolvePromise((rows ?? []) as T[]);
+      };
+      // duckdb typings require a rest tuple ending in Callback; cast keeps runtime API.
+      (db.all as unknown as (sql: string, ...args: unknown[]) => void)(
+        sql,
+        ...params,
+        cb,
+      );
+    });
+
+  const close = (): Promise<void> =>
+    new Promise((resolvePromise, reject) => {
+      db.close((err: Error | null) => {
+        if (err) reject(err);
+        else resolvePromise();
+      });
+    });
+
+  return { run, all, close };
+}
+
+export type DuckDbWarehouseOptions = {
+  /** Filesystem path; default data/warehouse/festival_bloomberg.duckdb (or env). */
+  path?: string;
+};
+
+/**
+ * Open the local DuckDB warehouse at a configurable path, creating parent dirs
+ * and running idempotent migrations. DuckDB is the authoritative local store
+ * for cost events and telemetry (and observations/lineups).
+ */
+export async function createDuckDbWarehouse(
+  opts: DuckDbWarehouseOptions = {},
+): Promise<DuckDbAdapter> {
+  const path = resolve(
+    opts.path ??
+      process.env.FESTIVAL_BLOOMBERG_DUCKDB_PATH ??
+      DEFAULT_WAREHOUSE_PATH,
+  );
+  mkdirSync(dirname(path), { recursive: true });
+  const db = new duckdb.Database(path);
+  const client = promisifyDuckDb(db);
+  return new DuckDbAdapter({ client, ensureSchema: true });
+}
+
+export type SupabaseFilterBuilder = {
+  eq: (col: string, val: unknown) => SupabaseFilterBuilder;
+  gte: (col: string, val: unknown) => SupabaseFilterBuilder;
+  maybeSingle: () => Promise<{
+    data: Record<string, unknown> | null;
+    error: { message: string } | null;
+  }>;
+  limit: (n: number) => Promise<{
+    data: Record<string, unknown>[] | null;
+    error: { message: string } | null;
+  }>;
+};
+
 export type SupabaseClientLike = {
   from: (table: string) => {
-    upsert: (row: Record<string, unknown> | Record<string, unknown>[]) => Promise<{ error: { message: string } | null }>;
-    select: (cols?: string) => {
-      eq: (col: string, val: unknown) => {
-        eq?: (col: string, val: unknown) => {
-          maybeSingle: () => Promise<{ data: Record<string, unknown> | null; error: { message: string } | null }>;
-          limit: (n: number) => Promise<{ data: Record<string, unknown>[] | null; error: { message: string } | null }>;
-        };
-        maybeSingle: () => Promise<{ data: Record<string, unknown> | null; error: { message: string } | null }>;
-        limit: (n: number) => Promise<{ data: Record<string, unknown>[] | null; error: { message: string } | null }>;
-      };
-    };
-    insert: (row: Record<string, unknown>) => Promise<{ error: { message: string } | null }>;
+    upsert: (
+      row: Record<string, unknown> | Record<string, unknown>[],
+    ) => Promise<{ error: { message: string } | null }>;
+    select: (cols?: string) => SupabaseFilterBuilder;
+    insert: (
+      row: Record<string, unknown>,
+    ) => Promise<{ error: { message: string } | null }>;
   };
 };
 
@@ -249,8 +627,9 @@ export type SupabaseAdapterOptions = {
 };
 
 /**
- * Supabase adapter — optional. No `@supabase/supabase-js` hard dependency.
- * When client is missing, operations gracefully no-op.
+ * Supabase adapter — optional remote mirror. No `@supabase/supabase-js` hard dependency.
+ * Cost/telemetry aggregation for local ops should use DuckDB; Supabase sumUsd still
+ * computes a real sum when a client is configured.
  */
 export class SupabaseAdapter implements ScraperRepositories {
   readonly observations: ObservationRepo;
@@ -272,10 +651,11 @@ export class SupabaseAdapter implements ScraperRepositories {
     this.observations = {
       upsert: async (obs) => {
         if (!this.client) return;
+        const parsed = parseObservation(obs);
         const { error } = await this.client.from(this.tables.observations).upsert({
-          id: obs.id,
-          festival_id: obs.festivalId ?? null,
-          payload: obs,
+          id: parsed.id,
+          festival_id: parsed.festivalId ?? null,
+          payload: parsed,
         });
         if (error) throw new Error(`supabase_observations_upsert: ${error.message}`);
       },
@@ -287,7 +667,7 @@ export class SupabaseAdapter implements ScraperRepositories {
           .eq("id", id)
           .maybeSingle();
         if (error) throw new Error(`supabase_observations_get: ${error.message}`);
-        return (data?.payload as Observation | undefined) ?? null;
+        return data?.payload != null ? parseObservation(data.payload) : null;
       },
       listByFestival: async (festivalId, limit = 100) => {
         if (!this.client) return [];
@@ -297,55 +677,76 @@ export class SupabaseAdapter implements ScraperRepositories {
           .eq("festival_id", festivalId)
           .limit(limit);
         if (error) throw new Error(`supabase_observations_list: ${error.message}`);
-        return (data ?? []).map((r) => r.payload as Observation);
+        return (data ?? []).map((r) => parseObservation(r.payload));
       },
     };
 
     this.lineups = {
       upsert: async (lineup) => {
         if (!this.client) return;
+        const parsed = parseLineup(lineup);
         const { error } = await this.client.from(this.tables.lineups).upsert({
-          festival_id: lineup.festivalId,
-          edition_id: lineup.editionId,
-          payload: lineup,
+          festival_id: parsed.festivalId,
+          edition_id: parsed.editionId,
+          payload: parsed,
         });
         if (error) throw new Error(`supabase_lineups_upsert: ${error.message}`);
       },
       get: async (festivalId, editionId) => {
         if (!this.client) return null;
-        const q = this.client.from(this.tables.lineups).select("payload").eq("festival_id", festivalId);
-        const { data, error } = q.eq
-          ? await q.eq("edition_id", editionId).maybeSingle()
-          : await q.maybeSingle();
+        const { data, error } = await this.client
+          .from(this.tables.lineups)
+          .select("payload")
+          .eq("festival_id", festivalId)
+          .eq("edition_id", editionId)
+          .maybeSingle();
         if (error) throw new Error(`supabase_lineups_get: ${error.message}`);
-        return (data?.payload as Lineup | undefined) ?? null;
+        return data?.payload != null ? parseLineup(data.payload) : null;
       },
     };
 
     this.costs = {
       append: async (event) => {
         if (!this.client) return;
+        const parsed = parseCostEvent(event);
         const { error } = await this.client.from(this.tables.costs).insert({
-          id: event.id,
-          payload: event,
-          total_cost_usd: event.totalCostUsd,
-          at: event.at,
+          id: parsed.id,
+          payload: parsed,
+          total_cost_usd: parsed.totalCostUsd,
+          at: parsed.at,
         });
         if (error) throw new Error(`supabase_costs_append: ${error.message}`);
       },
-      sumUsd: async () => {
-        // Without RPC aggregation, optional client returns 0 when unavailable.
+      sumUsd: async (sinceIso) => {
+        // Remote convenience sum — DuckDB remains authoritative for local warehouse totals.
         if (!this.client) return 0;
-        return 0;
+        let query = this.client
+          .from(this.tables.costs)
+          .select("total_cost_usd,at,payload");
+        if (sinceIso) query = query.gte("at", sinceIso);
+        const { data, error } = await query.limit(100_000);
+        if (error) throw new Error(`supabase_costs_sum: ${error.message}`);
+        return (data ?? []).reduce((sum, row) => {
+          if (typeof row.total_cost_usd === "number") return sum + row.total_cost_usd;
+          if (row.payload != null) {
+            try {
+              return sum + parseCostEvent(row.payload).totalCostUsd;
+            } catch {
+              return sum;
+            }
+          }
+          return sum;
+        }, 0);
       },
     };
 
     this.telemetry = {
       append: async (event) => {
         if (!this.client) return;
+        const parsed = parseTelemetryEvent(event);
         const { error } = await this.client.from(this.tables.telemetry).insert({
-          id: event.id,
-          payload: event,
+          id: parsed.id,
+          payload: parsed,
         });
         if (error) throw new Error(`supabase_telemetry_append: ${error.message}`);
       },
@@ -358,15 +759,15 @@ export class SupabaseAdapter implements ScraperRepositories {
 }
 
 /**
- * Compose repos: prefer primary when available, else fallback (e.g. memory).
- * Never references R2.
+ * Compose repos. Prefer DuckDB (authoritative local warehouse) when a client/path
+ * is provided; Supabase is an optional remote mirror. Never references R2.
  */
 export function createScraperRepos(opts?: {
   duckdb?: DuckDbClientLike | null;
   supabase?: SupabaseClientLike | null;
   prefer?: "duckdb" | "supabase" | "memory";
 }): ScraperRepositories {
-  const prefer = opts?.prefer ?? "memory";
+  const prefer = opts?.prefer ?? (opts?.duckdb ? "duckdb" : "memory");
   if (prefer === "duckdb" && opts?.duckdb) {
     return new DuckDbAdapter({ client: opts.duckdb });
   }
