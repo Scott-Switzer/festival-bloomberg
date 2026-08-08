@@ -1,0 +1,16 @@
+{
+  "name": "festival-bloomberg",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc",
+    "test": "npm run build && node --test dist/tests/portfolio_metrics.test.js",
+    "validate": "npm run build && node dist/portfolio_validation.js",
+    "metrics": "npm run build && node dist/calc_metrics.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "typescript": "^5.8.2"
+  }
+}
