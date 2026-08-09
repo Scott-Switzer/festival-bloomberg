@@ -51,12 +51,12 @@ class Message:
     """Message in the communication platform."""
     message_id: str
     sender_id: str
-    recipient_id: Optional[str]  # None for group/broadcast
-    group_id: Optional[str] = None
     content: str
     message_type: MessageType
+    recipient_id: Optional[str] = None  # None for group/broadcast
+    group_id: Optional[str] = None
     priority: MessagePriority = MessagePriority.NORMAL
-    created_at: datetime = None
+    created_at: Optional[datetime] = None
     read_at: Optional[datetime] = None
     attachments: Optional[List[Dict[str, Any]]] = None
     metadata: Optional[Dict[str, Any]] = None
@@ -175,7 +175,7 @@ class IndustryCommunicationPlatform:
         return {
             'success': True,
             'message_id': message_id,
-            'sent_at': message.created_at.isoformat()
+            'sent_at': message.created_at.isoformat() if message.created_at else None
         }
     
     def create_group_chat(self, creator_id: str, participants: List[str], 
@@ -287,7 +287,7 @@ class IndustryCommunicationPlatform:
         return {
             'success': True,
             'message_id': message_id,
-            'sent_at': message.created_at.isoformat()
+            'sent_at': message.created_at.isoformat() if message.created_at else None
         }
     
     def industry_broadcast(self, sender_id: str, target_criteria: Dict[str, Any], 

@@ -11,7 +11,40 @@ This guide will help you set up and run the Festival Intelligence Terminal local
 
 ## Quick Start
 
-### Option 1: Local Development
+> **Important — environment note.** If you run from an agent/IDE shell that
+> exports `PYTHONPATH` pointing at a *different* Python environment, the
+> project's own `venv` can be shadowed and you'll see spurious
+> `ModuleNotFoundError: pydantic_core` / `numpy` errors. Always run with the
+> project venv active and the inherited `PYTHONPATH` cleared:
+>
+> ```bash
+> unset PYTHONPATH
+> source venv/bin/activate
+> ```
+
+### Zero-infra path (recommended — no Postgres, no paid APIs)
+
+The platform runs entirely on **DuckDB** (bundled), with real data pulled
+from **MusicBrainz** and **Wikipedia pageviews** — both free and key-less.
+
+```bash
+unset PYTHONPATH
+source venv/bin/activate
+
+# 1. Ingest REAL data (artists + festivals -> DuckDB warehouse)
+python scripts/ingest_real_data.py
+
+# 2. Run the API (serves real warehouse data via FastAPI)
+cd apps/api && uvicorn main:app --reload --port 8000
+#    docs at http://localhost:8000/docs
+
+# 3. Run the test suite (offline, no network)
+pytest tests/ -q
+```
+
+The warehouse file lives at `data/warehouse/festival_bloomberg.duckdb`.
+
+### Option 1: Local Development (PostgreSQL)
 
 #### 1. Clone the Repository
 

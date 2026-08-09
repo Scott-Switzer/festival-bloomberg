@@ -59,9 +59,16 @@ class DuckDBWarehouse:
         return self._connection
     
     def _create_schemas(self):
-        """Create standard schemas per Festival Bloomberg spec"""
+        """Create standard schemas per Festival Bloomberg spec.
+
+        No-op when the connection is read-only (schemas already exist from a
+        prior writable session); attempting CREATE on a read-only DB raises.
+        """
+        if self.read_only:
+            logger.debug("Read-only connection; skipping schema creation")
+            return
         schemas = ['raw', 'core', 'metrics', 'model', 'audit']
-        
+
         for schema in schemas:
             try:
                 self.connection.execute(f"CREATE SCHEMA IF NOT EXISTS {schema}")

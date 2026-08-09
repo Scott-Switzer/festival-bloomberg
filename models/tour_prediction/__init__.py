@@ -10,7 +10,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import GradientBoostingClassifier
-from sklearn.metrics import roc_auc_score, calibration_curve, brier_score_loss
+from sklearn.metrics import roc_auc_score, brier_score_loss
+from sklearn.calibration import calibration_curve
 
 
 @dataclass

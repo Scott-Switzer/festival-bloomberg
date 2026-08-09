@@ -4,6 +4,7 @@ Secure, extensible configuration handling for all platform components.
 """
 import os
 import json
+from pathlib import Path
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
 from datetime import datetime
