@@ -396,9 +396,87 @@ async def get_artist_tour_prediction(artist_id: str):
         }
 
 
-# --------------------------------------------------------------------------- #
-# Revenue simulation (real Monte Carlo model)
-# --------------------------------------------------------------------------- #
+@app.get("/artists/{artist_id}/sentiment", response_model=Dict[str, Any])
+async def get_artist_sentiment(artist_id: str):
+    """VADER sentiment + topics + provenance for an artist (from the ensemble)."""
+    repo = _repo()
+    artist = repo.get_artist(artist_id)
+    if not artist:
+        raise HTTPException(status_code=404, detail="Artist not found")
+    sentiment = repo.get_artist_sentiment(artist_id)
+    if not sentiment:
+        return {
+            "artist_id": artist_id,
+            "artist_name": artist["name"],
+            "sentiment_label": "unknown",
+            "note": "No ensemble sentiment ingested yet. Run: python scripts/ingest_sentiment.py",
+        }
+    sentiment["artist_name"] = artist["name"]
+    return sentiment
+
+
+@app.get("/artists/{artist_id}/insight", response_model=Dict[str, Any])
+async def get_artist_insight(artist_id: str):
+    """Full sellable insight: sentiment, demographic proxies, lineage."""
+    repo = _repo()
+    artist = repo.get_artist(artist_id)
+    if not artist:
+        raise HTTPException(status_code=404, detail="Artist not found")
+    sentiment = repo.get_artist_sentiment(artist_id) or {}
+
+    begin = artist.get("life_span_begin")
+    era = None
+    if begin and len(str(begin)) >= 4:
+        y = int(str(begin)[:4])
+        if y < 1980:
+            era = "boomer/older"
+        elif y < 1995:
+            era = "gen-x"
+        elif y < 2005:
+            era = "millennial"
+        else:
+            era = "gen-z / newest"
+
+    return {
+        "artist_id": artist_id,
+        "artist_name": artist["name"],
+        "origin_country": artist.get("country"),
+        "active_since": begin,
+        "era": era,
+        "genres": artist.get("genres") or [],
+        "sentiment_label": sentiment.get("sentiment_label", "unknown"),
+        "compound": sentiment.get("compound"),
+        "positive": sentiment.get("positive"),
+        "neutral": sentiment.get("neutral"),
+        "negative": sentiment.get("negative"),
+        "sample_size": sentiment.get("sample_size"),
+        "mention_volume": sentiment.get("mention_volume"),
+        "attention_score": sentiment.get("attention_score"),
+        "top_topics": sentiment.get("top_topics", []),
+        "top_positive": sentiment.get("top_positive", []),
+        "top_negative": sentiment.get("top_negative", []),
+        "llm_summary": sentiment.get("llm_summary"),
+        "sources_used": sentiment.get("sources_used", []),
+    }
+
+
+@app.get("/market/sentiment", response_model=Dict[str, Any])
+async def get_market_sentiment(limit: int = 25):
+    """Market-wide sentiment overview: artists ranked by attention, with label."""
+    repo = _repo()
+    ranked = repo.list_sentiment_ranked(limit=limit)
+    out = []
+    for row in ranked:
+        artist = repo.get_artist(row["artist_key"])
+        out.append({
+            "artist_key": row["artist_key"],
+            "artist_name": artist["name"] if artist else row["artist_key"],
+            "sentiment_label": row["sentiment_label"],
+            "compound": row["compound"],
+            "attention_score": row["attention_score"],
+            "mention_volume": row["mention_volume"],
+        })
+    return {"count": len(out), "artists": out}
 @app.post("/revenue/simulate", response_model=RevenueScenarioResponse)
 async def simulate_revenue(request: RevenueScenarioRequest):
     from models.revenue_simulation import RevenueSimulationModel, RevenueScenario as ModelScenario

@@ -120,6 +120,40 @@ _SCHEMA_DDL = [
         ingested_at         TIMESTAMP
     )
     """,
+    # Aggregated sentiment per artist from the scraper ensemble (VADER + sources).
+    """
+    CREATE TABLE IF NOT EXISTS metrics.artist_sentiment (
+        artist_key          VARCHAR PRIMARY KEY,
+        sentiment_label     VARCHAR,
+        compound            DOUBLE,
+        positive            DOUBLE,
+        neutral             DOUBLE,
+        negative            DOUBLE,
+        sample_size         INTEGER,
+        mention_volume      INTEGER,
+        attention_score     DOUBLE,
+        top_topics          JSON,
+        top_positive        JSON,
+        top_negative        JSON,
+        llm_summary         VARCHAR,
+        sources_used        JSON,
+        generated_at        TIMESTAMP
+    )
+    """,
+    # Social / web signal observations (per-source mention counts + text refs).
+    """
+    CREATE TABLE IF NOT EXISTS metrics.social_signals (
+        signal_key          VARCHAR PRIMARY KEY,
+        artist_key          VARCHAR NOT NULL,
+        source_system       VARCHAR NOT NULL,
+        mention_count       INTEGER,
+        points              DOUBLE,
+        comments            DOUBLE,
+        pageviews_30d       DOUBLE,
+        news_mentions       DOUBLE,
+        fetched_at          TIMESTAMP
+    )
+    """,
 ]
 
 
@@ -418,6 +452,97 @@ class FestivalRepository:
         return self.conn.execute(
             "SELECT COUNT(*) FROM core.festivals"
         ).fetchone()[0]
+
+    # -- write: sentiment + social signals ----------------------------------- #
+    def upsert_sentiment(self, artist_key: str, insight) -> None:
+        """Persist an :class:`ArtistInsight` sentiment record (idempotent)."""
+        s = insight.sentiment
+        self.conn.execute(
+            """
+            INSERT OR REPLACE INTO metrics.artist_sentiment (
+                artist_key, sentiment_label, compound, positive, neutral, negative,
+                sample_size, mention_volume, attention_score, top_topics,
+                top_positive, top_negative, llm_summary, sources_used, generated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                artist_key,
+                insight.sentiment_label,
+                float(s.compound),
+                float(s.positive),
+                float(s.neutral),
+                float(s.negative),
+                int(s.sample_size),
+                int(insight.mention_volume),
+                float(insight.attention_score),
+                json.dumps(insight.top_topics),
+                json.dumps(s.top_positive),
+                json.dumps(s.top_negative),
+                insight.llm_summary,
+                json.dumps(insight.sources_used),
+                datetime.utcnow(),
+            ],
+        )
+
+    def insert_social_signal(self, artist_key: str, source: str,
+                             mention_count: int, points: float = 0.0,
+                             comments: float = 0.0, pageviews_30d: float = 0.0,
+                             news_mentions: float = 0.0) -> None:
+        key = f"{artist_key}::{source}"
+        self.conn.execute(
+            """
+            INSERT OR REPLACE INTO metrics.social_signals (
+                signal_key, artist_key, source_system, mention_count,
+                points, comments, pageviews_30d, news_mentions, fetched_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [key, artist_key, source, int(mention_count), float(points),
+             float(comments), float(pageviews_30d), float(news_mentions),
+             datetime.utcnow()],
+        )
+
+    # -- read: sentiment ------------------------------------------------------ #
+    def get_artist_sentiment(self, artist_key: str) -> Optional[Dict[str, Any]]:
+        row = self.conn.execute(
+            "SELECT artist_key, sentiment_label, compound, positive, neutral, negative, "
+            "sample_size, mention_volume, attention_score, top_topics, top_positive, "
+            "top_negative, llm_summary, sources_used, generated_at "
+            "FROM metrics.artist_sentiment WHERE artist_key = ?",
+            [artist_key],
+        ).fetchone()
+        if not row:
+            return None
+        cols = ["artist_key", "sentiment_label", "compound", "positive", "neutral",
+                "negative", "sample_size", "mention_volume", "attention_score",
+                "top_topics", "top_positive", "top_negative", "llm_summary",
+                "sources_used", "generated_at"]
+        d = dict(zip(cols, row))
+        for k in ("top_topics", "top_positive", "top_negative", "sources_used"):
+            d[k] = self._coerce_json(d[k])
+        return d
+
+    def get_social_signals(self, artist_key: str) -> List[Dict[str, Any]]:
+        rows = self.conn.execute(
+            "SELECT source_system, mention_count, points, comments, pageviews_30d, "
+            "news_mentions FROM metrics.social_signals WHERE artist_key = ? "
+            "ORDER BY source_system",
+            [artist_key],
+        ).fetchall()
+        cols = ["source_system", "mention_count", "points", "comments",
+                "pageviews_30d", "news_mentions"]
+        return [dict(zip(cols, r)) for r in rows]
+
+    def list_sentiment_ranked(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Artists ranked by attention_score (for market overview)."""
+        rows = self.conn.execute(
+            "SELECT artist_key, sentiment_label, compound, attention_score, "
+            "mention_volume FROM metrics.artist_sentiment "
+            "ORDER BY attention_score DESC LIMIT ?",
+            [limit],
+        ).fetchall()
+        cols = ["artist_key", "sentiment_label", "compound",
+                "attention_score", "mention_volume"]
+        return [dict(zip(cols, r)) for r in rows]
 
     # -- helpers ------------------------------------------------------------- #
     @staticmethod

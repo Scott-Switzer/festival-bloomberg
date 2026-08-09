@@ -34,17 +34,49 @@ source venv/bin/activate
 # 1. Ingest REAL data (artists + festivals -> DuckDB warehouse)
 python scripts/ingest_real_data.py
 
-# 2. Run the API (serves real warehouse data via FastAPI)
+# 2. Run the scraper ENSEMBLE for sentiment + "what people say" insight
+#    (Wikipedia, MusicBrainz, Wikidata, Hacker News, GDELT, RSS — all key-less)
+python scripts/ingest_sentiment.py
+
+# 3. Run the API (serves real warehouse data via FastAPI)
 cd apps/api && uvicorn main:app --reload --port 8000
 #    docs at http://localhost:8000/docs
+#    new endpoints: /artists/{id}/sentiment, /artists/{id}/insight, /market/sentiment
 
-# 3. Run the test suite (offline, no network)
+# 4. Run the test suite (offline, no network)
 pytest tests/ -q
 ```
 
 The warehouse file lives at `data/warehouse/festival_bloomberg.duckdb`.
 
-### Option 1: Local Development (PostgreSQL)
+> **Note on DuckDB concurrency:** the warehouse allows one writer at a time.
+> Run `ingest_sentiment.py` (or `ingest_real_data.py`) to completion *before*
+> starting the API, or the API will wait on the writer lock. The API opens the
+> warehouse read-only, so once ingestion finishes it serves immediately.
+
+### Scraper ensemble (sentiment & insight)
+
+`scrapers/` is a robust, key-less, ToS-friendly multi-source system that
+fuses open-web signals into a sellable per-artist insight:
+
+| Source | What it provides | Key needed? |
+|--------|------------------|-------------|
+| Wikipedia | article summary + 30-day pageviews (attention) | No |
+| MusicBrainz | artist metadata, genres, origin, lifespan | No |
+| Wikidata | structured claims (country, inception, genre labels) | No |
+| Hacker News (Algolia) | real public discussions (points/comments) | No |
+| GDELT | global news mentions | No |
+| RSS | music/news blog feeds (Pitchfork, etc.) | No |
+
+Sentiment is scored with **VADER** (offline lexicon, no API key, deterministic).
+Optionally, if `NVIDIA_API_KEY` is set, a short qualitative prose summary is
+generated via the free NVIDIA LLM. Output lands in `metrics.artist_sentiment`
+and `metrics.social_signals`.
+
+Reddit and Discogs are intentionally **not** used: both now block key-less
+access (403 / require auth tokens), so they would produce empty results and
+break the zero-maintenance guarantee.
+
 
 #### 1. Clone the Repository
 

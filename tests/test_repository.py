@@ -64,3 +64,38 @@ def test_lineup_observation_inserted(repo):
         "SELECT artist_name, position FROM raw.lineup_observations"
     ).fetchall()
     assert ("Radiohead", "headliner") in rows
+
+
+def test_sentiment_persist_and_read(repo):
+    from scrapers.contracts import ArtistInsight, SentimentBreakdown
+
+    ins = ArtistInsight(
+        artist_name="Radiohead",
+        artist_key="a74b1b7f-36a9-4d22-a1cf-017dc00396d0",
+        musicbrainz_id="a74b1b7f-36a9-4d22-a1cf-017dc00396d0",
+        mention_volume=36,
+        attention_score=72.0,
+        sentiment=SentimentBreakdown(
+            positive=0.19, neutral=0.53, negative=0.28, compound=-0.04, sample_size=36,
+            top_positive=["love this"], top_negative=["terrible"],
+        ),
+        sentiment_label="neutral",
+        top_topics=["tour", "new music"],
+        sources_used=["wikipedia", "hackernews", "gdelt"],
+    )
+    repo.upsert_sentiment("a74b1b7f-36a9-4d22-a1cf-017dc00396d0", ins)
+    got = repo.get_artist_sentiment("a74b1b7f-36a9-4d22-a1cf-017dc00396d0")
+    assert got is not None
+    assert got["sentiment_label"] == "neutral"
+    assert got["compound"] == -0.04
+    assert got["mention_volume"] == 36
+    assert got["top_topics"] == ["tour", "new music"]
+    assert got["sources_used"] == ["wikipedia", "hackernews", "gdelt"]
+
+    repo.insert_social_signal("a74b1b7f-36a9-4d22-a1cf-017dc00396d0", "hackernews",
+                              mention_count=20, points=800.0, comments=300.0)
+    sig = repo.get_social_signals("a74b1b7f-36a9-4d22-a1cf-017dc00396d0")
+    assert any(s["source_system"] == "hackernews" and s["mention_count"] == 20 for s in sig)
+
+    ranked = repo.list_sentiment_ranked(limit=10)
+    assert any(r["artist_key"] == "a74b1b7f-36a9-4d22-a1cf-017dc00396d0" for r in ranked)
