@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "tsc",
+    "build": "tsc && node -e \"const fs=require('node:fs');fs.mkdirSync('dist/schema',{recursive:true});fs.copyFileSync('schema/duckdb.sql','dist/schema/duckdb.sql')\"",
     "test": "npm run build && node --test dist/tests/portfolio_metrics.test.js dist/tests/scraper/*.test.js",
     "test:python": "PYTHONPATH=python python3 -m pytest tests/python -q",
     "test:all": "npm test && npm run test:python",

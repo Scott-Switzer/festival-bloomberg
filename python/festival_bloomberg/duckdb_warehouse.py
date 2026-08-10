@@ -17,78 +17,8 @@ import duckdb
 from .paths import resolve_warehouse_path
 from .vader_sentiment import SentimentScore, score_text
 
-SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS observations (
-  id VARCHAR PRIMARY KEY,
-  source_url VARCHAR NOT NULL,
-  raw_content VARCHAR,
-  content_hash VARCHAR,
-  retrieved_at TIMESTAMP NOT NULL,
-  status VARCHAR,
-  kind VARCHAR NOT NULL,
-  festival_id VARCHAR,
-  edition_id VARCHAR,
-  source_domain VARCHAR NOT NULL,
-  tier VARCHAR,
-  evidence_json VARCHAR,
-  payload_json VARCHAR
-);
-
-CREATE TABLE IF NOT EXISTS lineups (
-  id VARCHAR PRIMARY KEY,
-  festival_id VARCHAR NOT NULL,
-  edition_id VARCHAR NOT NULL,
-  raw_artists VARCHAR,
-  parsed_artists VARCHAR,
-  confidence DOUBLE,
-  extracted_at TIMESTAMP,
-  source_domain VARCHAR NOT NULL,
-  announced_at TIMESTAMP,
-  UNIQUE (festival_id, edition_id)
-);
-
-CREATE TABLE IF NOT EXISTS costs (
-  id VARCHAR PRIMARY KEY,
-  provider VARCHAR NOT NULL,
-  endpoint VARCHAR,
-  input_tokens INTEGER,
-  output_tokens INTEGER,
-  estimated_cost_usd DOUBLE,
-  timestamp TIMESTAMP NOT NULL,
-  operation VARCHAR NOT NULL,
-  units DOUBLE,
-  unit_cost_usd DOUBLE,
-  currency VARCHAR,
-  meta_json VARCHAR
-);
-
-CREATE TABLE IF NOT EXISTS telemetry (
-  id VARCHAR PRIMARY KEY,
-  event_type VARCHAR NOT NULL,
-  duration_ms DOUBLE,
-  status VARCHAR,
-  error VARCHAR,
-  timestamp TIMESTAMP NOT NULL,
-  level VARCHAR,
-  domain VARCHAR,
-  url VARCHAR,
-  tier VARCHAR,
-  meta_json VARCHAR
-);
-
-CREATE TABLE IF NOT EXISTS sentiment_scores (
-  id VARCHAR PRIMARY KEY,
-  source_id VARCHAR,
-  festival_id VARCHAR,
-  text VARCHAR NOT NULL,
-  compound DOUBLE NOT NULL,
-  pos DOUBLE NOT NULL,
-  neu DOUBLE NOT NULL,
-  neg DOUBLE NOT NULL,
-  label VARCHAR NOT NULL,
-  scored_at TIMESTAMP NOT NULL
-);
-"""
+CANONICAL_SCHEMA_PATH = Path(__file__).resolve().parents[2] / "schema" / "duckdb.sql"
+SCHEMA_SQL = CANONICAL_SCHEMA_PATH.read_text(encoding="utf-8")
 
 
 class DuckDbWarehouse:
