@@ -5,6 +5,7 @@ import type { DuckDbClientLike } from "./db";
 import {
   loadCanonicalDuckDbStatements,
   resolveSchemaRoot,
+  splitSqlStatements,
 } from "./duckdb_schema";
 
 export type SchemaMigration = {
@@ -16,14 +17,6 @@ export type SchemaMigration = {
 const MIGRATION_FILE_PATTERN = /^(\d+)_(.+)\.sql$/u;
 
 let cachedMigrations: SchemaMigration[] | undefined;
-
-/** Split SQL on semicolons; canonical files avoid semicolons inside literals. */
-export function splitSqlStatements(sql: string): string[] {
-  return sql
-    .split(";")
-    .map((statement) => statement.trim())
-    .filter(Boolean);
-}
 
 function migrationNameFromFile(fileName: string): string {
   const match = MIGRATION_FILE_PATTERN.exec(fileName);

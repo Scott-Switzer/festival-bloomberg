@@ -51,7 +51,16 @@ def load_schema_sql() -> str:
 
 
 def split_sql_statements(sql: str) -> list[str]:
-    return [statement.strip() for statement in sql.split(";") if statement.strip()]
+    """Split SQL on semicolons, ignoring semicolons inside ``--`` line comments."""
+    without_line_comments = "\n".join(
+        line[: line.index("--")] if (idx := line.find("--")) >= 0 else line
+        for line in sql.splitlines()
+    )
+    return [
+        statement.strip()
+        for statement in without_line_comments.split(";")
+        if statement.strip()
+    ]
 
 
 def load_migration_files() -> list[tuple[int, str, Path]]:

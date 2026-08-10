@@ -40,11 +40,21 @@ export function loadCanonicalDuckDbSchema(): string {
 /**
  * The legacy DuckDB Node binding can report completion before every statement
  * in a multi-statement string is checkpointed. Execute this schema sequentially.
- * The canonical SQL intentionally contains no semicolons inside literals.
  */
-export function loadCanonicalDuckDbStatements(): string[] {
-  return loadCanonicalDuckDbSchema()
+export function splitSqlStatements(sql: string): string[] {
+  const withoutLineComments = sql
+    .split("\n")
+    .map((line) => {
+      const commentIndex = line.indexOf("--");
+      return commentIndex >= 0 ? line.slice(0, commentIndex) : line;
+    })
+    .join("\n");
+  return withoutLineComments
     .split(";")
     .map((statement) => statement.trim())
     .filter(Boolean);
+}
+
+export function loadCanonicalDuckDbStatements(): string[] {
+  return splitSqlStatements(loadCanonicalDuckDbSchema());
 }
