@@ -233,6 +233,31 @@ CREATE TABLE IF NOT EXISTS core.artist_social_handles (
 CREATE INDEX IF NOT EXISTS idx_artist_handles_artist ON core.artist_social_handles (artist_key);
 CREATE INDEX IF NOT EXISTS idx_artist_handles_lookup ON core.artist_social_handles (platform, normalized_handle);
 
+-- ---------------------------------------------------------------------------
+-- core.artist_contacts - booking and management contact information
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS core.artist_contacts (
+    contact_key             VARCHAR PRIMARY KEY,
+    artist_key              VARCHAR NOT NULL,
+    agency_name             VARCHAR,
+    agent_name              VARCHAR,
+    contact_email           VARCHAR,
+    contact_phone           VARCHAR,
+    role                    VARCHAR,
+    verified                BOOLEAN,
+    source_url              VARCHAR,
+    retrieved_at            TIMESTAMP,
+    source_system           VARCHAR,
+    evidence_url            VARCHAR,
+    confidence              DOUBLE,
+    ingested_at             TIMESTAMP,
+
+    CHECK (confidence IS NULL OR (confidence >= 0.0 AND confidence <= 1.0))
+);
+
+CREATE INDEX IF NOT EXISTS idx_artist_contacts_artist ON core.artist_contacts (artist_key);
+CREATE INDEX IF NOT EXISTS idx_artist_contacts_agency ON core.artist_contacts (agency_name);
+
 -- ===========================================================================
 -- core.venues - physical sites hosting festivals and editions
 -- ===========================================================================
@@ -604,6 +629,32 @@ CREATE INDEX IF NOT EXISTS idx_lineup_slots_artist ON core.lineup_slots (artist_
 CREATE INDEX IF NOT EXISTS idx_lineup_slots_artist_name ON core.lineup_slots (normalized_artist_name);
 CREATE INDEX IF NOT EXISTS idx_lineup_slots_date ON core.lineup_slots (performance_date);
 CREATE INDEX IF NOT EXISTS idx_lineup_slots_billing ON core.lineup_slots (billing_tier, billing_order);
+
+-- ---------------------------------------------------------------------------
+-- core.lineup_qualification_metrics - headliner vs support act analytics
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS core.lineup_qualification_metrics (
+    metric_key              VARCHAR PRIMARY KEY,
+    artist_key              VARCHAR NOT NULL,
+    festival_edition_key    VARCHAR,
+    billing_tier            INTEGER,
+    billing_order           INTEGER,
+    stage_name              VARCHAR,
+    time_slot_minutes       INTEGER,
+    is_headliner            BOOLEAN,
+    repeat_booking_count    INTEGER,
+    sentiment_score_pre_festival DOUBLE,
+    source_system           VARCHAR,
+    evidence_url            VARCHAR,
+    confidence              DOUBLE,
+    ingested_at             TIMESTAMP,
+
+    CHECK (confidence IS NULL OR (confidence >= 0.0 AND confidence <= 1.0))
+);
+
+CREATE INDEX IF NOT EXISTS idx_lineup_qualification_artist ON core.lineup_qualification_metrics (artist_key);
+CREATE INDEX IF NOT EXISTS idx_lineup_qualification_edition ON core.lineup_qualification_metrics (festival_edition_key);
+CREATE INDEX IF NOT EXISTS idx_lineup_qualification_tier ON core.lineup_qualification_metrics (billing_tier);
 
 -- ===========================================================================
 -- raw.lineup_observations - pre-resolution lineup evidence

@@ -108,6 +108,7 @@ export const SourceSystemSchema = z.enum([
   'festival_site',
   'press_release',
   'manual',
+  'scraper',
 ]);
 
 /** Provenance classification, mirrors `MetricType` in `contracts/entities.py`. */
@@ -588,6 +589,24 @@ export const ArtistSocialHandleRowSchema = z.object({
   ingested_at: IsoDateTimeSchema.optional(),
 });
 
+/** Row contract for `core.artist_contacts`. */
+export const ArtistContactRowSchema = z.object({
+  contact_key: z.string().min(1).optional(),
+  artist_key: z.string().min(1),
+  agency_name: z.string().optional(),
+  agent_name: z.string().optional(),
+  contact_email: z.email().optional(),
+  contact_phone: z.string().optional(),
+  role: z.string().optional(),
+  verified: z.boolean().optional(),
+  source_url: UrlSchema.optional(),
+  retrieved_at: IsoDateTimeSchema.optional(),
+  source_system: SourceSystemSchema.optional(),
+  evidence_url: UrlSchema.optional(),
+  confidence: ConfidenceSchema.optional(),
+  ingested_at: IsoDateTimeSchema.optional(),
+});
+
 // ===========================================================================
 // core.venues
 // ===========================================================================
@@ -998,6 +1017,24 @@ export const LineupObservationSchema = z.object({
   match_method: MatchMethodSchema.optional(),
   requires_review: z.boolean().optional(),
 
+  ingested_at: IsoDateTimeSchema.optional(),
+});
+
+/** Row contract for `core.lineup_qualification_metrics`. */
+export const LineupQualificationMetricsSchema = z.object({
+  metric_key: z.string().min(1).optional(),
+  artist_key: z.string().min(1),
+  festival_edition_key: z.string().optional(),
+  billing_tier: z.number().int().optional(),
+  billing_order: z.number().int().optional(),
+  stage_name: z.string().optional(),
+  time_slot_minutes: z.number().int().positive().optional(),
+  is_headliner: z.boolean().optional(),
+  repeat_booking_count: z.number().int().nonnegative().optional(),
+  sentiment_score_pre_festival: z.number().min(-1).max(1).optional(),
+  source_system: SourceSystemSchema.optional(),
+  evidence_url: UrlSchema.optional(),
+  confidence: ConfidenceSchema.optional(),
   ingested_at: IsoDateTimeSchema.optional(),
 });
 
