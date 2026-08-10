@@ -23,7 +23,7 @@ def test_apply_pending_migrations_is_idempotent(tmp_path: Path):
 
     connection = duckdb.connect(str(db_path))
     try:
-        assert apply_pending_migrations(connection) == 3
+        assert apply_pending_migrations(connection) == 4
         assert apply_pending_migrations(connection) == 0
         versions = [
             row[0]
@@ -31,7 +31,7 @@ def test_apply_pending_migrations_is_idempotent(tmp_path: Path):
                 "SELECT version FROM schema_migrations ORDER BY version"
             ).fetchall()
         ]
-        assert versions == [1, 2, 3]
+        assert versions == [1, 2, 3, 4]
         tables = {
             row[0]
             for row in connection.execute(
@@ -49,6 +49,30 @@ def test_apply_pending_migrations_is_idempotent(tmp_path: Path):
         assert tables == {
             "artist_attention_observations",
             "edition_analytical_metrics",
+        }
+        canonical_tables = {
+            row[0]
+            for row in connection.execute(
+                """
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = 'main'
+                  AND table_name IN (
+                    'canonical_entities',
+                    'canonical_entity_aliases',
+                    'canonical_entity_source_ids',
+                    'canonical_entity_provenance',
+                    'entity_resolution_reviews'
+                  )
+                """
+            ).fetchall()
+        }
+        assert canonical_tables == {
+            "canonical_entities",
+            "canonical_entity_aliases",
+            "canonical_entity_source_ids",
+            "canonical_entity_provenance",
+            "entity_resolution_reviews",
         }
     finally:
         connection.close()
