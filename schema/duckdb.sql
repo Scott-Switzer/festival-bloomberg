@@ -183,7 +183,7 @@ CREATE INDEX IF NOT EXISTS ingestion_logs_observation_idx
 --                          ``FestivalRepository._coerce_json``
 --
 -- The PostgreSQL variant of the analytical schema lives in
--- ``warehouse/schema.sql``; this file is the DuckDB (zero-infra) equivalent
+-- ``warehouse/schema.sql`` — this file is the DuckDB (zero-infra) equivalent
 -- and is the one exercised by the test suite.
 
 CREATE SCHEMA IF NOT EXISTS raw;
@@ -195,7 +195,7 @@ CREATE SCHEMA IF NOT EXISTS audit;
 -- ===========================================================================
 -- core.artists - canonical artist dimension (MBID-resolved)
 -- ===========================================================================
--- musicbrainz_id is the natural key; artist_key falls back to
+-- musicbrainz_id is the natural key — artist_key falls back to
 -- ``name::<normalized_name>`` when no MBID has been resolved yet.
 CREATE TABLE IF NOT EXISTS core.artists (
     artist_key              VARCHAR PRIMARY KEY,
@@ -257,7 +257,7 @@ CREATE TABLE IF NOT EXISTS core.artists (
     ipi                     VARCHAR,
     external_ids            JSON,
 
-    -- Popularity (point-in-time snapshot; history lives in metrics.*)
+    -- Popularity (point-in-time snapshot — history lives in metrics.*)
     popularity_score        DOUBLE,
     popularity_rank         INTEGER,
     popularity_source       VARCHAR,
@@ -501,7 +501,7 @@ CREATE TABLE IF NOT EXISTS core.festivals (
     parent_company          VARCHAR,
     booking_contact         VARCHAR,
 
-    -- Stages and ticketing (denormalized snapshot; detail tables below)
+    -- Stages and ticketing (denormalized snapshot — detail tables below)
     stage_count             INTEGER,
     stages                  JSON,
     ticket_tiers            JSON,

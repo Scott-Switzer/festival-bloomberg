@@ -26,7 +26,7 @@ import {
   FestivalEditionSchema,
   ArtistContactRowSchema,
   LineupQualificationMetricsSchema,
-} from './schemas.js';
+} from './warehouse_schemas.js';
 import { z } from 'zod';
 
 // ===========================================================================
@@ -736,8 +736,8 @@ async function main() {
 // Export for testing
 export { IngestionRunner, Fetcher, LineupParser, DatabaseWriter };
 
-// Run if executed directly
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Run if executed directly (CommonJS entrypoint)
+if (require.main === module) {
   main().catch(error => {
     console.error('Fatal error:', error);
     process.exit(1);
