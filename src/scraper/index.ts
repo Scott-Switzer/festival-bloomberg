@@ -11,3 +11,7 @@ export * from "./normalization";
 export * from "./migrations";
 export * from "./ingestion";
 export * from "./sentiment";
+export * from "./wikimedia_pageviews";
+export * from "./attention_sources";
+export * from "./intelligence_metrics";
+export * from "./intelligence_store";

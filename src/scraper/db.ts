@@ -1036,6 +1036,16 @@ export class DuckDbAdapter implements ScraperRepositories {
     return this.client != null;
   }
 
+  /** Expose the underlying client for domain stores (intelligence metrics, etc.). */
+  getDuckDbClient(): DuckDbClientLike | null {
+    return this.client;
+  }
+
+  /** Wait until schema migrations have finished applying. */
+  async ensureReady(): Promise<void> {
+    await this.ready;
+  }
+
   async close(): Promise<void> {
     await this.ready;
     // Explicitly checkpoint before closing. The legacy Node binding can retain

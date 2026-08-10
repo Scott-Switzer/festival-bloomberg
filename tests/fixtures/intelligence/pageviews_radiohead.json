@@ -1,0 +1,83 @@
+{
+  "project": "en.wikipedia",
+  "article": "Radiohead",
+  "access": "all-access",
+  "agent": "user",
+  "granularity": "daily",
+  "start": "20260101",
+  "end": "20260103",
+  "response": {
+    "items": [
+      {
+        "project": "en.wikipedia",
+        "article": "Radiohead",
+        "granularity": "daily",
+        "timestamp": "2026010100",
+        "access": "all-access",
+        "agent": "user",
+        "views": 1000
+      },
+      {
+        "project": "en.wikipedia",
+        "article": "Radiohead",
+        "granularity": "daily",
+        "timestamp": "2026010200",
+        "access": "all-access",
+        "agent": "user",
+        "views": 1500
+      },
+      {
+        "project": "en.wikipedia",
+        "article": "Radiohead",
+        "granularity": "daily",
+        "timestamp": "2026010300",
+        "access": "all-access",
+        "agent": "user",
+        "views": 500
+      }
+    ]
+  },
+  "edition": {
+    "festivalKey": "coachella",
+    "editionKey": "coachella_2026",
+    "editionYear": 2026,
+    "lineup": [
+      { "artistKey": "mbid::radiohead", "artistName": "Radiohead", "billingOrder": 1, "pageviews": 3000 },
+      { "artistKey": "mbid::beyonce", "artistName": "Beyoncé", "billingOrder": 2, "pageviews": 9000 },
+      { "artistKey": "name::emerging-act", "artistName": "Emerging Act", "billingOrder": 10, "pageviews": null }
+    ],
+    "comparison": {
+      "festivalKey": "outside_lands",
+      "editionKey": "outside_lands_2026",
+      "editionYear": 2026,
+      "lineupArtistKeys": ["mbid::radiohead", "mbid::beyonce", "name::other-act"]
+    },
+    "festivalLocation": { "latitude": 33.68, "longitude": -116.24 },
+    "festivalStartDate": "2026-04-10",
+    "festivalEndDate": "2026-04-12",
+    "tourObservations": [
+      {
+        "artistKey": "mbid::radiohead",
+        "eventDate": "2026-04-08",
+        "latitude": 34.05,
+        "longitude": -118.25
+      }
+    ],
+    "ticketPrices": [
+      {
+        "marketSide": "primary",
+        "price": 599,
+        "currency": "USD",
+        "sourceSystem": "festival_site",
+        "sourceUrl": "https://example.com/primary"
+      },
+      {
+        "marketSide": "secondary",
+        "price": 850,
+        "currency": "USD",
+        "sourceSystem": "manual",
+        "sourceUrl": "https://example.com/secondary"
+      }
+    ]
+  }
+}
