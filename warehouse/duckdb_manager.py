@@ -76,7 +76,7 @@ class DuckDBWarehouse:
             except Exception as e:
                 logger.error(f"Failed to create schema {schema}: {e}")
     
-    def execute_sql(self, query: str, parameters: Optional[Dict[str, Any]] = None) -> duckdb.DuckDBPyResult:
+    def execute_sql(self, query: str, parameters: Optional[Dict[str, Any]] = None) -> duckdb.DuckDBPyConnection:
         """
         Execute SQL query
         
@@ -85,7 +85,7 @@ class DuckDBWarehouse:
             parameters: Optional parameters for parameterized queries
             
         Returns:
-            DuckDB result object
+            DuckDB connection positioned on the result set
         """
         try:
             if parameters:
