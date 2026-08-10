@@ -35,19 +35,20 @@ describe("schema migrations", () => {
 
     const db = await createDuckDbWarehouse({ path: temp.path });
     const versions = migrationCatalog().map((migration) => migration.version);
-    assert.deepEqual(versions, [1, 2]);
+    assert.deepEqual(versions, [1, 2, 3]);
     await db.close();
 
     const rows = await queryMigrations(temp.path);
-    assert.equal(rows.length, 2);
+    assert.equal(rows.length, 3);
     assert.equal(rows[1]?.name, "published_at_point_in_time_v2");
+    assert.equal(rows[2]?.name, "intelligence_metrics_v1");
 
     const reopened = await createDuckDbWarehouse({ path: temp.path });
     await reopened.close();
     const again = await queryMigrations(temp.path);
     assert.deepEqual(
       again.map((row) => row.version),
-      [1, 2],
+      [1, 2, 3],
     );
   });
 });

@@ -11,6 +11,8 @@ Storage layout (matches the Festival Bloomberg spec schemas):
     core.festival_editions - (festival, year) occurrence
     core.lineup_slots   - resolved per-artist performance slots
     metrics.artist_metrics - per-source momentum/attention observations
+    metrics.artist_attention_observations - Wikimedia/Spotify attention inputs
+    metrics.edition_analytical_metrics - derived Festival-Bloomberg analytics
     raw.lineup_observations - raw lineup scrape/parse records
 
 The full DDL (including the rich artist/festival/lineup specifications and the
@@ -436,6 +438,213 @@ class FestivalRepository:
         cols = ["artist_key", "sentiment_label", "compound",
                 "attention_score", "mention_volume"]
         return [dict(zip(cols, r)) for r in rows]
+
+    # -- write: intelligence metrics ---------------------------------------- #
+    def upsert_attention_observation(self, row: Dict[str, Any]) -> str:
+        """Idempotent upsert into metrics.artist_attention_observations."""
+        observation_key = row["observation_key"]
+        self.conn.execute(
+            """
+            INSERT INTO metrics.artist_attention_observations (
+                observation_key, artist_key, festival_key, edition_key, edition_year,
+                source_system, metric_kind, project, access_method, agent, article_title,
+                granularity, period_start, period_end, value, value_sum, value_unit,
+                status, error_code, error_message, source_url, retrieved_at,
+                raw_response_json, provenance_json, metric_version, ingested_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (observation_key) DO UPDATE SET
+                festival_key = excluded.festival_key,
+                edition_key = excluded.edition_key,
+                edition_year = excluded.edition_year,
+                value = excluded.value,
+                value_sum = excluded.value_sum,
+                value_unit = excluded.value_unit,
+                status = excluded.status,
+                error_code = excluded.error_code,
+                error_message = excluded.error_message,
+                source_url = excluded.source_url,
+                retrieved_at = excluded.retrieved_at,
+                raw_response_json = excluded.raw_response_json,
+                provenance_json = excluded.provenance_json,
+                metric_version = excluded.metric_version,
+                ingested_at = excluded.ingested_at
+            """,
+            [
+                observation_key,
+                row["artist_key"],
+                row.get("festival_key"),
+                row.get("edition_key"),
+                row.get("edition_year"),
+                row["source_system"],
+                row["metric_kind"],
+                row.get("project"),
+                row.get("access_method"),
+                row.get("agent"),
+                row.get("article_title"),
+                row.get("granularity"),
+                row.get("period_start"),
+                row.get("period_end"),
+                row.get("value"),
+                row.get("value_sum"),
+                row.get("value_unit"),
+                row["status"],
+                row.get("error_code"),
+                row.get("error_message"),
+                row["source_url"],
+                row["retrieved_at"],
+                json.dumps(row.get("raw_response_json"))
+                if row.get("raw_response_json") is not None
+                else None,
+                json.dumps(row.get("provenance_json"))
+                if row.get("provenance_json") is not None
+                else None,
+                row["metric_version"],
+                row.get("ingested_at") or datetime.utcnow(),
+            ],
+        )
+        return observation_key
+
+    def upsert_edition_analytical_metrics(self, row: Dict[str, Any]) -> str:
+        """Idempotent upsert into metrics.edition_analytical_metrics."""
+        metric_key = row["metric_key"]
+        self.conn.execute(
+            """
+            INSERT INTO metrics.edition_analytical_metrics (
+                metric_key, festival_key, edition_key, edition_year, metric_version,
+                attention_hhi, attention_share_json, attention_artist_count,
+                attention_coverage_ratio, attention_missing_flag,
+                billing_arbitrage_score, billing_arbitrage_spearman,
+                billing_arbitrage_coverage_ratio, billing_arbitrage_missing_flag,
+                promoter_shared_inventory_jaccard, promoter_comparison_edition_key,
+                promoter_comparison_festival_key, promoter_comparison_year,
+                promoter_jaccard_missing_flag,
+                exclusivity_gap_km, exclusivity_conflict_count, exclusivity_radius_km,
+                exclusivity_window_days, exclusivity_missing_flag,
+                secondary_spread_abs, secondary_spread_pct, primary_price, secondary_price,
+                primary_currency, secondary_currency, secondary_spread_missing_flag,
+                input_hash, evidence_json, flags_json, computed_at, ingested_at
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
+            ON CONFLICT (metric_key) DO UPDATE SET
+                attention_hhi = excluded.attention_hhi,
+                attention_share_json = excluded.attention_share_json,
+                attention_artist_count = excluded.attention_artist_count,
+                attention_coverage_ratio = excluded.attention_coverage_ratio,
+                attention_missing_flag = excluded.attention_missing_flag,
+                billing_arbitrage_score = excluded.billing_arbitrage_score,
+                billing_arbitrage_spearman = excluded.billing_arbitrage_spearman,
+                billing_arbitrage_coverage_ratio = excluded.billing_arbitrage_coverage_ratio,
+                billing_arbitrage_missing_flag = excluded.billing_arbitrage_missing_flag,
+                promoter_shared_inventory_jaccard = excluded.promoter_shared_inventory_jaccard,
+                promoter_comparison_edition_key = excluded.promoter_comparison_edition_key,
+                promoter_comparison_festival_key = excluded.promoter_comparison_festival_key,
+                promoter_comparison_year = excluded.promoter_comparison_year,
+                promoter_jaccard_missing_flag = excluded.promoter_jaccard_missing_flag,
+                exclusivity_gap_km = excluded.exclusivity_gap_km,
+                exclusivity_conflict_count = excluded.exclusivity_conflict_count,
+                exclusivity_radius_km = excluded.exclusivity_radius_km,
+                exclusivity_window_days = excluded.exclusivity_window_days,
+                exclusivity_missing_flag = excluded.exclusivity_missing_flag,
+                secondary_spread_abs = excluded.secondary_spread_abs,
+                secondary_spread_pct = excluded.secondary_spread_pct,
+                primary_price = excluded.primary_price,
+                secondary_price = excluded.secondary_price,
+                primary_currency = excluded.primary_currency,
+                secondary_currency = excluded.secondary_currency,
+                secondary_spread_missing_flag = excluded.secondary_spread_missing_flag,
+                input_hash = excluded.input_hash,
+                evidence_json = excluded.evidence_json,
+                flags_json = excluded.flags_json,
+                computed_at = excluded.computed_at,
+                ingested_at = excluded.ingested_at
+            """,
+            [
+                metric_key,
+                row["festival_key"],
+                row["edition_key"],
+                row["edition_year"],
+                row["metric_version"],
+                row.get("attention_hhi"),
+                json.dumps(row.get("attention_share_json"))
+                if row.get("attention_share_json") is not None
+                else None,
+                row.get("attention_artist_count"),
+                row.get("attention_coverage_ratio"),
+                row.get("attention_missing_flag"),
+                row.get("billing_arbitrage_score"),
+                row.get("billing_arbitrage_spearman"),
+                row.get("billing_arbitrage_coverage_ratio"),
+                row.get("billing_arbitrage_missing_flag"),
+                row.get("promoter_shared_inventory_jaccard"),
+                row.get("promoter_comparison_edition_key"),
+                row.get("promoter_comparison_festival_key"),
+                row.get("promoter_comparison_year"),
+                row.get("promoter_jaccard_missing_flag"),
+                row.get("exclusivity_gap_km"),
+                row.get("exclusivity_conflict_count"),
+                row.get("exclusivity_radius_km"),
+                row.get("exclusivity_window_days"),
+                row.get("exclusivity_missing_flag"),
+                row.get("secondary_spread_abs"),
+                row.get("secondary_spread_pct"),
+                row.get("primary_price"),
+                row.get("secondary_price"),
+                row.get("primary_currency"),
+                row.get("secondary_currency"),
+                row.get("secondary_spread_missing_flag"),
+                row.get("input_hash"),
+                json.dumps(row.get("evidence_json") or {}),
+                json.dumps(row.get("flags_json") or {}),
+                row.get("computed_at") or datetime.utcnow(),
+                row.get("ingested_at") or datetime.utcnow(),
+            ],
+        )
+        return metric_key
+
+    def get_edition_analytical_metrics(
+        self, edition_key: str, metric_version: str
+    ) -> Optional[Dict[str, Any]]:
+        row = self.conn.execute(
+            """
+            SELECT metric_key, festival_key, edition_key, edition_year, metric_version,
+                   attention_hhi, attention_share_json, attention_artist_count,
+                   attention_coverage_ratio, attention_missing_flag,
+                   billing_arbitrage_score, billing_arbitrage_spearman,
+                   billing_arbitrage_coverage_ratio, billing_arbitrage_missing_flag,
+                   promoter_shared_inventory_jaccard, promoter_comparison_edition_key,
+                   promoter_jaccard_missing_flag,
+                   exclusivity_gap_km, exclusivity_conflict_count, exclusivity_missing_flag,
+                   secondary_spread_abs, secondary_spread_pct, primary_price, secondary_price,
+                   primary_currency, secondary_currency, secondary_spread_missing_flag,
+                   input_hash, evidence_json, flags_json, computed_at
+            FROM metrics.edition_analytical_metrics
+            WHERE edition_key = ? AND metric_version = ?
+            ORDER BY computed_at DESC
+            LIMIT 1
+            """,
+            [edition_key, metric_version],
+        ).fetchone()
+        if not row:
+            return None
+        cols = [
+            "metric_key", "festival_key", "edition_key", "edition_year", "metric_version",
+            "attention_hhi", "attention_share_json", "attention_artist_count",
+            "attention_coverage_ratio", "attention_missing_flag",
+            "billing_arbitrage_score", "billing_arbitrage_spearman",
+            "billing_arbitrage_coverage_ratio", "billing_arbitrage_missing_flag",
+            "promoter_shared_inventory_jaccard", "promoter_comparison_edition_key",
+            "promoter_jaccard_missing_flag",
+            "exclusivity_gap_km", "exclusivity_conflict_count", "exclusivity_missing_flag",
+            "secondary_spread_abs", "secondary_spread_pct", "primary_price", "secondary_price",
+            "primary_currency", "secondary_currency", "secondary_spread_missing_flag",
+            "input_hash", "evidence_json", "flags_json", "computed_at",
+        ]
+        d = dict(zip(cols, row))
+        for key in ("attention_share_json", "evidence_json", "flags_json"):
+            d[key] = self._coerce_json(d[key])
+        return d
 
     # -- helpers ------------------------------------------------------------- #
     @staticmethod
