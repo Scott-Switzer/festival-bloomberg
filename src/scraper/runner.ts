@@ -14,7 +14,12 @@ import { spawnSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { getActiveSources, FestivalSource } from './registry.js';
+import {
+  resolveSourcesByIds,
+  UnknownSourceError,
+  type FestivalSource,
+  type ParserKind,
+} from './registry.js';
 import { getMusicBrainzClient, resolveArtistToMBID, normalizeArtistName } from './musicbrainz.js';
 import { getSpotifyClient, resolveArtistToSpotifyId, extractSpotifyArtistData } from './spotify.js';
 import { getSentimentAggregator } from './sentiment.js';
@@ -33,6 +38,20 @@ import { z } from 'zod';
 // Fetch Tiers
 // ===========================================================================
 
+class FetchError extends Error {
+  readonly url: string;
+  readonly status?: number;
+  readonly causeDetail?: unknown;
+
+  constructor(url: string, message: string, opts?: { status?: number; cause?: unknown }) {
+    super(message);
+    this.name = 'FetchError';
+    this.url = url;
+    this.status = opts?.status;
+    this.causeDetail = opts?.cause;
+  }
+}
+
 interface FetchResult {
   content: string;
   url: string;
@@ -40,16 +59,31 @@ interface FetchResult {
   status: number;
 }
 
+type PlaywrightFetchFn = (url: string) => Promise<FetchResult>;
+
 class Fetcher {
+  private readonly fetchImpl: typeof fetch;
+  private readonly playwrightFetch?: PlaywrightFetchFn;
+
+  constructor(opts?: {
+    fetchImpl?: typeof fetch;
+    playwrightFetch?: PlaywrightFetchFn;
+  }) {
+    this.fetchImpl = opts?.fetchImpl ?? fetch;
+    this.playwrightFetch = opts?.playwrightFetch;
+  }
+
   /**
-   * Fetch content with fallback tiers.
+   * Fetch content with real tiers only (no synthetic/mock HTML).
    * Tier 1: HTTP fetch
-   * Tier 2: Playwright (if available)
+   * Tier 2: Playwright when an implementation is injected
    */
   async fetch(url: string): Promise<FetchResult> {
+    const errors: string[] = [];
+
     // Tier 1: HTTP fetch
     try {
-      const response = await fetch(url);
+      const response = await this.fetchImpl(url);
       if (response.ok) {
         const content = await response.text();
         return {
@@ -59,65 +93,31 @@ class Fetcher {
           status: response.status,
         };
       }
+      errors.push(`http_${response.status}`);
+      console.error(`HTTP fetch failed for ${url}: status ${response.status}`);
     } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      errors.push(`http_error:${msg}`);
       console.error(`HTTP fetch failed for ${url}:`, error);
     }
 
-    // Tier 2: Playwright (placeholder - would require actual Playwright setup)
-    try {
-      // In production, this would launch a headless browser
-      console.log(`Playwright fetch not implemented for ${url}, falling back to mock data`);
-      return this.getMockContent(url);
-    } catch (error) {
-      console.error(`Playwright fetch failed for ${url}:`, error);
+    // Tier 2: Playwright only when a real implementation is provided
+    if (this.playwrightFetch) {
+      try {
+        return await this.playwrightFetch(url);
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        errors.push(`playwright:${msg}`);
+        console.error(`Playwright fetch failed for ${url}:`, error);
+      }
+    } else {
+      errors.push('playwright_unavailable');
     }
 
-    throw new Error(`Failed to fetch ${url} using all available tiers`);
-  }
-
-  /**
-   * Get mock content for testing (replace with actual Playwright in production).
-   */
-  private getMockContent(url: string): FetchResult {
-    const mockContent = this.generateMockLineupHTML(url);
-    return {
-      content: mockContent,
+    throw new FetchError(
       url,
-      method: 'playwright',
-      status: 200,
-    };
-  }
-
-  /**
-   * Generate mock lineup HTML for testing.
-   */
-  private generateMockLineupHTML(url: string): string {
-    const festivalId = url.split('/')[2]?.replace('www.', '').split('.')[0];
-    
-    const mockArtists = [
-      'Radiohead', 'Beyoncé', 'The Weeknd', 'Billie Eilish', 'Taylor Swift',
-      'Kendrick Lamar', 'Drake', 'Adele', 'Ed Sheeran', 'Post Malone',
-      'Dua Lipa', 'Harry Styles', 'Olivia Rodrigo', 'Bad Bunny', 'Rosalia',
-    ];
-
-    const artistList = mockArtists.map(artist => 
-      `<div class="artist"><a href="/artist/${normalizeArtistName(artist)}">${artist}</a></div>`
-    ).join('\n');
-
-    return `
-      <!DOCTYPE html>
-      <html>
-      <head><title>Lineup</title></head>
-      <body>
-        <div class="lineup">
-          <h1>${festivalId} 2025 Lineup</h1>
-          <div class="artists">
-            ${artistList}
-          </div>
-        </div>
-      </body>
-      </html>
-    `;
+      `Failed to fetch ${url} using all available tiers (${errors.join('; ')})`,
+    );
   }
 }
 
@@ -125,63 +125,96 @@ class Fetcher {
 // Lineup Parser
 // ===========================================================================
 
+interface ParsedArtist {
+  name: string;
+  billing_tier?: string;
+  stage?: string;
+  day?: string;
+}
+
 interface ParsedLineup {
   festival_name: string;
   year: number;
-  artists: Array<{
-    name: string;
-    billing_tier?: string;
-    stage?: string;
-    day?: string;
-  }>;
+  artists: ParsedArtist[];
+  parserUsed: ParserKind;
+}
+
+type SpecializedParser = (html: string, source: FestivalSource) => ParsedArtist[];
+
+/**
+ * Only register parsers that are implemented and verified.
+ * Site-specific kinds (coachella, bonnaroo, …) are reserved in registry metadata
+ * but intentionally absent here until dedicated parsers ship — dispatch uses generic.
+ */
+const SPECIALIZED_PARSERS: Partial<Record<ParserKind, SpecializedParser>> = {
+  // No specialized parsers are registered yet.
+};
+
+/** Extract artist names with the verified generic HTML heuristics. */
+function extractArtistsGeneric(html: string): ParsedArtist[] {
+  const artists: ParsedArtist[] = [];
+
+  const artistRegex = /<div[^>]*class="artist"[^>]*>\s*<a[^>]*>([^<]+)<\/a>\s*<\/div>/gi;
+  let match: RegExpExecArray | null;
+
+  while ((match = artistRegex.exec(html)) !== null) {
+    artists.push({
+      name: match[1].trim(),
+      billing_tier: 'unknown',
+    });
+  }
+
+  if (artists.length === 0) {
+    const textRegex = />([A-Z][a-zA-Z\s&]+)</g;
+    const seen = new Set<string>();
+
+    while ((match = textRegex.exec(html)) !== null) {
+      const name = match[1].trim();
+      if (name.length > 2 && name.length < 50 && !seen.has(name)) {
+        artists.push({ name });
+        seen.add(name);
+      }
+    }
+  }
+
+  return artists;
+}
+
+function resolveParserImplementation(kind: ParserKind): {
+  parserUsed: ParserKind;
+  extract: SpecializedParser;
+} {
+  const specialized = SPECIALIZED_PARSERS[kind];
+  if (kind !== 'generic' && specialized) {
+    return { parserUsed: kind, extract: specialized };
+  }
+  return { parserUsed: 'generic', extract: (html) => extractArtistsGeneric(html) };
 }
 
 class LineupParser {
   /**
-   * Parse lineup from HTML content.
+   * Parse lineup from HTML, dispatching by source.parser metadata.
+   * Unimplemented specialized kinds fall back to the verified generic parser.
    */
   parse(html: string, source: FestivalSource): ParsedLineup {
-    const artists = this.extractArtists(html);
-    
+    const { parserUsed, extract } = resolveParserImplementation(source.parser);
+    if (parserUsed !== source.parser) {
+      console.log(
+        `Parser '${source.parser}' is not registered; using verified generic fallback for ${source.id}`,
+      );
+    }
+
     return {
       festival_name: source.name,
       year: source.year,
-      artists,
+      artists: extract(html, source),
+      parserUsed,
     };
   }
 
-  /**
-   * Extract artist names from HTML.
-   */
-  private extractArtists(html: string): Array<{ name: string; billing_tier?: string }> {
-    const artists: Array<{ name: string; billing_tier?: string }> = [];
-    
-    // Simple regex-based extraction (in production, use proper HTML parser)
-    const artistRegex = /<div[^>]*class="artist"[^>]*>\s*<a[^>]*>([^<]+)<\/a>\s*<\/div>/gi;
-    let match;
-    
-    while ((match = artistRegex.exec(html)) !== null) {
-      artists.push({
-        name: match[1].trim(),
-        billing_tier: 'unknown',
-      });
-    }
-
-    // Fallback: look for any text that looks like artist names
-    if (artists.length === 0) {
-      const textRegex = />([A-Z][a-zA-Z\s&]+)</g;
-      const seen = new Set<string>();
-      
-      while ((match = textRegex.exec(html)) !== null) {
-        const name = match[1].trim();
-        if (name.length > 2 && name.length < 50 && !seen.has(name)) {
-          artists.push({ name });
-          seen.add(name);
-        }
-      }
-    }
-
-    return artists;
+  /** Exposed for tests: which implementation would handle a parser kind. */
+  resolveParser(kind: ParserKind): ParserKind {
+    return resolveParserImplementation(kind).parserUsed;
   }
 }
 
@@ -368,12 +401,13 @@ interface RunnerOptions {
 class IngestionRunner {
   private fetcher: Fetcher;
   private parser: LineupParser;
-  private dbWriter: DatabaseWriter;
+  private dbWriter: DatabaseWriter | null = null;
   private options: Required<RunnerOptions>;
+  private failures: Array<{ sourceId: string; error: unknown }> = [];
 
-  constructor(options: RunnerOptions = {}) {
-    this.fetcher = new Fetcher();
-    this.parser = new LineupParser();
+  constructor(options: RunnerOptions = {}, deps?: { fetcher?: Fetcher; parser?: LineupParser }) {
+    this.fetcher = deps?.fetcher ?? new Fetcher();
+    this.parser = deps?.parser ?? new LineupParser();
     this.options = {
       dryRun: options.dryRun ?? false,
       sources: options.sources ?? [],
@@ -381,26 +415,26 @@ class IngestionRunner {
       skipSentiment: options.skipSentiment ?? false,
       dbPath: options.dbPath ?? 'data/warehouse/festival_bloomberg.duckdb',
     };
-    this.dbWriter = new DatabaseWriter({ path: this.options.dbPath });
+  }
+
+  private getDbWriter(): DatabaseWriter {
+    if (!this.dbWriter) {
+      this.dbWriter = new DatabaseWriter({ path: this.options.dbPath });
+    }
+    return this.dbWriter;
   }
 
   /**
    * Run the complete ingestion pipeline.
+   * Throws UnknownSourceError for unregistered --sources IDs.
+   * Throws if any source fails (fetch/parse/write) after logging failures.
    */
   async run(): Promise<void> {
     console.log('Starting Festival Intelligence ingestion pipeline');
     console.log('Options:', this.options);
 
-    const sources = this.options.sources.length > 0
-      ? this.options.sources.map(id => {
-          const source = getActiveSources().find(s => s.id === id);
-          if (!source) {
-            console.warn(`Source ${id} not found in registry`);
-            return { id, name: id, url: id, year: 2025, parser: 'generic' as const, active: true };
-          }
-          return source;
-        })
-      : getActiveSources();
+    // Validate sources before opening the warehouse / applying schema
+    const sources = resolveSourcesByIds(this.options.sources);
 
     console.log(`Processing ${sources.length} festival sources`);
 
@@ -411,17 +445,26 @@ class IngestionRunner {
     // Flush all accumulated data to database
     if (!this.options.dryRun) {
       try {
-        await this.dbWriter.flush();
+        await this.getDbWriter().flush();
       } catch (error) {
         console.error('Batch write failed:', error);
-        process.exit(1);
+        this.dbWriter?.close();
+        throw error;
       }
     }
 
+    this.dbWriter?.close();
+
+    if (this.failures.length > 0) {
+      const summary = this.failures
+        .map((f) => `${f.sourceId}: ${f.error instanceof Error ? f.error.message : String(f.error)}`)
+        .join('; ');
+      throw new Error(
+        `Ingestion completed with ${this.failures.length} failure(s): ${summary}`,
+      );
+    }
+
     console.log('Ingestion pipeline completed');
-    
-    // Close database connection
-    this.dbWriter.close();
   }
 
   /**
@@ -431,21 +474,24 @@ class IngestionRunner {
     console.log(`\nProcessing source: ${source.name} (${source.url})`);
 
     try {
-      // Fetch content
+      // Fetch content — real failures propagate (no mock HTML)
       const fetchResult = await this.fetcher.fetch(source.url);
       console.log(`Fetched content using ${fetchResult.method}`);
 
       // Parse lineup
       const lineup = this.parser.parse(fetchResult.content, source);
-      console.log(`Parsed ${lineup.artists.length} artists from lineup`);
+      console.log(
+        `Parsed ${lineup.artists.length} artists from lineup (parser=${lineup.parserUsed})`,
+      );
 
       // Create festival and edition records
       const festival = this.createFestivalRecord(source, fetchResult);
       const edition = this.createFestivalEditionRecord(source, lineup);
 
       if (!this.options.dryRun) {
-        await this.dbWriter.writeFestival(festival);
-        await this.dbWriter.writeFestivalEdition(edition);
+        const db = this.getDbWriter();
+        await db.writeFestival(festival);
+        await db.writeFestivalEdition(edition);
       }
 
       // Process artists
@@ -454,17 +500,19 @@ class IngestionRunner {
 
       // Write to database
       if (!this.options.dryRun) {
-        await this.dbWriter.writeArtists(artists);
-        await this.dbWriter.writeLineupSlots(lineupSlots);
-        
+        const db = this.getDbWriter();
+        await db.writeArtists(artists);
+        await db.writeLineupSlots(lineupSlots);
+
         // Write observations
         const observations = this.createLineupObservations(lineup, source, fetchResult);
-        await this.dbWriter.writeLineupObservations(observations);
+        await db.writeLineupObservations(observations);
       }
 
       console.log(`Successfully processed ${source.name}`);
     } catch (error) {
       console.error(`Failed to process source ${source.name}:`, error);
+      this.failures.push({ sourceId: source.id, error });
     }
   }
 
@@ -712,7 +760,7 @@ class IngestionRunner {
 
 async function main() {
   const args = process.argv.slice(2);
-  
+
   const options: RunnerOptions = {
     dryRun: args.includes('--dry-run'),
     skipResolution: args.includes('--skip-resolution'),
@@ -734,12 +782,23 @@ async function main() {
 }
 
 // Export for testing
-export { IngestionRunner, Fetcher, LineupParser, DatabaseWriter };
+export {
+  IngestionRunner,
+  Fetcher,
+  FetchError,
+  LineupParser,
+  DatabaseWriter,
+  UnknownSourceError,
+};
 
 // Run if executed directly (CommonJS entrypoint)
 if (require.main === module) {
   main().catch(error => {
-    console.error('Fatal error:', error);
+    if (error instanceof UnknownSourceError) {
+      console.error(`Validation error: ${error.message}`);
+    } else {
+      console.error('Fatal error:', error);
+    }
     process.exit(1);
   });
 }
