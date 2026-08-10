@@ -1247,6 +1247,58 @@ CREATE INDEX IF NOT EXISTS idx_edition_analytical_version
   ON metrics.edition_analytical_metrics (metric_version, computed_at);
 
 -- ===========================================================================
+-- Canonical entity resolution (artists, festivals, venues, events)
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS canonical_entities (
+  id VARCHAR PRIMARY KEY,
+  entity_type VARCHAR NOT NULL CHECK (
+    entity_type IN ('artist', 'festival', 'venue', 'event')
+  ),
+  canonical_name VARCHAR NOT NULL,
+  resolution_status VARCHAR NOT NULL DEFAULT 'unresolved' CHECK (
+    resolution_status IN ('resolved', 'ambiguous', 'unresolved')
+  ),
+  confidence DOUBLE,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS canonical_entity_aliases (
+  entity_id VARCHAR NOT NULL,
+  alias VARCHAR NOT NULL,
+  normalized_alias VARCHAR NOT NULL,
+  source VARCHAR NOT NULL,
+  PRIMARY KEY (entity_id, normalized_alias, source)
+);
+
+CREATE TABLE IF NOT EXISTS canonical_entity_source_ids (
+  entity_id VARCHAR NOT NULL,
+  source VARCHAR NOT NULL,
+  source_id VARCHAR NOT NULL,
+  confidence DOUBLE,
+  PRIMARY KEY (entity_id, source)
+);
+
+CREATE TABLE IF NOT EXISTS canonical_entity_provenance (
+  entity_id VARCHAR NOT NULL,
+  source VARCHAR NOT NULL,
+  field VARCHAR NOT NULL,
+  observed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  details VARCHAR
+);
+
+CREATE TABLE IF NOT EXISTS entity_resolution_reviews (
+  id VARCHAR PRIMARY KEY,
+  entity_type VARCHAR NOT NULL,
+  input_name VARCHAR NOT NULL,
+  candidate_entity_id VARCHAR,
+  confidence DOUBLE NOT NULL,
+  reason VARCHAR NOT NULL,
+  status VARCHAR NOT NULL DEFAULT 'pending',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ===========================================================================
 -- audit - ingestion bookkeeping (written by warehouse.duckdb_manager)
 -- ===========================================================================
 CREATE TABLE IF NOT EXISTS audit.ingest_run (
