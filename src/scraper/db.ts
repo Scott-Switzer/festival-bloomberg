@@ -7,15 +7,26 @@ import { mkdirSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import duckdb from "duckdb";
 import {
+  parseIngestionLog,
+  parseIngestionRun,
   parseCostEvent,
   parseLineup,
   parseObservation,
   parseTelemetryEvent,
   type CostEvent,
+  type IngestionLog,
+  type IngestionRun,
   type Lineup,
   type Observation,
   type TelemetryEvent,
 } from "./schemas";
+import { applyPendingMigrations } from "./migrations";
+import {
+  canonicalizeUrl,
+  mergeEvidence,
+  normalizeText,
+  normalizedContent,
+} from "./normalization";
 
 export const DEFAULT_WAREHOUSE_PATH = "data/warehouse/festival_bloomberg.duckdb";
 export const WAREHOUSE_ENV_VAR = "FESTIVAL_BLOOMBERG_DUCKDB_PATH";
@@ -90,6 +101,56 @@ export type TelemetryRepo = {
   append(event: TelemetryEvent): Promise<void>;
 };
 
+/** Canonical observation prepared by the source-neutral ingestion pipeline. */
+export type CanonicalObservationInput = {
+  observation: Observation;
+  rawContent: string;
+  canonicalUrl: string;
+  normalizedContent: string;
+  contentHash: string;
+  dedupKey: string;
+  winnerKey: string;
+};
+
+export type StoredCanonicalObservation = {
+  observation: Observation;
+  canonicalUrl: string;
+  normalizedContent: string;
+  dedupKey: string;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  seenCount: number;
+};
+
+export type IngestionLogContext = Pick<
+  IngestionLog,
+  | "id"
+  | "runId"
+  | "source"
+  | "sourceRecordId"
+  | "inputHash"
+  | "metadata"
+  | "createdAt"
+  | "updatedAt"
+>;
+
+/**
+ * Persistence contract used by ingestion adapters. Observation merge and the
+ * corresponding success log are committed atomically by `commitObservation`.
+ */
+export type IngestionStore = {
+  getRun(source: string, idempotencyKey: string): Promise<IngestionRun | null>;
+  beginRun(run: IngestionRun): Promise<void>;
+  finishRun(run: IngestionRun): Promise<void>;
+  listLogs(runId: string): Promise<IngestionLog[]>;
+  upsertLog(log: IngestionLog): Promise<void>;
+  commitObservation(
+    input: CanonicalObservationInput,
+    log: IngestionLogContext,
+  ): Promise<IngestionLog>;
+  getCanonicalObservation(id: string): Promise<StoredCanonicalObservation | null>;
+};
+
 /** In-memory adapters for local/dev and tests. */
 export function createMemoryRepos(): ScraperRepositories {
   const observations = new Map<string, Observation>();
@@ -157,9 +218,18 @@ export type DuckDbAdapterOptions = {
 type ObservationRow = {
   id: string;
   source_url: string;
+  canonical_url: string | null;
   raw_content: string | null;
+  normalized_content: string | null;
   content_hash: string | null;
+  dedup_key: string | null;
   retrieved_at: string;
+  published_at: string | null;
+  published_at_precision: string | null;
+  first_seen_at: string | null;
+  last_seen_at: string | null;
+  seen_count: number | null;
+  winner_key: string | null;
   status: string | null;
   kind: string;
   festival_id: string | null;
@@ -211,6 +281,42 @@ type TelemetryRow = {
   meta_json: string | null;
 };
 
+type IngestionRunRow = {
+  id: string;
+  source: string;
+  idempotency_key: string;
+  request_hash: string;
+  adapter_version: string;
+  status: string;
+  started_at: string;
+  completed_at: string | null;
+  attempted_count: number;
+  inserted_count: number;
+  duplicate_count: number;
+  failed_count: number;
+  error_code: string | null;
+  error_message: string | null;
+  metadata_json: string | null;
+};
+
+type IngestionLogRow = {
+  id: string;
+  run_id: string;
+  source: string;
+  source_record_id: string;
+  input_hash: string;
+  status: string;
+  observation_id: string | null;
+  canonical_url: string | null;
+  content_hash: string | null;
+  duplicate_of: string | null;
+  error_code: string | null;
+  error_message: string | null;
+  metadata_json: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 function iso(value: unknown): string {
   if (value instanceof Date) return value.toISOString();
   if (typeof value === "string") {
@@ -234,10 +340,81 @@ function observationFromRow(row: ObservationRow): Observation {
     sourceDomain: row.source_domain,
     url: row.source_url,
     observedAt: iso(row.retrieved_at),
+    ...(row.published_at
+      ? { publishedAt: iso(row.published_at) }
+      : {}),
+    ...(row.published_at_precision
+      ? {
+          publishedAtPrecision: row.published_at_precision as Observation["publishedAtPrecision"],
+        }
+      : {}),
     payload: JSON.parse(row.payload_json ?? row.raw_content ?? "null"),
     evidence: JSON.parse(row.evidence_json ?? "[]"),
     tier: row.tier ?? undefined,
     contentHash: row.content_hash ?? undefined,
+  });
+}
+
+function storedCanonicalObservationFromRow(
+  row: ObservationRow,
+): StoredCanonicalObservation {
+  if (
+    row.canonical_url === null ||
+    row.normalized_content === null ||
+    row.dedup_key === null ||
+    row.first_seen_at === null ||
+    row.last_seen_at === null
+  ) {
+    throw new Error(`Observation ${row.id} is not a canonical ingestion row`);
+  }
+  return {
+    observation: observationFromRow(row),
+    canonicalUrl: row.canonical_url,
+    normalizedContent: row.normalized_content,
+    dedupKey: row.dedup_key,
+    firstSeenAt: iso(row.first_seen_at),
+    lastSeenAt: iso(row.last_seen_at),
+    seenCount: Number(row.seen_count ?? 1),
+  };
+}
+
+function ingestionRunFromRow(row: IngestionRunRow): IngestionRun {
+  return parseIngestionRun({
+    id: row.id,
+    source: row.source,
+    idempotencyKey: row.idempotency_key,
+    requestHash: row.request_hash,
+    adapterVersion: row.adapter_version,
+    status: row.status,
+    startedAt: iso(row.started_at),
+    ...(row.completed_at ? { completedAt: iso(row.completed_at) } : {}),
+    attemptedCount: Number(row.attempted_count),
+    insertedCount: Number(row.inserted_count),
+    duplicateCount: Number(row.duplicate_count),
+    failedCount: Number(row.failed_count),
+    ...(row.error_code ? { errorCode: row.error_code } : {}),
+    ...(row.error_message ? { errorMessage: row.error_message } : {}),
+    metadata: JSON.parse(row.metadata_json ?? "{}"),
+  });
+}
+
+function ingestionLogFromRow(row: IngestionLogRow): IngestionLog {
+  return parseIngestionLog({
+    id: row.id,
+    runId: row.run_id,
+    source: row.source,
+    sourceRecordId: row.source_record_id,
+    inputHash: row.input_hash,
+    status: row.status,
+    ...(row.observation_id ? { observationId: row.observation_id } : {}),
+    ...(row.canonical_url ? { canonicalUrl: row.canonical_url } : {}),
+    ...(row.content_hash ? { contentHash: row.content_hash } : {}),
+    ...(row.duplicate_of ? { duplicateOf: row.duplicate_of } : {}),
+    ...(row.error_code ? { errorCode: row.error_code } : {}),
+    ...(row.error_message ? { errorMessage: row.error_message } : {}),
+    metadata: JSON.parse(row.metadata_json ?? "{}"),
+    createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at),
   });
 }
 
@@ -287,8 +464,10 @@ export class DuckDbAdapter implements ScraperRepositories {
   readonly lineups: LineupRepo;
   readonly costs: CostRepo;
   readonly telemetry: TelemetryRepo;
+  readonly ingestion: IngestionStore;
   private readonly client: DuckDbClientLike | null;
   private ready: Promise<void>;
+  private ingestionTail: Promise<void> = Promise.resolve();
 
   constructor(opts: DuckDbAdapterOptions = {}) {
     this.client = opts.client ?? null;
@@ -308,16 +487,38 @@ export class DuckDbAdapter implements ScraperRepositories {
         const contentHash =
           parsed.contentHash ??
           createHash("sha256").update(rawContent).digest("hex");
+        let canonicalUrl = parsed.url;
+        try {
+          canonicalUrl = canonicalizeUrl(parsed.url);
+        } catch {
+          // The legacy API accepts any Zod URL; strict web-only handling lives
+          // in the canonical ingestion pipeline.
+        }
+        let normalized = normalizeText(rawContent);
+        try {
+          normalized = normalizedContent(parsed.payload);
+        } catch {
+          // Preserve compatibility for legacy non-JSON payload objects.
+        }
         await this.client.run(
           `INSERT INTO observations (
-            id, source_url, raw_content, content_hash, retrieved_at, status,
-            kind, festival_id, edition_id, source_domain, tier, evidence_json, payload_json
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            id, source_url, canonical_url, raw_content, normalized_content,
+            content_hash, retrieved_at, published_at, published_at_precision,
+            first_seen_at, last_seen_at, seen_count,
+            status, kind, festival_id, edition_id, source_domain, tier,
+            evidence_json, payload_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT (id) DO UPDATE SET
             source_url = EXCLUDED.source_url,
+            canonical_url = EXCLUDED.canonical_url,
             raw_content = EXCLUDED.raw_content,
+            normalized_content = EXCLUDED.normalized_content,
             content_hash = EXCLUDED.content_hash,
             retrieved_at = EXCLUDED.retrieved_at,
+            published_at = EXCLUDED.published_at,
+            published_at_precision = EXCLUDED.published_at_precision,
+            first_seen_at = COALESCE(observations.first_seen_at, EXCLUDED.first_seen_at),
+            last_seen_at = EXCLUDED.last_seen_at,
             status = EXCLUDED.status,
             kind = EXCLUDED.kind,
             festival_id = EXCLUDED.festival_id,
@@ -328,9 +529,16 @@ export class DuckDbAdapter implements ScraperRepositories {
             payload_json = EXCLUDED.payload_json`,
           parsed.id,
           parsed.url,
+          canonicalUrl,
           rawContent,
+          normalized,
           contentHash,
           parsed.observedAt,
+          parsed.publishedAt ?? null,
+          parsed.publishedAtPrecision ?? null,
+          parsed.observedAt,
+          parsed.observedAt,
+          1,
           "ok",
           parsed.kind,
           parsed.festivalId ?? null,
@@ -354,7 +562,10 @@ export class DuckDbAdapter implements ScraperRepositories {
         await this.ready;
         if (!this.client) return [];
         const rows = await this.client.all<ObservationRow>(
-          `SELECT * FROM observations WHERE festival_id = ? LIMIT ?`,
+          `SELECT * FROM observations
+           WHERE festival_id = ?
+           ORDER BY COALESCE(published_at, retrieved_at) DESC, id
+           LIMIT ?`,
           festivalId,
           limit,
         );
@@ -494,6 +705,331 @@ export class DuckDbAdapter implements ScraperRepositories {
         );
       },
     };
+
+    this.ingestion = {
+      getRun: async (source, idempotencyKey) => {
+        await this.ready;
+        if (!this.client) return null;
+        const rows = await this.client.all<IngestionRunRow>(
+          `SELECT * FROM ingestion_runs
+           WHERE source = ? AND idempotency_key = ?
+           LIMIT 1`,
+          source,
+          idempotencyKey,
+        );
+        return rows[0] ? ingestionRunFromRow(rows[0]) : null;
+      },
+      beginRun: async (run) => {
+        await this.ready;
+        if (!this.client) throw new Error("duckdb_ingestion_unavailable");
+        const parsed = parseIngestionRun(run);
+        const client = this.client;
+        await this.withIngestionLock(() =>
+          Promise.resolve(client.run(
+            `INSERT INTO ingestion_runs (
+            id, source, idempotency_key, request_hash, adapter_version, status,
+            started_at, completed_at, attempted_count, inserted_count,
+            duplicate_count, failed_count, error_code, error_message, metadata_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT (source, idempotency_key) DO UPDATE SET
+            request_hash = EXCLUDED.request_hash,
+            adapter_version = EXCLUDED.adapter_version,
+            status = EXCLUDED.status,
+            completed_at = NULL,
+            error_code = NULL,
+            error_message = NULL,
+            metadata_json = EXCLUDED.metadata_json
+          WHERE ingestion_runs.request_hash = EXCLUDED.request_hash
+            AND ingestion_runs.adapter_version = EXCLUDED.adapter_version
+            AND ingestion_runs.status <> 'succeeded'`,
+            parsed.id,
+            parsed.source,
+            parsed.idempotencyKey,
+            parsed.requestHash,
+            parsed.adapterVersion,
+            parsed.status,
+            parsed.startedAt,
+            parsed.completedAt ?? null,
+            parsed.attemptedCount,
+            parsed.insertedCount,
+            parsed.duplicateCount,
+            parsed.failedCount,
+            parsed.errorCode ?? null,
+            parsed.errorMessage ?? null,
+            JSON.stringify(parsed.metadata),
+          )),
+        );
+      },
+      finishRun: async (run) => {
+        await this.ready;
+        if (!this.client) throw new Error("duckdb_ingestion_unavailable");
+        const parsed = parseIngestionRun(run);
+        const client = this.client;
+        await this.withIngestionLock(() =>
+          Promise.resolve(client.run(
+            `UPDATE ingestion_runs SET
+            status = ?, completed_at = ?, attempted_count = ?,
+            inserted_count = ?, duplicate_count = ?, failed_count = ?,
+            error_code = ?, error_message = ?, metadata_json = ?
+           WHERE id = ?`,
+            parsed.status,
+            parsed.completedAt ?? null,
+            parsed.attemptedCount,
+            parsed.insertedCount,
+            parsed.duplicateCount,
+            parsed.failedCount,
+            parsed.errorCode ?? null,
+            parsed.errorMessage ?? null,
+            JSON.stringify(parsed.metadata),
+            parsed.id,
+          )),
+        );
+      },
+      listLogs: async (runId) => {
+        await this.ready;
+        if (!this.client) return [];
+        const rows = await this.client.all<IngestionLogRow>(
+          `SELECT * FROM ingestion_logs
+           WHERE run_id = ?
+           ORDER BY source_record_id, id`,
+          runId,
+        );
+        return rows.map(ingestionLogFromRow);
+      },
+      upsertLog: async (log) => {
+        await this.ready;
+        if (!this.client) throw new Error("duckdb_ingestion_unavailable");
+        await this.withIngestionLock(() =>
+          this.writeIngestionLog(parseIngestionLog(log)),
+        );
+      },
+      commitObservation: async (input, log) => {
+        await this.ready;
+        if (!this.client) throw new Error("duckdb_ingestion_unavailable");
+        return this.withIngestionLock(() =>
+          this.commitCanonicalObservation(input, log),
+        );
+      },
+      getCanonicalObservation: async (id) => {
+        await this.ready;
+        if (!this.client) return null;
+        const rows = await this.client.all<ObservationRow>(
+          `SELECT * FROM observations WHERE id = ? LIMIT 1`,
+          id,
+        );
+        const row = rows[0];
+        if (!row?.dedup_key) return null;
+        return storedCanonicalObservationFromRow(row);
+      },
+    };
+  }
+
+  private async withIngestionLock<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.ingestionTail;
+    let release: () => void = () => undefined;
+    this.ingestionTail = new Promise<void>((resolvePromise) => {
+      release = resolvePromise;
+    });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
+
+  private async writeIngestionLog(log: IngestionLog): Promise<void> {
+    if (!this.client) throw new Error("duckdb_ingestion_unavailable");
+    await this.client.run(
+      `INSERT INTO ingestion_logs (
+        id, run_id, source, source_record_id, input_hash, status,
+        observation_id, canonical_url, content_hash, duplicate_of,
+        error_code, error_message, metadata_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (run_id, source_record_id) DO UPDATE SET
+        input_hash = EXCLUDED.input_hash,
+        status = EXCLUDED.status,
+        observation_id = EXCLUDED.observation_id,
+        canonical_url = EXCLUDED.canonical_url,
+        content_hash = EXCLUDED.content_hash,
+        duplicate_of = EXCLUDED.duplicate_of,
+        error_code = EXCLUDED.error_code,
+        error_message = EXCLUDED.error_message,
+        metadata_json = EXCLUDED.metadata_json,
+        updated_at = EXCLUDED.updated_at`,
+      log.id,
+      log.runId,
+      log.source,
+      log.sourceRecordId,
+      log.inputHash,
+      log.status,
+      log.observationId ?? null,
+      log.canonicalUrl ?? null,
+      log.contentHash ?? null,
+      log.duplicateOf ?? null,
+      log.errorCode ?? null,
+      log.errorMessage ?? null,
+      JSON.stringify(log.metadata),
+      log.createdAt,
+      log.updatedAt,
+    );
+  }
+
+  private async commitCanonicalObservation(
+    input: CanonicalObservationInput,
+    log: IngestionLogContext,
+  ): Promise<IngestionLog> {
+    if (!this.client) throw new Error("duckdb_ingestion_unavailable");
+    const observation = parseObservation(input.observation);
+    if (observation.contentHash !== input.contentHash) {
+      throw new Error("canonical_observation_content_hash_mismatch");
+    }
+
+    await this.client.run("BEGIN TRANSACTION");
+    try {
+      const rows = await this.client.all<ObservationRow>(
+        `SELECT * FROM observations WHERE dedup_key = ? LIMIT 1`,
+        input.dedupKey,
+      );
+      const existing = rows[0];
+      let status: "inserted" | "duplicate";
+      let duplicateOf: string | undefined;
+
+      if (!existing) {
+        const payloadJson = JSON.stringify(observation.payload ?? null);
+        await this.client.run(
+          `INSERT INTO observations (
+            id, source_url, canonical_url, raw_content, normalized_content,
+            content_hash, dedup_key, retrieved_at, published_at,
+            published_at_precision, first_seen_at, last_seen_at,
+            seen_count, winner_key, status, kind, festival_id, edition_id,
+            source_domain, tier, evidence_json, payload_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT (dedup_key) DO NOTHING`,
+          observation.id,
+          observation.url,
+          input.canonicalUrl,
+          input.rawContent,
+          input.normalizedContent,
+          input.contentHash,
+          input.dedupKey,
+          observation.observedAt,
+          observation.publishedAt ?? null,
+          observation.publishedAtPrecision ?? null,
+          observation.observedAt,
+          observation.observedAt,
+          1,
+          input.winnerKey,
+          "ok",
+          observation.kind,
+          observation.festivalId ?? null,
+          observation.editionId ?? null,
+          observation.sourceDomain,
+          observation.tier ?? null,
+          JSON.stringify(observation.evidence),
+          payloadJson,
+        );
+        const inserted = await this.client.all<ObservationRow>(
+          `SELECT * FROM observations WHERE dedup_key = ? LIMIT 1`,
+          input.dedupKey,
+        );
+        if (!inserted[0]) throw new Error("canonical_observation_insert_failed");
+        status = inserted[0].id === observation.id ? "inserted" : "duplicate";
+        duplicateOf = status === "duplicate" ? inserted[0].id : undefined;
+      } else {
+        const existingObservation = observationFromRow(existing);
+        const evidence = mergeEvidence(
+          existingObservation.evidence,
+          observation.evidence,
+        );
+        const incomingWins =
+          !existing.winner_key || input.winnerKey < existing.winner_key;
+        const winner = incomingWins ? observation : existingObservation;
+        const payloadJson = incomingWins
+          ? JSON.stringify(observation.payload ?? null)
+          : (existing.payload_json ?? "null");
+        const rawContent = incomingWins
+          ? input.rawContent
+          : existing.raw_content;
+        const existingFirstSeen = iso(
+          existing.first_seen_at ?? existing.retrieved_at,
+        );
+        const existingLastSeen = iso(
+          existing.last_seen_at ?? existing.retrieved_at,
+        );
+        const firstSeenAt =
+          Date.parse(existingFirstSeen) <= Date.parse(observation.observedAt)
+            ? existingFirstSeen
+            : observation.observedAt;
+        const lastSeenAt =
+          Date.parse(existingLastSeen) >= Date.parse(observation.observedAt)
+            ? existingLastSeen
+            : observation.observedAt;
+        const mergedPublishedAt =
+          incomingWins && observation.publishedAt
+            ? observation.publishedAt
+            : existing.published_at
+              ? iso(existing.published_at)
+              : null;
+        const mergedPublishedPrecision =
+          incomingWins && observation.publishedAtPrecision
+            ? observation.publishedAtPrecision
+            : existing.published_at_precision;
+
+        await this.client.run(
+          `UPDATE observations SET
+            source_url = ?, canonical_url = ?, raw_content = ?,
+            normalized_content = ?, content_hash = ?, retrieved_at = ?,
+            published_at = ?, published_at_precision = ?,
+            first_seen_at = ?, last_seen_at = ?, seen_count = ?,
+            winner_key = ?, status = 'ok', kind = ?, festival_id = ?,
+            edition_id = ?, source_domain = ?, tier = ?, evidence_json = ?,
+            payload_json = ?
+           WHERE dedup_key = ?`,
+          winner.url,
+          incomingWins ? input.canonicalUrl : existing.canonical_url,
+          rawContent,
+          incomingWins ? input.normalizedContent : existing.normalized_content,
+          input.contentHash,
+          winner.observedAt,
+          mergedPublishedAt,
+          mergedPublishedPrecision,
+          firstSeenAt,
+          lastSeenAt,
+          Number(existing.seen_count ?? 1) + 1,
+          incomingWins ? input.winnerKey : existing.winner_key,
+          winner.kind,
+          winner.festivalId ?? null,
+          winner.editionId ?? null,
+          winner.sourceDomain,
+          winner.tier ?? null,
+          JSON.stringify(evidence),
+          payloadJson,
+          input.dedupKey,
+        );
+        status = "duplicate";
+        duplicateOf = existing.id;
+      }
+
+      const committedLog = parseIngestionLog({
+        ...log,
+        status,
+        observationId: observation.id,
+        canonicalUrl: input.canonicalUrl,
+        contentHash: input.contentHash,
+        duplicateOf,
+      });
+      await this.writeIngestionLog(committedLog);
+      await this.client.run("COMMIT");
+      return committedLog;
+    } catch (error) {
+      try {
+        await this.client.run("ROLLBACK");
+      } catch {
+        // Preserve the original storage error.
+      }
+      throw error;
+    }
   }
 
   get available(): boolean {
@@ -502,74 +1038,17 @@ export class DuckDbAdapter implements ScraperRepositories {
 
   async close(): Promise<void> {
     await this.ready;
+    // Explicitly checkpoint before closing. The legacy Node binding can retain
+    // recently committed pages across rapid close/reopen cycles in test/worker
+    // processes unless a checkpoint is requested.
+    if (this.client) await this.client.run("CHECKPOINT");
     await this.client?.close?.();
   }
 
   /** Idempotent schema creation / migration. */
   private async migrate(): Promise<void> {
     if (!this.client) return;
-    await this.client.run(`
-      CREATE TABLE IF NOT EXISTS observations (
-        id VARCHAR PRIMARY KEY,
-        source_url VARCHAR NOT NULL,
-        raw_content VARCHAR,
-        content_hash VARCHAR,
-        retrieved_at TIMESTAMP NOT NULL,
-        status VARCHAR,
-        kind VARCHAR NOT NULL,
-        festival_id VARCHAR,
-        edition_id VARCHAR,
-        source_domain VARCHAR NOT NULL,
-        tier VARCHAR,
-        evidence_json VARCHAR,
-        payload_json VARCHAR
-      )
-    `);
-    await this.client.run(`
-      CREATE TABLE IF NOT EXISTS lineups (
-        id VARCHAR PRIMARY KEY,
-        festival_id VARCHAR NOT NULL,
-        edition_id VARCHAR NOT NULL,
-        raw_artists VARCHAR,
-        parsed_artists VARCHAR,
-        confidence DOUBLE,
-        extracted_at TIMESTAMP,
-        source_domain VARCHAR NOT NULL,
-        announced_at TIMESTAMP,
-        UNIQUE (festival_id, edition_id)
-      )
-    `);
-    await this.client.run(`
-      CREATE TABLE IF NOT EXISTS costs (
-        id VARCHAR PRIMARY KEY,
-        provider VARCHAR NOT NULL,
-        endpoint VARCHAR,
-        input_tokens INTEGER,
-        output_tokens INTEGER,
-        estimated_cost_usd DOUBLE,
-        timestamp TIMESTAMP NOT NULL,
-        operation VARCHAR NOT NULL,
-        units DOUBLE,
-        unit_cost_usd DOUBLE,
-        currency VARCHAR,
-        meta_json VARCHAR
-      )
-    `);
-    await this.client.run(`
-      CREATE TABLE IF NOT EXISTS telemetry (
-        id VARCHAR PRIMARY KEY,
-        event_type VARCHAR NOT NULL,
-        duration_ms DOUBLE,
-        status VARCHAR,
-        error VARCHAR,
-        timestamp TIMESTAMP NOT NULL,
-        level VARCHAR,
-        domain VARCHAR,
-        url VARCHAR,
-        tier VARCHAR,
-        meta_json VARCHAR
-      )
-    `);
+    await applyPendingMigrations(this.client);
   }
 }
 

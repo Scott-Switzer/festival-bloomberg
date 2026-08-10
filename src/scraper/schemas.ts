@@ -61,6 +61,17 @@ export const ObservationKindSchema = z.enum([
 ]);
 export type ObservationKind = z.infer<typeof ObservationKindSchema>;
 
+export const PublishedAtPrecisionSchema = z.enum([
+  "second",
+  "minute",
+  "hour",
+  "day",
+  "month",
+  "year",
+  "unknown",
+]);
+export type PublishedAtPrecision = z.infer<typeof PublishedAtPrecisionSchema>;
+
 export const ObservationSchema = z.object({
   id: z.string().min(1),
   kind: ObservationKindSchema,
@@ -68,7 +79,11 @@ export const ObservationSchema = z.object({
   editionId: z.string().optional(),
   sourceDomain: z.string().min(1),
   url: z.string().url(),
+  /** Local retrieval / scrape time — not the source publication time. */
   observedAt: z.string().datetime(),
+  /** Source publication time when known; used for point-in-time ordering. */
+  publishedAt: z.string().datetime().optional(),
+  publishedAtPrecision: PublishedAtPrecisionSchema.optional(),
   payload: z.unknown(),
   evidence: z.array(EvidenceCoordinateSchema).default([]),
   tier: z
@@ -77,6 +92,105 @@ export const ObservationSchema = z.object({
   contentHash: z.string().optional(),
 });
 export type Observation = z.infer<typeof ObservationSchema>;
+
+/**
+ * Source-neutral record emitted by ingestion adapters before canonicalization.
+ * `subjectKey` can deliberately merge equivalent records across distinct URLs;
+ * without it, the canonical URL is part of the deterministic deduplication key.
+ */
+export const IngestionRecordSchema = z.object({
+  kind: ObservationKindSchema,
+  festivalId: z.string().min(1).optional(),
+  editionId: z.string().min(1).optional(),
+  url: z.string().url(),
+  /** Local retrieval / scrape time — not the source publication time. */
+  observedAt: z.string().datetime(),
+  /** Source publication time when known; used for point-in-time ordering. */
+  publishedAt: z.string().datetime().optional(),
+  publishedAtPrecision: PublishedAtPrecisionSchema.optional(),
+  payload: z.unknown(),
+  evidence: z.array(EvidenceCoordinateSchema).default([]),
+  tier: z
+    .enum(["fresh_cache", "local_http", "playwright", "monid", "apify"])
+    .optional(),
+  deduplicationText: z.string().optional(),
+  subjectKey: z.string().min(1).optional(),
+  metadata: z.record(z.string(), z.unknown()).default({}),
+});
+export type IngestionRecord = z.infer<typeof IngestionRecordSchema>;
+
+/** Point-in-time ordering key: publication time when known, else retrieval time. */
+export function effectiveObservationTime(input: {
+  observedAt: string;
+  publishedAt?: string;
+}): string {
+  const value = input.publishedAt ?? input.observedAt;
+  return new Date(value).toISOString();
+}
+
+/** Whether an observation is knowable at a backtest as-of timestamp. */
+export function isObservationKnowableAt(
+  observation: { observedAt: string; publishedAt?: string },
+  asOfIso: string,
+): boolean {
+  return (
+    Date.parse(effectiveObservationTime(observation)) <= Date.parse(asOfIso)
+  );
+}
+
+export const IngestionRunStatusSchema = z.enum([
+  "running",
+  "succeeded",
+  "partial",
+  "failed",
+]);
+export type IngestionRunStatus = z.infer<typeof IngestionRunStatusSchema>;
+
+export const IngestionLogStatusSchema = z.enum([
+  "inserted",
+  "duplicate",
+  "failed",
+  "skipped",
+]);
+export type IngestionLogStatus = z.infer<typeof IngestionLogStatusSchema>;
+
+export const IngestionRunSchema = z.object({
+  id: z.string().min(1),
+  source: z.string().min(1),
+  idempotencyKey: z.string().min(1),
+  requestHash: z.string().length(64),
+  adapterVersion: z.string().min(1),
+  status: IngestionRunStatusSchema,
+  startedAt: z.string().datetime(),
+  completedAt: z.string().datetime().optional(),
+  attemptedCount: z.number().int().nonnegative().default(0),
+  insertedCount: z.number().int().nonnegative().default(0),
+  duplicateCount: z.number().int().nonnegative().default(0),
+  failedCount: z.number().int().nonnegative().default(0),
+  errorCode: z.string().optional(),
+  errorMessage: z.string().optional(),
+  metadata: z.record(z.string(), z.unknown()).default({}),
+});
+export type IngestionRun = z.infer<typeof IngestionRunSchema>;
+
+export const IngestionLogSchema = z.object({
+  id: z.string().min(1),
+  runId: z.string().min(1),
+  source: z.string().min(1),
+  sourceRecordId: z.string().min(1),
+  inputHash: z.string().length(64),
+  status: IngestionLogStatusSchema,
+  observationId: z.string().optional(),
+  canonicalUrl: z.string().url().optional(),
+  contentHash: z.string().length(64).optional(),
+  duplicateOf: z.string().optional(),
+  errorCode: z.string().optional(),
+  errorMessage: z.string().optional(),
+  metadata: z.record(z.string(), z.unknown()).default({}),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+export type IngestionLog = z.infer<typeof IngestionLogSchema>;
 
 export const CostEventSchema = z.object({
   id: z.string().min(1),
@@ -110,6 +224,18 @@ export type TelemetryEvent = z.infer<typeof TelemetryEventSchema>;
 
 export function parseObservation(input: unknown): Observation {
   return ObservationSchema.parse(input);
+}
+
+export function parseIngestionRecord(input: unknown): IngestionRecord {
+  return IngestionRecordSchema.parse(input);
+}
+
+export function parseIngestionRun(input: unknown): IngestionRun {
+  return IngestionRunSchema.parse(input);
+}
+
+export function parseIngestionLog(input: unknown): IngestionLog {
+  return IngestionLogSchema.parse(input);
 }
 
 export function parseLineup(input: unknown): Lineup {

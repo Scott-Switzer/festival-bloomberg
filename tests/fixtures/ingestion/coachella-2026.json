@@ -1,0 +1,113 @@
+{
+  "source": "coachella_fixture",
+  "adapterVersion": "2026-08-10",
+  "idempotencyKey": "coachella-2026-lineup-snapshot-001",
+  "records": [
+    {
+      "sourceRecordId": "official-lineup-later",
+      "record": {
+        "kind": "lineup",
+        "festivalId": "fest_coachella",
+        "editionId": "ed_coachella_2026",
+        "url": "https://www.coachella.com:443/lineup?b=2&utm_source=newsletter&a=1#artists",
+        "observedAt": "2026-01-15T12:10:00.000Z",
+        "payload": {
+          "headline": "  Coachella 2026 Lineup  ",
+          "artists": ["Beyoncé", "Artist A"]
+        },
+        "deduplicationText": "  Beyoncé •   Artist A\n",
+        "evidence": [
+          {
+            "url": "https://www.coachella.com/lineup?a=1&b=2&utm_medium=email#artists",
+            "selector": " #lineup ",
+            "snippet": " Beyoncé • Artist A ",
+            "fetchedAt": "2026-01-15T12:10:00.000Z"
+          }
+        ],
+        "tier": "local_http",
+        "metadata": {
+          "feed": "official-site",
+          "httpStatus": 200
+        }
+      }
+    },
+    {
+      "sourceRecordId": "official-lineup-original",
+      "record": {
+        "kind": "lineup",
+        "festivalId": "fest_coachella",
+        "editionId": "ed_coachella_2026",
+        "url": "https://WWW.COACHELLA.COM/lineup?a=1&fbclid=click-id&b=2#top",
+        "observedAt": "2026-01-15T12:00:00Z",
+        "payload": {
+          "artists": ["Beyoncé", "Artist A"],
+          "headline": "Coachella 2026 Lineup"
+        },
+        "deduplicationText": "Beyoncé • Artist A",
+        "evidence": [
+          {
+            "url": "https://www.coachella.com/lineup?b=2&a=1",
+            "selector": "#lineup",
+            "snippet": "Beyoncé • Artist A",
+            "fetchedAt": "2026-01-15T12:00:00.000Z"
+          }
+        ],
+        "tier": "fresh_cache",
+        "metadata": {
+          "feed": "official-cache",
+          "httpStatus": 200
+        }
+      }
+    },
+    {
+      "sourceRecordId": "official-lineup-update",
+      "record": {
+        "kind": "lineup",
+        "festivalId": "fest_coachella",
+        "editionId": "ed_coachella_2026",
+        "url": "https://www.coachella.com/lineup?a=1&b=2",
+        "observedAt": "2026-01-16T09:00:00.000Z",
+        "payload": {
+          "headline": "Coachella 2026 Lineup Updated",
+          "artists": ["Beyoncé", "Artist A", "Artist B"]
+        },
+        "deduplicationText": "Beyoncé • Artist A • Artist B",
+        "evidence": [
+          {
+            "url": "https://www.coachella.com/lineup?a=1&b=2",
+            "selector": "#lineup",
+            "snippet": "Beyoncé • Artist A • Artist B",
+            "fetchedAt": "2026-01-16T09:00:00.000Z"
+          }
+        ],
+        "tier": "local_http",
+        "metadata": {
+          "feed": "official-site",
+          "revision": 2
+        }
+      }
+    },
+    {
+      "sourceRecordId": "official-passes",
+      "transientFailure": true,
+      "record": {
+        "kind": "ticket",
+        "festivalId": "fest_coachella",
+        "editionId": "ed_coachella_2026",
+        "url": "https://www.coachella.com/passes?utm_campaign=launch",
+        "observedAt": "2026-01-16T09:05:00.000Z",
+        "payload": {
+          "status": "On sale",
+          "type": "Weekend 1"
+        },
+        "deduplicationText": "Weekend 1 passes on sale",
+        "evidence": [],
+        "tier": "local_http",
+        "metadata": {
+          "feed": "official-site",
+          "httpStatus": 200
+        }
+      }
+    }
+  ]
+}

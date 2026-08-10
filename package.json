@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "tsc",
+    "build": "tsc && node -e \"const fs=require('node:fs');const path=require('node:path');function copyDir(src,dest){fs.mkdirSync(dest,{recursive:true});for(const entry of fs.readdirSync(src,{withFileTypes:true})){const from=path.join(src,entry.name);const to=path.join(dest,entry.name);if(entry.isDirectory())copyDir(from,to);else fs.copyFileSync(from,to);}};fs.mkdirSync('dist/schema',{recursive:true});fs.copyFileSync('schema/duckdb.sql','dist/schema/duckdb.sql');copyDir('schema/migrations','dist/schema/migrations');\"",
     "test": "npm run build && node --test dist/tests/portfolio_metrics.test.js dist/tests/scraper/*.test.js",
     "test:python": "PYTHONPATH=python python3 -m pytest tests/python -q",
     "test:all": "npm test && npm run test:python",
