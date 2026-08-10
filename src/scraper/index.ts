@@ -8,5 +8,6 @@ export * from "./parser";
 export * from "./db";
 export * from "./duckdb_schema";
 export * from "./normalization";
+export * from "./migrations";
 export * from "./ingestion";
 export * from "./sentiment";

@@ -92,6 +92,8 @@ def test_migrate_upgrades_legacy_observations_without_data_loss(tmp_path: Path):
             "last_seen_at",
             "seen_count",
             "winner_key",
+            "published_at",
+            "published_at_precision",
         }.issubset(columns)
         row = db.connection.execute(
             """
@@ -108,8 +110,19 @@ def test_migrate_upgrades_legacy_observations_without_data_loss(tmp_path: Path):
         assert row[5] == 1
         # Legacy rows remain outside canonical dedup to preserve history.
         assert row[6] is None
+        # Upgraded legacy tables keep their original relaxed table constraints.
+        status_column = next(
+            row for row in db.connection.execute(
+                "PRAGMA table_info('observations')"
+            ).fetchall()
+            if row[1] == "status"
+        )
+        assert status_column[3] == 0  # notnull
         assert db.connection.execute(
             "SELECT COUNT(*) FROM schema_migrations WHERE version = 1"
+        ).fetchone() == (1,)
+        assert db.connection.execute(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version = 2"
         ).fetchone() == (1,)
 
 

@@ -14,11 +14,9 @@ from typing import Any
 
 import duckdb
 
+from .migrations import apply_pending_migrations
 from .paths import resolve_warehouse_path
 from .vader_sentiment import SentimentScore, score_text
-
-CANONICAL_SCHEMA_PATH = Path(__file__).resolve().parents[2] / "schema" / "duckdb.sql"
-SCHEMA_SQL = CANONICAL_SCHEMA_PATH.read_text(encoding="utf-8")
 
 
 class DuckDbWarehouse:
@@ -29,8 +27,8 @@ class DuckDbWarehouse:
         self._conn = duckdb.connect(str(self.path))
         self.migrate()
 
-    def migrate(self) -> None:
-        self._conn.execute(SCHEMA_SQL)
+    def migrate(self) -> int:
+        return apply_pending_migrations(self._conn)
 
     @property
     def connection(self) -> duckdb.DuckDBPyConnection:

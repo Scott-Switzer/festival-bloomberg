@@ -61,6 +61,17 @@ export const ObservationKindSchema = z.enum([
 ]);
 export type ObservationKind = z.infer<typeof ObservationKindSchema>;
 
+export const PublishedAtPrecisionSchema = z.enum([
+  "second",
+  "minute",
+  "hour",
+  "day",
+  "month",
+  "year",
+  "unknown",
+]);
+export type PublishedAtPrecision = z.infer<typeof PublishedAtPrecisionSchema>;
+
 export const ObservationSchema = z.object({
   id: z.string().min(1),
   kind: ObservationKindSchema,
@@ -68,7 +79,11 @@ export const ObservationSchema = z.object({
   editionId: z.string().optional(),
   sourceDomain: z.string().min(1),
   url: z.string().url(),
+  /** Local retrieval / scrape time — not the source publication time. */
   observedAt: z.string().datetime(),
+  /** Source publication time when known; used for point-in-time ordering. */
+  publishedAt: z.string().datetime().optional(),
+  publishedAtPrecision: PublishedAtPrecisionSchema.optional(),
   payload: z.unknown(),
   evidence: z.array(EvidenceCoordinateSchema).default([]),
   tier: z
@@ -88,7 +103,11 @@ export const IngestionRecordSchema = z.object({
   festivalId: z.string().min(1).optional(),
   editionId: z.string().min(1).optional(),
   url: z.string().url(),
+  /** Local retrieval / scrape time — not the source publication time. */
   observedAt: z.string().datetime(),
+  /** Source publication time when known; used for point-in-time ordering. */
+  publishedAt: z.string().datetime().optional(),
+  publishedAtPrecision: PublishedAtPrecisionSchema.optional(),
   payload: z.unknown(),
   evidence: z.array(EvidenceCoordinateSchema).default([]),
   tier: z
@@ -99,6 +118,25 @@ export const IngestionRecordSchema = z.object({
   metadata: z.record(z.string(), z.unknown()).default({}),
 });
 export type IngestionRecord = z.infer<typeof IngestionRecordSchema>;
+
+/** Point-in-time ordering key: publication time when known, else retrieval time. */
+export function effectiveObservationTime(input: {
+  observedAt: string;
+  publishedAt?: string;
+}): string {
+  const value = input.publishedAt ?? input.observedAt;
+  return new Date(value).toISOString();
+}
+
+/** Whether an observation is knowable at a backtest as-of timestamp. */
+export function isObservationKnowableAt(
+  observation: { observedAt: string; publishedAt?: string },
+  asOfIso: string,
+): boolean {
+  return (
+    Date.parse(effectiveObservationTime(observation)) <= Date.parse(asOfIso)
+  );
+}
 
 export const IngestionRunStatusSchema = z.enum([
   "running",

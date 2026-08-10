@@ -1,8 +1,7 @@
--- Canonical Festival Bloomberg DuckDB schema.
+-- Canonical Festival Bloomberg DuckDB schema (base / fresh installs).
 --
--- This file is the single schema source used by both the TypeScript and Python
--- warehouse clients. Statements are deliberately idempotent so the file can be
--- applied to an empty database or to a database created by the legacy schema.
+-- Versioned upgrades run through the conditional migration runner in the
+-- TypeScript and Python warehouse clients. Statements here are idempotent.
 
 CREATE TABLE IF NOT EXISTS schema_migrations (
   version INTEGER PRIMARY KEY,
@@ -19,6 +18,8 @@ CREATE TABLE IF NOT EXISTS observations (
   content_hash VARCHAR,
   dedup_key VARCHAR,
   retrieved_at TIMESTAMP NOT NULL,
+  published_at TIMESTAMP,
+  published_at_precision VARCHAR,
   first_seen_at TIMESTAMP,
   last_seen_at TIMESTAMP,
   seen_count INTEGER NOT NULL DEFAULT 1 CHECK (seen_count >= 1),
@@ -33,29 +34,8 @@ CREATE TABLE IF NOT EXISTS observations (
   payload_json VARCHAR
 );
 
--- Upgrade databases created by the pre-ingestion schema without losing rows.
-ALTER TABLE observations ADD COLUMN IF NOT EXISTS canonical_url VARCHAR;
-ALTER TABLE observations ADD COLUMN IF NOT EXISTS normalized_content VARCHAR;
-ALTER TABLE observations ADD COLUMN IF NOT EXISTS dedup_key VARCHAR;
-ALTER TABLE observations ADD COLUMN IF NOT EXISTS first_seen_at TIMESTAMP;
-ALTER TABLE observations ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP;
-ALTER TABLE observations ADD COLUMN IF NOT EXISTS seen_count INTEGER DEFAULT 1;
-ALTER TABLE observations ADD COLUMN IF NOT EXISTS winner_key VARCHAR;
-
-UPDATE observations SET canonical_url = source_url WHERE canonical_url IS NULL;
-UPDATE observations
-SET normalized_content = COALESCE(raw_content, payload_json, '')
-WHERE normalized_content IS NULL;
-UPDATE observations SET first_seen_at = retrieved_at WHERE first_seen_at IS NULL;
-UPDATE observations SET last_seen_at = retrieved_at WHERE last_seen_at IS NULL;
-UPDATE observations SET seen_count = 1 WHERE seen_count IS NULL OR seen_count < 1;
-
-CREATE UNIQUE INDEX IF NOT EXISTS observations_dedup_key_uq
-  ON observations (dedup_key);
 CREATE INDEX IF NOT EXISTS observations_festival_idx
   ON observations (festival_id, edition_id, retrieved_at);
-CREATE INDEX IF NOT EXISTS observations_canonical_url_idx
-  ON observations (canonical_url);
 CREATE INDEX IF NOT EXISTS observations_content_hash_idx
   ON observations (content_hash);
 
@@ -180,7 +160,3 @@ CREATE INDEX IF NOT EXISTS ingestion_logs_status_idx
   ON ingestion_logs (status, updated_at);
 CREATE INDEX IF NOT EXISTS ingestion_logs_observation_idx
   ON ingestion_logs (observation_id);
-
-INSERT INTO schema_migrations (version, name)
-VALUES (1, 'canonical_ingestion_dedup_v1')
-ON CONFLICT (version) DO NOTHING;

@@ -20,7 +20,7 @@ import {
   type Observation,
   type TelemetryEvent,
 } from "./schemas";
-import { loadCanonicalDuckDbStatements } from "./duckdb_schema";
+import { applyPendingMigrations } from "./migrations";
 import {
   canonicalizeUrl,
   mergeEvidence,
@@ -224,6 +224,8 @@ type ObservationRow = {
   content_hash: string | null;
   dedup_key: string | null;
   retrieved_at: string;
+  published_at: string | null;
+  published_at_precision: string | null;
   first_seen_at: string | null;
   last_seen_at: string | null;
   seen_count: number | null;
@@ -338,6 +340,14 @@ function observationFromRow(row: ObservationRow): Observation {
     sourceDomain: row.source_domain,
     url: row.source_url,
     observedAt: iso(row.retrieved_at),
+    ...(row.published_at
+      ? { publishedAt: iso(row.published_at) }
+      : {}),
+    ...(row.published_at_precision
+      ? {
+          publishedAtPrecision: row.published_at_precision as Observation["publishedAtPrecision"],
+        }
+      : {}),
     payload: JSON.parse(row.payload_json ?? row.raw_content ?? "null"),
     evidence: JSON.parse(row.evidence_json ?? "[]"),
     tier: row.tier ?? undefined,
@@ -493,10 +503,11 @@ export class DuckDbAdapter implements ScraperRepositories {
         await this.client.run(
           `INSERT INTO observations (
             id, source_url, canonical_url, raw_content, normalized_content,
-            content_hash, retrieved_at, first_seen_at, last_seen_at, seen_count,
+            content_hash, retrieved_at, published_at, published_at_precision,
+            first_seen_at, last_seen_at, seen_count,
             status, kind, festival_id, edition_id, source_domain, tier,
             evidence_json, payload_json
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT (id) DO UPDATE SET
             source_url = EXCLUDED.source_url,
             canonical_url = EXCLUDED.canonical_url,
@@ -504,6 +515,8 @@ export class DuckDbAdapter implements ScraperRepositories {
             normalized_content = EXCLUDED.normalized_content,
             content_hash = EXCLUDED.content_hash,
             retrieved_at = EXCLUDED.retrieved_at,
+            published_at = EXCLUDED.published_at,
+            published_at_precision = EXCLUDED.published_at_precision,
             first_seen_at = COALESCE(observations.first_seen_at, EXCLUDED.first_seen_at),
             last_seen_at = EXCLUDED.last_seen_at,
             status = EXCLUDED.status,
@@ -521,6 +534,8 @@ export class DuckDbAdapter implements ScraperRepositories {
           normalized,
           contentHash,
           parsed.observedAt,
+          parsed.publishedAt ?? null,
+          parsed.publishedAtPrecision ?? null,
           parsed.observedAt,
           parsed.observedAt,
           1,
@@ -549,7 +564,7 @@ export class DuckDbAdapter implements ScraperRepositories {
         const rows = await this.client.all<ObservationRow>(
           `SELECT * FROM observations
            WHERE festival_id = ?
-           ORDER BY retrieved_at DESC, id
+           ORDER BY COALESCE(published_at, retrieved_at) DESC, id
            LIMIT ?`,
           festivalId,
           limit,
@@ -885,10 +900,11 @@ export class DuckDbAdapter implements ScraperRepositories {
         await this.client.run(
           `INSERT INTO observations (
             id, source_url, canonical_url, raw_content, normalized_content,
-            content_hash, dedup_key, retrieved_at, first_seen_at, last_seen_at,
+            content_hash, dedup_key, retrieved_at, published_at,
+            published_at_precision, first_seen_at, last_seen_at,
             seen_count, winner_key, status, kind, festival_id, edition_id,
             source_domain, tier, evidence_json, payload_json
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT (dedup_key) DO NOTHING`,
           observation.id,
           observation.url,
@@ -898,6 +914,8 @@ export class DuckDbAdapter implements ScraperRepositories {
           input.contentHash,
           input.dedupKey,
           observation.observedAt,
+          observation.publishedAt ?? null,
+          observation.publishedAtPrecision ?? null,
           observation.observedAt,
           observation.observedAt,
           1,
@@ -947,11 +965,22 @@ export class DuckDbAdapter implements ScraperRepositories {
           Date.parse(existingLastSeen) >= Date.parse(observation.observedAt)
             ? existingLastSeen
             : observation.observedAt;
+        const mergedPublishedAt =
+          incomingWins && observation.publishedAt
+            ? observation.publishedAt
+            : existing.published_at
+              ? iso(existing.published_at)
+              : null;
+        const mergedPublishedPrecision =
+          incomingWins && observation.publishedAtPrecision
+            ? observation.publishedAtPrecision
+            : existing.published_at_precision;
 
         await this.client.run(
           `UPDATE observations SET
             source_url = ?, canonical_url = ?, raw_content = ?,
             normalized_content = ?, content_hash = ?, retrieved_at = ?,
+            published_at = ?, published_at_precision = ?,
             first_seen_at = ?, last_seen_at = ?, seen_count = ?,
             winner_key = ?, status = 'ok', kind = ?, festival_id = ?,
             edition_id = ?, source_domain = ?, tier = ?, evidence_json = ?,
@@ -963,6 +992,8 @@ export class DuckDbAdapter implements ScraperRepositories {
           incomingWins ? input.normalizedContent : existing.normalized_content,
           input.contentHash,
           winner.observedAt,
+          mergedPublishedAt,
+          mergedPublishedPrecision,
           firstSeenAt,
           lastSeenAt,
           Number(existing.seen_count ?? 1) + 1,
@@ -1017,9 +1048,7 @@ export class DuckDbAdapter implements ScraperRepositories {
   /** Idempotent schema creation / migration. */
   private async migrate(): Promise<void> {
     if (!this.client) return;
-    for (const statement of loadCanonicalDuckDbStatements()) {
-      await this.client.run(statement);
-    }
+    await applyPendingMigrations(this.client);
   }
 }
 

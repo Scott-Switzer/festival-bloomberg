@@ -9,6 +9,7 @@
 import {
   IngestionRecordSchema,
   IngestionRunSchema,
+  effectiveObservationTime,
   type IngestionLog,
   type IngestionRecord,
   type IngestionRun,
@@ -141,6 +142,13 @@ function canonicalObservation(
 ): CanonicalObservationInput {
   const canonicalUrl = canonicalizeUrl(record.url);
   const observedAt = new Date(record.observedAt).toISOString();
+  const publishedAt = record.publishedAt
+    ? new Date(record.publishedAt).toISOString()
+    : undefined;
+  const effectiveAt = effectiveObservationTime({
+    observedAt,
+    ...(publishedAt ? { publishedAt } : {}),
+  });
   const normalizedPayload = normalizeJson(record.payload);
   const content = normalizedContent(record.payload, record.deduplicationText);
   const contentHash = stableHash(
@@ -161,7 +169,7 @@ function canonicalObservation(
   const observationId = `obs_${dedupKey}`;
   const evidence = mergeEvidence(record.evidence);
   const winnerKey = canonicalJson([
-    observedAt,
+    effectiveAt,
     canonicalUrl,
     context.source,
     context.sourceRecordId,
@@ -177,6 +185,10 @@ function canonicalObservation(
       sourceDomain: new URL(canonicalUrl).hostname,
       url: canonicalUrl,
       observedAt,
+      ...(publishedAt ? { publishedAt } : {}),
+      ...(record.publishedAtPrecision
+        ? { publishedAtPrecision: record.publishedAtPrecision }
+        : {}),
       payload: normalizedPayload,
       evidence,
       tier: record.tier,
@@ -209,6 +221,12 @@ export function createObservationIngestionAdapter(
       editionId: observation.editionId,
       url: observation.url,
       observedAt: observation.observedAt,
+      ...(observation.publishedAt
+        ? { publishedAt: observation.publishedAt }
+        : {}),
+      ...(observation.publishedAtPrecision
+        ? { publishedAtPrecision: observation.publishedAtPrecision }
+        : {}),
       payload: observation.payload,
       evidence: observation.evidence,
       tier: observation.tier,
