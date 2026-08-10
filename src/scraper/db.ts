@@ -4,7 +4,7 @@
  */
 import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import duckdb from "duckdb";
 import {
   parseCostEvent,
@@ -18,6 +18,50 @@ import {
 } from "./schemas";
 
 export const DEFAULT_WAREHOUSE_PATH = "data/warehouse/festival_bloomberg.duckdb";
+export const WAREHOUSE_ENV_VAR = "FESTIVAL_BLOOMBERG_DUCKDB_PATH";
+
+/** Legacy env keys from mis-targeted festival-intelligence CI attempts. */
+const LEGACY_WAREHOUSE_ENV_VARS = [
+  "FESTIVAL_INTELLIGENCE_DUCKDB_PATH",
+  "FESTIVAL_INTEL_DUCKDB_PATH",
+] as const;
+
+const LEGACY_WAREHOUSE_BASENAMES = new Set([
+  "festival_intelligence.duckdb",
+  "festival-intelligence.duckdb",
+]);
+
+/**
+ * Resolve the DuckDB warehouse path with bloomberg-correct defaults.
+ * Remaps legacy intelligence filenames/env vars that caused CI path failures.
+ */
+export function resolveWarehousePath(explicit?: string | null): string {
+  let raw =
+    explicit?.trim() ||
+    process.env[WAREHOUSE_ENV_VAR]?.trim() ||
+    undefined;
+
+  if (!raw) {
+    for (const key of LEGACY_WAREHOUSE_ENV_VARS) {
+      const legacy = process.env[key]?.trim();
+      if (legacy) {
+        raw = legacy;
+        break;
+      }
+    }
+  }
+
+  raw = raw || DEFAULT_WAREHOUSE_PATH;
+  const base = raw.split(/[/\\]/).pop()?.toLowerCase() ?? "";
+  if (LEGACY_WAREHOUSE_BASENAMES.has(base)) {
+    const dir = dirname(raw);
+    raw =
+      dir === "."
+        ? basename(DEFAULT_WAREHOUSE_PATH)
+        : join(dir, basename(DEFAULT_WAREHOUSE_PATH));
+  }
+  return resolve(raw);
+}
 
 export type ScraperRepositories = {
   observations: ObservationRepo;
@@ -579,11 +623,7 @@ export type DuckDbWarehouseOptions = {
 export async function createDuckDbWarehouse(
   opts: DuckDbWarehouseOptions = {},
 ): Promise<DuckDbAdapter> {
-  const path = resolve(
-    opts.path ??
-      process.env.FESTIVAL_BLOOMBERG_DUCKDB_PATH ??
-      DEFAULT_WAREHOUSE_PATH,
-  );
+  const path = resolveWarehousePath(opts.path);
   mkdirSync(dirname(path), { recursive: true });
   const db = new duckdb.Database(path);
   const client = promisifyDuckDb(db);

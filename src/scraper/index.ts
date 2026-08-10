@@ -6,3 +6,4 @@ export * from "./monid";
 export * from "./fallback";
 export * from "./parser";
 export * from "./db";
+export * from "./sentiment";
