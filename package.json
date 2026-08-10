@@ -6,6 +6,8 @@
     "typecheck": "tsc --noEmit",
     "build": "tsc",
     "test": "npm run build && node --test dist/tests/portfolio_metrics.test.js dist/tests/scraper/*.test.js",
+    "test:python": "PYTHONPATH=python python3 -m pytest tests/python -q",
+    "test:all": "npm test && npm run test:python",
     "validate": "npm run build && node dist/portfolio_validation.js",
     "metrics": "npm run build && node dist/calc_metrics.js"
   },

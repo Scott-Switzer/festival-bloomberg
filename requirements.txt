@@ -1,0 +1,4 @@
+# Python deps for festival-bloomberg sentiment + DuckDB warehouse helpers.
+duckdb>=1.1.0,<2
+vaderSentiment>=3.3.2,<4
+pytest>=8.0.0,<10

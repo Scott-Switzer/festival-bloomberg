@@ -3,3 +3,8 @@ dist/
 *.js.map
 user/
 data/warehouse/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
