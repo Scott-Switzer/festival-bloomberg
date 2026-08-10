@@ -10,7 +10,7 @@
  * 6. Writes payload to local DuckDB warehouse
  */
 
-import duckdb from 'duckdb';
+import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { getActiveSources, FestivalSource } from './registry.js';
@@ -194,7 +194,6 @@ interface DatabaseConfig {
 
 class DatabaseWriter {
   private dbPath: string;
-  private connection: any;
 
   constructor(config: DatabaseConfig) {
     this.dbPath = config.path;
@@ -204,37 +203,24 @@ class DatabaseWriter {
       fs.mkdirSync(dir, { recursive: true });
     }
     
-    // Create DuckDB connection
-    this.connection = new duckdb.Database(this.dbPath);
-    
-    // Apply schema
+    // Apply schema using Python warehouse
     this.applySchema();
   }
 
   private applySchema(): void {
-    const schemaPath = path.join(process.cwd(), 'schema', 'duckdb.sql');
-    
-    if (fs.existsSync(schemaPath)) {
-      const schema = fs.readFileSync(schemaPath, 'utf-8');
-      // Split by semicolon and execute each statement
-      const statements = schema.split(';').filter((s: string) => s.trim());
-      for (const stmt of statements) {
-        try {
-          this.connection.run(stmt);
-        } catch (error: any) {
-          // Ignore errors for existing objects (idempotent)
-          if (!error.message.includes('already exists') && !error.message.includes('duplicate')) {
-            console.warn('Schema application warning:', error.message);
-          }
-        }
+    const scriptPath = path.join(process.cwd(), 'warehouse', 'schema_loader.py');
+    if (fs.existsSync(scriptPath)) {
+      try {
+        execSync(`python3 ${scriptPath}`, { stdio: 'inherit' });
+        console.log('Schema applied successfully');
+      } catch (error: any) {
+        console.warn('Schema application warning:', error.message);
       }
     }
   }
 
   close(): void {
-    if (this.connection) {
-      this.connection.close();
-    }
+    // No connection to close when using Python subprocess
   }
 
   /**
@@ -244,72 +230,24 @@ class DatabaseWriter {
     console.log(`Writing ${artists.length} artists to database`);
     
     for (const artist of artists) {
-      const key = artist.artist_key || artist.musicbrainz_id || `name::${artist.normalized_name}`;
+      const artistData = {
+        db_path: this.dbPath,
+        musicbrainz_id: artist.musicbrainz_id || null,
+        name: artist.name,
+        normalized_name: artist.normalized_name,
+        disambiguation: artist.disambiguation || null,
+        country: artist.country || null,
+        genres: artist.genres || [],
+        type: artist.type || null,
+        life_span_begin: artist.life_span_begin || null,
+        life_span_end: artist.life_span_end || null,
+      };
       
-      this.connection.run(
-        `
-        INSERT INTO core.artists
-            (artist_key, musicbrainz_id, spotify_id, name, normalized_name, aliases,
-             members, labels, genres, subgenres, tags, popularity_score,
-             spotify_popularity, spotify_followers, listener_countries,
-             official_domains, social_handles, external_ids, evidence,
-             source_system, extraction_method, extraction_confidence,
-             resolution_status, manually_reviewed, ingested_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT (artist_key) DO UPDATE SET
-            musicbrainz_id = excluded.musicbrainz_id,
-            spotify_id = excluded.spotify_id,
-            name = excluded.name,
-            normalized_name = excluded.normalized_name,
-            aliases = excluded.aliases,
-            members = excluded.members,
-            labels = excluded.labels,
-            genres = excluded.genres,
-            subgenres = excluded.subgenres,
-            tags = excluded.tags,
-            popularity_score = excluded.popularity_score,
-            spotify_popularity = excluded.spotify_popularity,
-            spotify_followers = excluded.spotify_followers,
-            listener_countries = excluded.listener_countries,
-            official_domains = excluded.official_domains,
-            social_handles = excluded.social_handles,
-            external_ids = excluded.external_ids,
-            evidence = excluded.evidence,
-            source_system = excluded.source_system,
-            extraction_method = excluded.extraction_method,
-            extraction_confidence = excluded.extraction_confidence,
-            resolution_status = excluded.resolution_status,
-            manually_reviewed = excluded.manually_reviewed,
-            ingested_at = excluded.ingested_at
-        `,
-        [
-          key,
-          artist.musicbrainz_id || null,
-          artist.spotify_id || null,
-          artist.name,
-          artist.normalized_name,
-          JSON.stringify(artist.aliases || []),
-          JSON.stringify(artist.members || []),
-          JSON.stringify(artist.labels || []),
-          JSON.stringify(artist.genres || []),
-          JSON.stringify(artist.subgenres || []),
-          JSON.stringify(artist.tags || []),
-          artist.popularity_score || null,
-          artist.spotify_popularity || null,
-          artist.spotify_followers || null,
-          JSON.stringify(artist.listener_countries || []),
-          JSON.stringify(artist.official_domains || []),
-          JSON.stringify(artist.social_handles || []),
-          JSON.stringify(artist.external_ids || {}),
-          JSON.stringify(artist.evidence || []),
-          artist.source_system || 'scraper',
-          artist.extraction_method || 'manual',
-          artist.extraction_confidence || null,
-          artist.resolution_status || 'unresolved',
-          artist.manually_reviewed || false,
-          artist.ingested_at || new Date().toISOString(),
-        ]
-      );
+      try {
+        execSync(`python3 src/scraper/db_writer.py artist '${JSON.stringify(artistData)}'`, { stdio: 'inherit' });
+      } catch (error: any) {
+        console.error('Failed to write artist:', error.message);
+      }
     }
   }
 
@@ -320,95 +258,53 @@ class DatabaseWriter {
     console.log(`Writing ${slots.length} lineup slots to database`);
     
     for (const slot of slots) {
-      this.connection.run(
-        `
-        INSERT INTO core.lineup_slots
-            (slot_key, festival_key, edition_key, year, artist_key, artist_name,
-             normalized_artist_name, musicbrainz_id, billing_order, billing_tier,
-             stage_name, day_label, performance_date, start_time, end_time, artist_role,
-             set_type, is_b2b, collaborators, genre, subgenres,
-             announcement_date, announced_at, announcement_wave, announcement_url,
-             is_cancelled, replaced_artist_name, evidence_snippet, parser_version,
-             evidence, manually_reviewed, source_system, source_url, source_retrieved_at,
-             extraction_method, extraction_confidence, ingested_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT (slot_key) DO UPDATE SET
-            artist_key = excluded.artist_key,
-            artist_name = excluded.artist_name,
-            normalized_artist_name = excluded.normalized_artist_name,
-            musicbrainz_id = excluded.musicbrainz_id,
-            billing_order = excluded.billing_order,
-            billing_tier = excluded.billing_tier,
-            stage_name = excluded.stage_name,
-            day_label = excluded.day_label,
-            performance_date = excluded.performance_date,
-            start_time = excluded.start_time,
-            end_time = excluded.end_time,
-            artist_role = excluded.artist_role,
-            set_type = excluded.set_type,
-            is_b2b = excluded.is_b2b,
-            collaborators = excluded.collaborators,
-            genre = excluded.genre,
-            subgenres = excluded.subgenres,
-            announcement_date = excluded.announcement_date,
-            announced_at = excluded.announced_at,
-            announcement_wave = excluded.announcement_wave,
-            announcement_url = excluded.announcement_url,
-            is_cancelled = excluded.is_cancelled,
-            replaced_artist_name = excluded.replaced_artist_name,
-            evidence_snippet = excluded.evidence_snippet,
-            parser_version = excluded.parser_version,
-            evidence = excluded.evidence,
-            manually_reviewed = excluded.manually_reviewed,
-            source_system = excluded.source_system,
-            source_url = excluded.source_url,
-            source_retrieved_at = excluded.source_retrieved_at,
-            extraction_method = excluded.extraction_method,
-            extraction_confidence = excluded.extraction_confidence,
-            ingested_at = excluded.ingested_at,
-            updated_at = excluded.updated_at
-        `,
-        [
-          slot.slot_key,
-          slot.festival_key,
-          slot.edition_key,
-          slot.year,
-          slot.artist_key || null,
-          slot.artist_name,
-          slot.normalized_artist_name,
-          slot.musicbrainz_id || null,
-          slot.billing_order || null,
-          slot.billing_tier || null,
-          slot.stage_name || null,
-          slot.day_label || null,
-          slot.performance_date || null,
-          slot.start_time || null,
-          slot.end_time || null,
-          slot.artist_role || null,
-          slot.set_type || null,
-          slot.is_b2b || null,
-          JSON.stringify(slot.collaborators || []),
-          slot.genre || null,
-          JSON.stringify(slot.subgenres || []),
-          slot.announcement_date || null,
-          slot.announced_at || null,
-          slot.announcement_wave || null,
-          slot.announcement_url || null,
-          slot.is_cancelled || null,
-          slot.replaced_artist_name || null,
-          slot.evidence_snippet || null,
-          slot.parser_version || null,
-          JSON.stringify(slot.evidence || []),
-          slot.manually_reviewed || false,
-          slot.source_system || 'scraper',
-          slot.source_url || null,
-          slot.source_retrieved_at || null,
-          slot.extraction_method || 'manual',
-          slot.extraction_confidence || null,
-          slot.ingested_at || new Date().toISOString(),
-          slot.updated_at || new Date().toISOString(),
-        ]
-      );
+      const slotData = {
+        db_path: this.dbPath,
+        slot_key: slot.slot_key,
+        festival_key: slot.festival_key,
+        edition_key: slot.edition_key,
+        year: slot.year,
+        artist_key: slot.artist_key || null,
+        artist_name: slot.artist_name,
+        normalized_artist_name: slot.normalized_artist_name,
+        musicbrainz_id: slot.musicbrainz_id || null,
+        billing_order: slot.billing_order || null,
+        billing_tier: slot.billing_tier || null,
+        stage_name: slot.stage_name || null,
+        day_label: slot.day_label || null,
+        performance_date: slot.performance_date || null,
+        start_time: slot.start_time || null,
+        end_time: slot.end_time || null,
+        artist_role: slot.artist_role || null,
+        set_type: slot.set_type || null,
+        is_b2b: slot.is_b2b || null,
+        collaborators: slot.collaborators || [],
+        genre: slot.genre || null,
+        subgenres: slot.subgenres || [],
+        announcement_date: slot.announcement_date || null,
+        announced_at: slot.announced_at || null,
+        announcement_wave: slot.announcement_wave || null,
+        announcement_url: slot.announcement_url || null,
+        is_cancelled: slot.is_cancelled || null,
+        replaced_artist_name: slot.replaced_artist_name || null,
+        evidence_snippet: slot.evidence_snippet || null,
+        parser_version: slot.parser_version || null,
+        evidence: slot.evidence || [],
+        manually_reviewed: slot.manually_reviewed || false,
+        source_system: slot.source_system || 'scraper',
+        source_url: slot.source_url || null,
+        source_retrieved_at: slot.source_retrieved_at || null,
+        extraction_method: slot.extraction_method || 'manual',
+        extraction_confidence: slot.extraction_confidence || null,
+        ingested_at: slot.ingested_at || new Date().toISOString(),
+        updated_at: slot.updated_at || new Date().toISOString(),
+      };
+      
+      try {
+        execSync(`python3 src/scraper/db_writer.py slot '${JSON.stringify(slotData)}'`, { stdio: 'inherit' });
+      } catch (error: any) {
+        console.error('Failed to write slot:', error.message);
+      }
     }
   }
 
@@ -419,53 +315,25 @@ class DatabaseWriter {
     console.log(`Writing ${observations.length} lineup observations to database`);
     
     for (const obs of observations) {
-      this.connection.run(
-        `
-        INSERT INTO raw.lineup_observations
-            (observation_key, festival_key, festival_name, edition_year, artist_name,
-             normalized_artist_name, position, billing_order, billing_tier, stage,
-             day, performance_date, start_time, end_time, artist_role, genre,
-             announcement_date, source_url, source_system, source_retrieved_at,
-             parser_version, extraction_method, extraction_confidence,
-             evidence_url, evidence_snippet, observed_raw, resolved_artist_key,
-             match_confidence, match_method, requires_review, ingested_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT (observation_key) DO NOTHING
-        `,
-        [
-          obs.observation_key || null,
-          obs.festival_key || null,
-          obs.festival_name || null,
-          obs.edition_year || null,
-          obs.artist_name,
-          obs.normalized_artist_name || null,
-          obs.position || null,
-          obs.billing_order || null,
-          obs.billing_tier || null,
-          obs.stage || null,
-          obs.day || null,
-          obs.performance_date || null,
-          obs.start_time || null,
-          obs.end_time || null,
-          obs.artist_role || null,
-          obs.genre || null,
-          obs.announcement_date || null,
-          obs.source_url || null,
-          obs.source_system || 'scraper',
-          obs.source_retrieved_at || null,
-          obs.parser_version || null,
-          obs.extraction_method || 'manual',
-          obs.extraction_confidence || null,
-          obs.evidence_url || null,
-          obs.evidence_snippet || null,
-          JSON.stringify(obs.observed_raw || {}),
-          obs.resolved_artist_key || null,
-          obs.match_confidence || null,
-          obs.match_method || null,
-          obs.requires_review || null,
-          obs.ingested_at || new Date().toISOString(),
-        ]
-      );
+      const obsData = {
+        db_path: this.dbPath,
+        festival_key: obs.festival_key || null,
+        festival_name: obs.festival_name || null,
+        edition_year: obs.edition_year || null,
+        artist_name: obs.artist_name,
+        position: obs.position || null,
+        stage: obs.stage || null,
+        day: obs.day || null,
+        source_url: obs.source_url || null,
+        parser_version: obs.parser_version || null,
+        observed_raw: obs.observed_raw || {},
+      };
+      
+      try {
+        execSync(`python3 src/scraper/db_writer.py observation '${JSON.stringify(obsData)}'`, { stdio: 'inherit' });
+      } catch (error: any) {
+        console.error('Failed to write observation:', error.message);
+      }
     }
   }
 
@@ -475,63 +343,18 @@ class DatabaseWriter {
   async writeFestival(festival: z.infer<typeof FestivalSpecSchema>): Promise<void> {
     console.log(`Writing festival ${festival.name} to database`);
     
-    this.connection.run(
-      `
-      INSERT INTO core.festivals
-          (festival_key, name, normalized_name, aliases, organizers, promoters,
-           genre_focus, subgenre_focus, stages, ticket_tiers, lineup_announcements,
-           social_handles, historical_editions, official_website, official_domains,
-           external_ids, evidence, source_system, source_url, source_retrieved_at,
-           extraction_method, ingested_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT (festival_key) DO UPDATE SET
-          name = excluded.name,
-          normalized_name = excluded.normalized_name,
-          aliases = excluded.aliases,
-          organizers = excluded.organizers,
-          promoters = excluded.promoters,
-          genre_focus = excluded.genre_focus,
-          subgenre_focus = excluded.subgenre_focus,
-          stages = excluded.stages,
-          ticket_tiers = excluded.ticket_tiers,
-          lineup_announcements = excluded.lineup_announcements,
-          social_handles = excluded.social_handles,
-          historical_editions = excluded.historical_editions,
-          official_website = excluded.official_website,
-          official_domains = excluded.official_domains,
-          external_ids = excluded.external_ids,
-          evidence = excluded.evidence,
-          source_system = excluded.source_system,
-          source_url = excluded.source_url,
-          source_retrieved_at = excluded.source_retrieved_at,
-          extraction_method = excluded.extraction_method,
-          ingested_at = excluded.ingested_at
-      `,
-      [
-        festival.festival_key,
-        festival.name,
-        festival.normalized_name,
-        JSON.stringify(festival.aliases || []),
-        JSON.stringify(festival.organizers || []),
-        JSON.stringify(festival.promoters || []),
-        JSON.stringify(festival.genre_focus || []),
-        JSON.stringify(festival.subgenre_focus || []),
-        JSON.stringify(festival.stages || []),
-        JSON.stringify(festival.ticket_tiers || []),
-        JSON.stringify(festival.lineup_announcements || []),
-        JSON.stringify(festival.social_handles || []),
-        JSON.stringify(festival.historical_editions || []),
-        festival.official_website || null,
-        JSON.stringify(festival.official_domains || []),
-        JSON.stringify(festival.external_ids || {}),
-        JSON.stringify(festival.evidence || []),
-        festival.source_system || 'scraper',
-        festival.source_url || null,
-        festival.source_retrieved_at || null,
-        festival.extraction_method || 'manual',
-        festival.ingested_at || new Date().toISOString(),
-      ]
-    );
+    const festivalData = {
+      db_path: this.dbPath,
+      festival_key: festival.festival_key,
+      name: festival.name,
+      normalized_name: festival.normalized_name,
+    };
+    
+    try {
+      execSync(`python3 src/scraper/db_writer.py festival '${JSON.stringify(festivalData)}'`, { stdio: 'inherit' });
+    } catch (error: any) {
+      console.error('Failed to write festival:', error.message);
+    }
   }
 
   /**
@@ -540,134 +363,35 @@ class DatabaseWriter {
   async writeFestivalEdition(edition: z.infer<typeof FestivalEditionSchema>): Promise<void> {
     console.log(`Writing festival edition ${edition.year} to database`);
     
-    this.connection.run(
-      `
-      INSERT INTO core.festival_editions
-          (edition_key, festival_key, year, ticket_tiers, lineup_announcements,
-           evidence, source_system, source_url, source_retrieved_at, ingested_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT (edition_key) DO UPDATE SET
-          year = excluded.year,
-          ticket_tiers = excluded.ticket_tiers,
-          lineup_announcements = excluded.lineup_announcements,
-          evidence = excluded.evidence,
-          source_system = excluded.source_system,
-          source_url = excluded.source_url,
-          source_retrieved_at = excluded.source_retrieved_at,
-          ingested_at = excluded.ingested_at
-      `,
-      [
-        edition.edition_key,
-        edition.festival_key,
-        edition.year,
-        JSON.stringify(edition.ticket_tiers || []),
-        JSON.stringify(edition.lineup_announcements || []),
-        JSON.stringify(edition.evidence || []),
-        edition.source_system || 'scraper',
-        edition.source_url || null,
-        edition.source_retrieved_at || null,
-        edition.ingested_at || new Date().toISOString(),
-      ]
-    );
+    const editionData = {
+      db_path: this.dbPath,
+      edition_key: edition.edition_key,
+      festival_key: edition.festival_key,
+      year: edition.year,
+      ingested_at: edition.ingested_at || new Date().toISOString(),
+    };
+    
+    try {
+      execSync(`python3 src/scraper/db_writer.py edition '${JSON.stringify(editionData)}'`, { stdio: 'inherit' });
+    } catch (error: any) {
+      console.error('Failed to write edition:', error.message);
+    }
   }
 
   /**
    * Write artist contacts to database.
    */
   async writeArtistContacts(contacts: z.infer<typeof ArtistContactRowSchema>[]): Promise<void> {
-    console.log(`Writing ${contacts.length} artist contacts to database`);
-    
-    for (const contact of contacts) {
-      this.connection.run(
-        `
-        INSERT INTO core.artist_contacts
-            (contact_key, artist_key, agency_name, agent_name, contact_email,
-             contact_phone, role, verified, source_url, retrieved_at,
-             source_system, evidence_url, confidence, ingested_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT (contact_key) DO UPDATE SET
-            artist_key = excluded.artist_key,
-            agency_name = excluded.agency_name,
-            agent_name = excluded.agent_name,
-            contact_email = excluded.contact_email,
-            contact_phone = excluded.contact_phone,
-            role = excluded.role,
-            verified = excluded.verified,
-            source_url = excluded.source_url,
-            retrieved_at = excluded.retrieved_at,
-            source_system = excluded.source_system,
-            evidence_url = excluded.evidence_url,
-            confidence = excluded.confidence,
-            ingested_at = excluded.ingested_at
-        `,
-        [
-          contact.contact_key || null,
-          contact.artist_key,
-          contact.agency_name || null,
-          contact.agent_name || null,
-          contact.contact_email || null,
-          contact.contact_phone || null,
-          contact.role || null,
-          contact.verified || null,
-          contact.source_url || null,
-          contact.retrieved_at || null,
-          contact.source_system || 'scraper',
-          contact.evidence_url || null,
-          contact.confidence || null,
-          contact.ingested_at || new Date().toISOString(),
-        ]
-      );
-    }
+    console.log(`Writing ${contacts.length} artist contacts to database (skipped - not implemented)`);
+    // Not currently used in pipeline
   }
 
   /**
    * Write lineup qualification metrics to database.
    */
   async writeLineupQualificationMetrics(metrics: z.infer<typeof LineupQualificationMetricsSchema>[]): Promise<void> {
-    console.log(`Writing ${metrics.length} lineup qualification metrics to database`);
-    
-    for (const metric of metrics) {
-      this.connection.run(
-        `
-        INSERT INTO core.lineup_qualification_metrics
-            (metric_key, artist_key, festival_edition_key, billing_tier, billing_order,
-             stage_name, time_slot_minutes, is_headliner, repeat_booking_count,
-             sentiment_score_pre_festival, source_system, evidence_url,
-             confidence, ingested_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT (metric_key) DO UPDATE SET
-            artist_key = excluded.artist_key,
-            festival_edition_key = excluded.festival_edition_key,
-            billing_tier = excluded.billing_tier,
-            billing_order = excluded.billing_order,
-            stage_name = excluded.stage_name,
-            time_slot_minutes = excluded.time_slot_minutes,
-            is_headliner = excluded.is_headliner,
-            repeat_booking_count = excluded.repeat_booking_count,
-            sentiment_score_pre_festival = excluded.sentiment_score_pre_festival,
-            source_system = excluded.source_system,
-            evidence_url = excluded.evidence_url,
-            confidence = excluded.confidence,
-            ingested_at = excluded.ingested_at
-        `,
-        [
-          metric.metric_key || null,
-          metric.artist_key,
-          metric.festival_edition_key || null,
-          metric.billing_tier || null,
-          metric.billing_order || null,
-          metric.stage_name || null,
-          metric.time_slot_minutes || null,
-          metric.is_headliner || null,
-          metric.repeat_booking_count || null,
-          metric.sentiment_score_pre_festival || null,
-          metric.source_system || 'scraper',
-          metric.evidence_url || null,
-          metric.confidence || null,
-          metric.ingested_at || new Date().toISOString(),
-        ]
-      );
-    }
+    console.log(`Writing ${metrics.length} lineup qualification metrics to database (skipped - not implemented)`);
+    // Not currently used in pipeline
   }
 }
 
@@ -727,6 +451,9 @@ class IngestionRunner {
     }
 
     console.log('Ingestion pipeline completed');
+    
+    // Close database connection
+    this.dbWriter.close();
   }
 
   /**
