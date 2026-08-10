@@ -10,9 +10,10 @@
  * 6. Writes payload to local DuckDB warehouse
  */
 
-import { execSync } from 'child_process';
+import { spawnSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import { getActiveSources, FestivalSource } from './registry.js';
 import { getMusicBrainzClient, resolveArtistToMBID, normalizeArtistName } from './musicbrainz.js';
 import { getSpotifyClient, resolveArtistToSpotifyId, extractSpotifyArtistData } from './spotify.js';
@@ -194,6 +195,13 @@ interface DatabaseConfig {
 
 class DatabaseWriter {
   private dbPath: string;
+  private artists: z.infer<typeof ArtistSpecSchema>[] = [];
+  private slots: z.infer<typeof LineupSlotSchema>[] = [];
+  private observations: z.infer<typeof LineupObservationSchema>[] = [];
+  private festivals: z.infer<typeof FestivalSpecSchema>[] = [];
+  private editions: z.infer<typeof FestivalEditionSchema>[] = [];
+  private contacts: z.infer<typeof ArtistContactRowSchema>[] = [];
+  private metrics: z.infer<typeof LineupQualificationMetricsSchema>[] = [];
 
   constructor(config: DatabaseConfig) {
     this.dbPath = config.path;
@@ -211,7 +219,7 @@ class DatabaseWriter {
     const scriptPath = path.join(process.cwd(), 'warehouse', 'schema_loader.py');
     if (fs.existsSync(scriptPath)) {
       try {
-        execSync(`python3 ${scriptPath}`, { stdio: 'inherit' });
+        spawnSync('python3', [scriptPath], { stdio: 'inherit' });
         console.log('Schema applied successfully');
       } catch (error: any) {
         console.warn('Schema application warning:', error.message);
@@ -224,174 +232,124 @@ class DatabaseWriter {
   }
 
   /**
-   * Write artist data to database.
+   * Write artist data to database (accumulates for batch write).
    */
   async writeArtists(artists: z.infer<typeof ArtistSpecSchema>[]): Promise<void> {
-    console.log(`Writing ${artists.length} artists to database`);
-    
-    for (const artist of artists) {
-      const artistData = {
-        db_path: this.dbPath,
-        musicbrainz_id: artist.musicbrainz_id || null,
-        name: artist.name,
-        normalized_name: artist.normalized_name,
-        disambiguation: artist.disambiguation || null,
-        country: artist.country || null,
-        genres: artist.genres || [],
-        type: artist.type || null,
-        life_span_begin: artist.life_span_begin || null,
-        life_span_end: artist.life_span_end || null,
-      };
-      
-      try {
-        execSync(`python3 src/scraper/db_writer.py artist '${JSON.stringify(artistData)}'`, { stdio: 'inherit' });
-      } catch (error: any) {
-        console.error('Failed to write artist:', error.message);
-      }
-    }
+    console.log(`Accumulating ${artists.length} artists for batch write`);
+    this.artists.push(...artists);
   }
 
   /**
-   * Write lineup slots to database.
+   * Write lineup slots to database (accumulates for batch write).
    */
   async writeLineupSlots(slots: z.infer<typeof LineupSlotSchema>[]): Promise<void> {
-    console.log(`Writing ${slots.length} lineup slots to database`);
-    
-    for (const slot of slots) {
-      const slotData = {
-        db_path: this.dbPath,
-        slot_key: slot.slot_key,
-        festival_key: slot.festival_key,
-        edition_key: slot.edition_key,
-        year: slot.year,
-        artist_key: slot.artist_key || null,
-        artist_name: slot.artist_name,
-        normalized_artist_name: slot.normalized_artist_name,
-        musicbrainz_id: slot.musicbrainz_id || null,
-        billing_order: slot.billing_order || null,
-        billing_tier: slot.billing_tier || null,
-        stage_name: slot.stage_name || null,
-        day_label: slot.day_label || null,
-        performance_date: slot.performance_date || null,
-        start_time: slot.start_time || null,
-        end_time: slot.end_time || null,
-        artist_role: slot.artist_role || null,
-        set_type: slot.set_type || null,
-        is_b2b: slot.is_b2b || null,
-        collaborators: slot.collaborators || [],
-        genre: slot.genre || null,
-        subgenres: slot.subgenres || [],
-        announcement_date: slot.announcement_date || null,
-        announced_at: slot.announced_at || null,
-        announcement_wave: slot.announcement_wave || null,
-        announcement_url: slot.announcement_url || null,
-        is_cancelled: slot.is_cancelled || null,
-        replaced_artist_name: slot.replaced_artist_name || null,
-        evidence_snippet: slot.evidence_snippet || null,
-        parser_version: slot.parser_version || null,
-        evidence: slot.evidence || [],
-        manually_reviewed: slot.manually_reviewed || false,
-        source_system: slot.source_system || 'scraper',
-        source_url: slot.source_url || null,
-        source_retrieved_at: slot.source_retrieved_at || null,
-        extraction_method: slot.extraction_method || 'manual',
-        extraction_confidence: slot.extraction_confidence || null,
-        ingested_at: slot.ingested_at || new Date().toISOString(),
-        updated_at: slot.updated_at || new Date().toISOString(),
-      };
-      
-      try {
-        execSync(`python3 src/scraper/db_writer.py slot '${JSON.stringify(slotData)}'`, { stdio: 'inherit' });
-      } catch (error: any) {
-        console.error('Failed to write slot:', error.message);
-      }
-    }
+    console.log(`Accumulating ${slots.length} lineup slots for batch write`);
+    this.slots.push(...slots);
   }
 
   /**
-   * Write lineup observations to database.
+   * Write lineup observations database (accumulates for batch write).
    */
   async writeLineupObservations(observations: z.infer<typeof LineupObservationSchema>[]): Promise<void> {
-    console.log(`Writing ${observations.length} lineup observations to database`);
-    
-    for (const obs of observations) {
-      const obsData = {
-        db_path: this.dbPath,
-        festival_key: obs.festival_key || null,
-        festival_name: obs.festival_name || null,
-        edition_year: obs.edition_year || null,
-        artist_name: obs.artist_name,
-        position: obs.position || null,
-        stage: obs.stage || null,
-        day: obs.day || null,
-        source_url: obs.source_url || null,
-        parser_version: obs.parser_version || null,
-        observed_raw: obs.observed_raw || {},
-      };
-      
-      try {
-        execSync(`python3 src/scraper/db_writer.py observation '${JSON.stringify(obsData)}'`, { stdio: 'inherit' });
-      } catch (error: any) {
-        console.error('Failed to write observation:', error.message);
-      }
-    }
+    console.log(`Accumulating ${observations.length} lineup observations for batch write`);
+    this.observations.push(...observations);
   }
 
   /**
-   * Write festival data to database.
+   * Write festival data to database (accumulates for batch write).
    */
   async writeFestival(festival: z.infer<typeof FestivalSpecSchema>): Promise<void> {
-    console.log(`Writing festival ${festival.name} to database`);
-    
-    const festivalData = {
-      db_path: this.dbPath,
-      festival_key: festival.festival_key,
-      name: festival.name,
-      normalized_name: festival.normalized_name,
-    };
-    
-    try {
-      execSync(`python3 src/scraper/db_writer.py festival '${JSON.stringify(festivalData)}'`, { stdio: 'inherit' });
-    } catch (error: any) {
-      console.error('Failed to write festival:', error.message);
-    }
+    console.log(`Accumulating festival ${festival.name} for batch write`);
+    this.festivals.push(festival);
   }
 
   /**
-   * Write festival edition to database.
+   * Write festival edition to database (accumulates for batch write).
    */
   async writeFestivalEdition(edition: z.infer<typeof FestivalEditionSchema>): Promise<void> {
-    console.log(`Writing festival edition ${edition.year} to database`);
-    
-    const editionData = {
-      db_path: this.dbPath,
-      edition_key: edition.edition_key,
-      festival_key: edition.festival_key,
-      year: edition.year,
-      ingested_at: edition.ingested_at || new Date().toISOString(),
-    };
-    
-    try {
-      execSync(`python3 src/scraper/db_writer.py edition '${JSON.stringify(editionData)}'`, { stdio: 'inherit' });
-    } catch (error: any) {
-      console.error('Failed to write edition:', error.message);
-    }
+    console.log(`Accumulating festival edition ${edition.year} for batch write`);
+    this.editions.push(edition);
   }
 
   /**
-   * Write artist contacts to database.
+   * Write artist contacts to database (accumulates for batch write).
    */
   async writeArtistContacts(contacts: z.infer<typeof ArtistContactRowSchema>[]): Promise<void> {
-    console.log(`Writing ${contacts.length} artist contacts to database (skipped - not implemented)`);
-    // Not currently used in pipeline
+    console.log(`Accumulating ${contacts.length} artist contacts for batch write`);
+    this.contacts.push(...contacts);
   }
 
   /**
-   * Write lineup qualification metrics to database.
+   * Write lineup qualification metrics to database (accumulates for batch write).
    */
   async writeLineupQualificationMetrics(metrics: z.infer<typeof LineupQualificationMetricsSchema>[]): Promise<void> {
-    console.log(`Writing ${metrics.length} lineup qualification metrics to database (skipped - not implemented)`);
-    // Not currently used in pipeline
+    console.log(`Accumulating ${metrics.length} lineup qualification metrics for batch write`);
+    this.metrics.push(...metrics);
+  }
+
+  /**
+   * Flush all accumulated data to database via batch write.
+   */
+  async flush(): Promise<void> {
+    if (this.artists.length === 0 && this.slots.length === 0 && 
+        this.observations.length === 0 && this.festivals.length === 0 &&
+        this.editions.length === 0 && this.contacts.length === 0 &&
+        this.metrics.length === 0) {
+      console.log('No data to flush');
+      return;
+    }
+
+    console.log('Flushing batch data to database...');
+    
+    // Create temp directory and file
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'festival-ingest-'));
+    const tempFile = path.join(tempDir, 'batch-data.json');
+    
+    try {
+      // Write batch data to temp file
+      const batchData = {
+        db_path: this.dbPath,
+        artists: this.artists,
+        slots: this.slots,
+        observations: this.observations,
+        festivals: this.festivals,
+        editions: this.editions,
+        contacts: this.contacts,
+        metrics: this.metrics,
+      };
+      
+      fs.writeFileSync(tempFile, JSON.stringify(batchData, null, 2));
+      console.log(`Batch data written to ${tempFile}`);
+      
+      // Call Python script with batch file path
+      const result = spawnSync('python3', ['src/scraper/db_writer.py', 'batch', tempFile], {
+        stdio: 'inherit',
+      });
+      
+      if (result.status !== 0) {
+        throw new Error(`Batch write failed with exit code ${result.status}`);
+      }
+      
+      console.log('Batch write completed successfully');
+      
+      // Clear accumulated data
+      this.artists = [];
+      this.slots = [];
+      this.observations = [];
+      this.festivals = [];
+      this.editions = [];
+      this.contacts = [];
+      this.metrics = [];
+      
+    } finally {
+      // Clean up temp file
+      if (fs.existsSync(tempFile)) {
+        fs.unlinkSync(tempFile);
+      }
+      if (fs.existsSync(tempDir)) {
+        fs.rmdirSync(tempDir);
+      }
+    }
   }
 }
 
@@ -448,6 +406,16 @@ class IngestionRunner {
 
     for (const source of sources) {
       await this.processSource(source);
+    }
+
+    // Flush all accumulated data to database
+    if (!this.options.dryRun) {
+      try {
+        await this.dbWriter.flush();
+      } catch (error) {
+        console.error('Batch write failed:', error);
+        process.exit(1);
+      }
     }
 
     console.log('Ingestion pipeline completed');
