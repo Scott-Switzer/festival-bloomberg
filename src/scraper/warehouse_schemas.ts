@@ -108,7 +108,7 @@ export const ArtistSpecSchema = z.object({
   listener_countries: z.array(z.string()).default([]),
   official_domains: z.array(z.string()).default([]),
   social_handles: z.array(z.unknown()).default([]),
-  external_ids: z.record(z.string()).default({}),
+  external_ids: z.record(z.string(), z.string()).default({}),
   ...provenanceFields,
   ...resolutionFields,
   resolution_status: ResolutionStatusSchema.default("unresolved"),
@@ -132,7 +132,7 @@ export const FestivalSpecSchema = z.object({
   historical_editions: z.array(z.unknown()).default([]),
   official_website: UrlSchema.optional(),
   official_domains: z.array(z.string()).default([]),
-  external_ids: z.record(z.string()).default({}),
+  external_ids: z.record(z.string(), z.string()).default({}),
   ...provenanceFields,
   ingested_at: IsoDateTimeSchema.optional(),
   updated_at: IsoDateTimeSchema.optional(),
@@ -190,7 +190,7 @@ export const LineupObservationSchema = z.object({
   source_retrieved_at: IsoDateTimeSchema.optional(),
   extraction_method: ExtractionMethodSchema.optional(),
   extraction_confidence: z.number().min(0).max(1).optional(),
-  observed_raw: z.record(z.unknown()).default({}),
+  observed_raw: z.record(z.string(), z.unknown()).default({}),
   ingested_at: IsoDateTimeSchema.optional(),
 });
 

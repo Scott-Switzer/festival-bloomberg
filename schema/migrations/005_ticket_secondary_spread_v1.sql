@@ -1,0 +1,16 @@
+CREATE SCHEMA IF NOT EXISTS core;
+CREATE SCHEMA IF NOT EXISTS metrics;
+
+CREATE TABLE IF NOT EXISTS core.festival_ticket_tiers (
+  id VARCHAR PRIMARY KEY, edition_id VARCHAR NOT NULL, tier_name VARCHAR NOT NULL, tier_rank INTEGER NOT NULL, tier_type VARCHAR NOT NULL, access_scope VARCHAR NOT NULL, face_value_minor BIGINT, currency VARCHAR(3) NOT NULL, fee_components_minor BIGINT, total_primary_price_minor BIGINT, is_sold_out BOOLEAN NOT NULL DEFAULT FALSE, url VARCHAR, created_at TIMESTAMP WITH TIME ZONE NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS core.secondary_ticket_observations (
+  id VARCHAR PRIMARY KEY, edition_id VARCHAR NOT NULL, source VARCHAR NOT NULL, external_event_id VARCHAR NOT NULL, external_listing_id VARCHAR NOT NULL, listing_url VARCHAR NOT NULL, title VARCHAR NOT NULL, ticket_type VARCHAR, section VARCHAR, "row" VARCHAR, quantity INTEGER, price_minor BIGINT, currency VARCHAR(3), fee_components_minor BIGINT, total_buyer_price_minor BIGINT, is_active BOOLEAN NOT NULL, retrieved_at TIMESTAMP WITH TIME ZONE NOT NULL, content_hash VARCHAR NOT NULL, provenance VARCHAR NOT NULL, retrieval_metadata JSON, quality_flags JSON NOT NULL DEFAULT '[]',
+  CONSTRAINT secondary_ticket_observations_natural_key UNIQUE (source, external_event_id, external_listing_id, retrieved_at)
+);
+
+CREATE TABLE IF NOT EXISTS metrics.ticket_price_spreads (
+  id VARCHAR PRIMARY KEY, primary_tier_id VARCHAR NOT NULL, secondary_observation_id VARCHAR NOT NULL, absolute_spread_minor BIGINT, percentage_spread DECIMAL(20,8), buyer_margin DECIMAL(20,8), currency VARCHAR(3) NOT NULL, timestamp_delta_seconds BIGINT NOT NULL, quality_flags JSON NOT NULL DEFAULT '[]', arbitrage_candidate BOOLEAN NOT NULL, calculated_at TIMESTAMP WITH TIME ZONE NOT NULL,
+  CONSTRAINT ticket_price_spreads_natural_key UNIQUE (primary_tier_id, secondary_observation_id, calculated_at)
+);
