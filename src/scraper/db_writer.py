@@ -52,7 +52,7 @@ def _llm_artist_aliases(artists):
     try:
         client = HetznerLLMClient(timeout=20, retries=1, fallback=True)
         result = client.chat_completions_create(
-            model=os.getenv("HETZNER_VLLM_MODEL", "Qwen/Qwen2.5-72B-Instruct"),
+            model=os.getenv("HETZNER_VLLM_MODEL", "Qwen/Qwen3.6-35B-A3B-FP8"),
             messages=[{"role": "system", "content": "You are a conservative music artist deduplication service."},
                       {"role": "user", "content": json.dumps(prompt)}],
             temperature=0, max_tokens=1200)
