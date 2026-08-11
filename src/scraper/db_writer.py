@@ -7,14 +7,75 @@ Supports both single-record writes (legacy) and batch writes (production).
 import sys
 import json
 import os
+import re
+from difflib import SequenceMatcher
 from pathlib import Path
 from datetime import datetime
+
+# Optional shared LLM wrapper; ingestion remains usable without credentials.
+workspace_python = Path(__file__).resolve().parents[3] / "python"
+if workspace_python.is_dir():
+    sys.path.insert(0, str(workspace_python))
+try:
+    from utils.hetzner_llm import HetznerLLMClient
+except ImportError:
+    HetznerLLMClient = None
 
 # Add project root to Python path
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from warehouse.repository import FestivalRepository
+
+def _norm_artist_name(value):
+    """Cheap deterministic normalization used before optional LLM matching."""
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", value.casefold())).strip()
+
+def _llm_artist_aliases(artists):
+    """Best-effort conservative aliases; failure never blocks ingestion."""
+    if not artists or not os.getenv("HETZNER_VLLM_API_KEY") or HetznerLLMClient is None:
+        return {}
+    names = []
+    for artist in artists:
+        name = str(artist.get("name", "")).strip()
+        if name and not artist.get("musicbrainz_id") and name not in names:
+            names.append(name)
+    pairs = [(left, right) for i, left in enumerate(names) for right in names[i + 1:]
+             if SequenceMatcher(None, _norm_artist_name(left), _norm_artist_name(right)).ratio() >= 0.45]
+    if not pairs:
+        return {}
+    prompt = {"task": "artist_entity_matching", "rules": [
+        "Match only the same performing artist or act; be conservative.",
+        "Return JSON only: {matches:[{left:string,right:string,same:boolean,confidence:number}]}.",
+        "Only include supplied pairs; never invent IDs or names."],
+        "pairs": [{"left": left, "right": right} for left, right in pairs]}
+    try:
+        client = HetznerLLMClient(timeout=20, retries=1, fallback=True)
+        result = client.chat_completions_create(
+            model=os.getenv("HETZNER_VLLM_MODEL", "Qwen/Qwen3.6-35B-A3B-FP8"),
+            messages=[{"role": "system", "content": "You are a conservative music artist deduplication service."},
+                      {"role": "user", "content": json.dumps(prompt)}],
+            temperature=0, max_tokens=1200)
+        content = result["choices"][0]["message"]["content"]
+        parsed = json.loads(content if isinstance(content, str) else json.dumps(content))
+        aliases = {}
+        allowed = set(pairs) | {(right, left) for left, right in pairs}
+        for match in parsed.get("matches", []):
+            left, right = str(match.get("left", "")), str(match.get("right", ""))
+            if match.get("same") is True and float(match.get("confidence", 0)) >= 0.90 and (left, right) in allowed:
+                canonical = min(left, right, key=lambda value: (_norm_artist_name(value), value))
+                aliases[_norm_artist_name(left)] = canonical
+                aliases[_norm_artist_name(right)] = canonical
+        return aliases
+    except Exception:
+        return {}
+
+def _canonical_artist_key(artist, aliases):
+    mb_id = artist.get("musicbrainz_id")
+    if mb_id:
+        return mb_id
+    name = aliases.get(_norm_artist_name(str(artist.get("name", ""))), artist["name"])
+    return f"name::{_norm_artist_name(name)}"
 
 def write_festival(festival_data):
     """Write festival data to database."""
@@ -215,6 +276,7 @@ def write_batch(batch_file_path):
     try:
         # Begin transaction
         repo.conn.begin()
+        artist_aliases = _llm_artist_aliases(batch_data.get("artists", []))
         
         # Write festivals
         for festival in batch_data.get('festivals', []):
@@ -248,7 +310,7 @@ def write_batch(batch_file_path):
         # Write artists
         for artist in batch_data.get('artists', []):
             mb_id = artist.get('musicbrainz_id')
-            artist_key = mb_id or f"name::{artist['normalized_name']}"
+            artist_key = _canonical_artist_key(artist, artist_aliases)
             repo.conn.execute(
                 """
                 INSERT INTO core.artists
@@ -356,7 +418,9 @@ def write_batch(batch_file_path):
                     slot['festival_key'],
                     slot['edition_key'],
                     slot['year'],
-                    slot.get('artist_key'),
+                    slot.get('artist_key') or (
+                        f"name::{_norm_artist_name(artist_aliases[_norm_artist_name(slot['artist_name'])])}"
+                        if _norm_artist_name(slot['artist_name']) in artist_aliases else None),
                     slot['artist_name'],
                     slot.get('normalized_artist_name'),
                     slot.get('musicbrainz_id'),
