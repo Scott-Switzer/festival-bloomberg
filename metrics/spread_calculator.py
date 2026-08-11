@@ -8,10 +8,15 @@ D=Decimal
 class FXTable:
     rates:Mapping[tuple[str,str,str],Decimal]; fallback_rate:Decimal=D('1')
     def convert(self,amount:int,source:str,target:str,day:str):
-        if source.upper()==target.upper():return amount,False
-        rate=self.rates.get((day,source.upper(),target.upper()))
-        if rate is None:rate=self.fallback_rate; return int((D(amount)*rate).quantize(D('1'),rounding=ROUND_HALF_UP)),True
-        return int((D(amount)*rate).quantize(D('1'),rounding=ROUND_HALF_UP)),False
+        source=source.upper(); target=target.upper()
+        if source==target:
+            return amount,False
+        rate=self.rates.get((day,source,target))
+        if rate is not None:
+            converted=int((D(amount)*rate).quantize(D('1'),rounding=ROUND_HALF_UP))
+            return converted,False
+        converted=int((D(amount)*self.fallback_rate).quantize(D('1'),rounding=ROUND_HALF_UP))
+        return converted,True
 @dataclass(frozen=True)
 class SpreadResult:
     absolute_spread_minor:int|None; percentage_spread:Decimal|None; buyer_margin:Decimal|None; currency:str; timestamp_delta_seconds:int; quality_flags:tuple[str,...]; arbitrage_candidate:bool
