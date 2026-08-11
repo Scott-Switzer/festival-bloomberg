@@ -1,13 +1,12 @@
-# Quantitative Research Module Specifications
+# Quantitative Research Specification
 
-Status: design blueprint
-Scope: five research modules for booking, underwriting, and sponsor decisions. This document specifies reproducible inputs, transformations, mathematical definitions, schemas, and acceptance tests. It is not a claim that any external feed is complete or licensed for production use.
+Compares official festival primary Face Value tiers with contemporaneous SeatGeek secondary listings. Primary data comes from the authorized official ticketing source; secondary data comes from the SeatGeek API or authorized export. The adapter normalizes payloads only and records immutable identifiers, URLs, retrieval time, provenance, SHA-256 content hash, and quality flags.
 
-## 0. Common contract
+Schema: core.festival_ticket_tiers stores edition, tier identity/rank/type, access, face value, fees, total and currency. core.secondary_ticket_observations stores immutable listing snapshots and buyer-price components. metrics.ticket_price_spreads stores calculated outputs. PostgreSQL migration and DuckDB mirror are under schema/.
 
-Every source adapter must emit immutable raw snapshots and normalized observations. A snapshot is identified by `source`, `request_uri`, `retrieved_at_utc`, `http_status`, `content_hash`, `schema_version`, and `license_note`. Do not silently replace missing values with zero. Preserve `null`, a `quality_flags[]` array, and the reason for exclusion.
+Amounts are integer minor units. absolute spread = secondary total buyer price - primary total price. percentage spread = absolute spread / primary total price. buyer margin = absolute spread / secondary total buyer price. FX uses the exact UTC retrieval date; missing rates use a flagged fallback and cannot produce an arbitrage candidate.
 
-Canonical identifiers:
+Timestamp tolerances are 24 hours historical, 6 hours active, and 1 hour real-time. Missing fees, missing prices/currencies, fallback FX, missing timestamps, and stale observations disqualify arbitrage. The conservative flag additionally requires a positive spread, 15% buyer margin, and a 10% safety buffer. This is a screening metric, not an execution or investment recommendation.
 
 - `artist_id`, `agency_id`, `event_id`, `venue_id`, `city_id`, `country_code` (ISO 3166-1 alpha-2), `currency` (ISO 4217), and `brand_id`.
 - Timestamps are ISO-8601 UTC; event local date/time and IANA timezone are retained separately.
