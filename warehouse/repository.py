@@ -9,8 +9,13 @@ Storage layout (matches the Festival Bloomberg spec schemas):
     core.artists        - canonical artist dimension (MBID-resolved)
     core.festivals      - canonical festival dimension
     core.festival_editions - (festival, year) occurrence
+    core.lineup_slots   - resolved per-artist performance slots
     metrics.artist_metrics - per-source momentum/attention observations
     raw.lineup_observations - raw lineup scrape/parse records
+
+The full DDL (including the rich artist/festival/lineup specifications and the
+entity-resolution support tables) lives in ``schema/duckdb.sql`` and is applied
+through ``warehouse.schema_loader``.
 """
 from __future__ import annotations
 
@@ -24,6 +29,7 @@ from typing import Any, Dict, Iterator, List, Optional
 import duckdb
 
 from .duckdb_manager import DuckDBWarehouse, create_warehouse
+from .schema_loader import SCHEMA_PATH, apply_schema
 
 logger = logging.getLogger(__name__)
 
@@ -39,127 +45,14 @@ DEFAULT_DB_PATH = os.path.join(
 # --------------------------------------------------------------------------- #
 # DDL
 # --------------------------------------------------------------------------- #
-_SCHEMA_DDL = [
-    # Canonical artist dimension. musicbrainz_id is the natural key.
-    """
-    CREATE TABLE IF NOT EXISTS core.artists (
-        artist_key          VARCHAR PRIMARY KEY,
-        musicbrainz_id      VARCHAR UNIQUE,
-        name                VARCHAR NOT NULL,
-        normalized_name     VARCHAR NOT NULL,
-        disambiguation      VARCHAR,
-        country             VARCHAR,
-        genres              JSON,
-        type                VARCHAR,
-        life_span_begin     VARCHAR,
-        life_span_end       VARCHAR,
-        source_system       VARCHAR,
-        ingested_at         TIMESTAMP
-    )
-    """,
-    # Canonical festival dimension.
-    """
-    CREATE TABLE IF NOT EXISTS core.festivals (
-        festival_key        VARCHAR PRIMARY KEY,
-        name                VARCHAR NOT NULL,
-        normalized_name     VARCHAR NOT NULL,
-        location_country    VARCHAR,
-        location_city       VARCHAR,
-        location_region     VARCHAR,
-        capacity            INTEGER,
-        genre_focus         JSON,
-        festival_type       VARCHAR,
-        venue_type          VARCHAR,
-        duration_days       INTEGER,
-        typical_month       INTEGER,
-        source_system       VARCHAR,
-        ingested_at         TIMESTAMP
-    )
-    """,
-    # Festival occurrence (festival + year).
-    """
-    CREATE TABLE IF NOT EXISTS core.festival_editions (
-        edition_key         VARCHAR PRIMARY KEY,
-        festival_key        VARCHAR NOT NULL,
-        year                INTEGER NOT NULL,
-        start_date          DATE,
-        end_date            DATE,
-        attendance          INTEGER,
-        headliner_count     INTEGER,
-        total_artists       INTEGER,
-        source_system       VARCHAR,
-        ingested_at         TIMESTAMP
-    )
-    """,
-    # Per-source momentum / attention observations (point-in-time safe).
-    """
-    CREATE TABLE IF NOT EXISTS metrics.artist_metrics (
-        metric_key          VARCHAR PRIMARY KEY,
-        artist_key          VARCHAR NOT NULL,
-        source_system       VARCHAR NOT NULL,
-        metric_type         VARCHAR NOT NULL,
-        value               DOUBLE,
-        observed_date       DATE,
-        fetched_at          TIMESTAMP,
-        meta_data           JSON
-    )
-    """,
-    # Raw lineup observation records (evidence-backed).
-    """
-    CREATE TABLE IF NOT EXISTS raw.lineup_observations (
-        observation_key    VARCHAR PRIMARY KEY,
-        festival_key        VARCHAR,
-        edition_year        INTEGER,
-        artist_name         VARCHAR NOT NULL,
-        position            VARCHAR,
-        stage               VARCHAR,
-        day                 VARCHAR,
-        source_url          VARCHAR,
-        parser_version      VARCHAR,
-        observed_raw        JSON,
-        ingested_at         TIMESTAMP
-    )
-    """,
-    # Aggregated sentiment per artist from the scraper ensemble (VADER + sources).
-    """
-    CREATE TABLE IF NOT EXISTS metrics.artist_sentiment (
-        artist_key          VARCHAR PRIMARY KEY,
-        sentiment_label     VARCHAR,
-        compound            DOUBLE,
-        positive            DOUBLE,
-        neutral             DOUBLE,
-        negative            DOUBLE,
-        sample_size         INTEGER,
-        mention_volume      INTEGER,
-        attention_score     DOUBLE,
-        top_topics          JSON,
-        top_positive        JSON,
-        top_negative        JSON,
-        llm_summary         VARCHAR,
-        sources_used        JSON,
-        generated_at        TIMESTAMP
-    )
-    """,
-    # Social / web signal observations (per-source mention counts + text refs).
-    """
-    CREATE TABLE IF NOT EXISTS metrics.social_signals (
-        signal_key          VARCHAR PRIMARY KEY,
-        artist_key          VARCHAR NOT NULL,
-        source_system       VARCHAR NOT NULL,
-        mention_count       INTEGER,
-        points              DOUBLE,
-        comments            DOUBLE,
-        pageviews_30d       DOUBLE,
-        news_mentions       DOUBLE,
-        fetched_at          TIMESTAMP
-    )
-    """,
-]
+# Canonical DDL location, re-exported for tooling that applies the schema
+# without instantiating a repository.
+SCHEMA_DDL_PATH = SCHEMA_PATH
 
 
 def _apply_schema(wh: DuckDBWarehouse) -> None:
-    for ddl in _SCHEMA_DDL:
-        wh.connection.execute(ddl)
+    """Apply ``schema/duckdb.sql`` to the warehouse connection (idempotent)."""
+    apply_schema(wh.connection)
 
 
 # --------------------------------------------------------------------------- #

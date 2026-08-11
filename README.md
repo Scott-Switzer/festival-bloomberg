@@ -38,12 +38,28 @@ festival-intelligence/
 │   └── api/          # FastAPI backend
 ├── pipelines/        # Data ingestion pipelines
 ├── models/           # Prediction models
+├── schema/           # Canonical DuckDB warehouse DDL (duckdb.sql)
+├── src/scraper/      # TypeScript scraper contracts (Zod)
 ├── warehouse/        # Data warehouse layers
 ├── contracts/        # Pydantic data contracts
 ├── tests/            # Test suite
 ├── notebooks/        # Exploratory analysis
 ├── reports/          # Generated reports
 └── docs/             # Documentation
+```
+
+## Data Contracts
+
+`schema/duckdb.sql` is the canonical warehouse DDL — artist, festival,
+edition, stage, ticket-tier and lineup-slot specifications plus the
+entity-resolution tables and blocking indexes. `warehouse.schema_loader`
+applies it, and `src/scraper/schemas.ts` holds the Zod models the scrapers
+validate against; a parity test keeps the two definitions identical.
+
+```bash
+pytest tests/ -q       # Python: schema loading and warehouse round-trip
+npm run typecheck      # TypeScript: compile the scraper contracts
+npm test               # TypeScript: contract and SQL parity tests
 ```
 
 ## Build Sequence

@@ -65,7 +65,8 @@ warehouse/features/
 # Logs
 *.log
 
-# Next.js
+# Node
+node_modules/
 apps/web/.next/
 apps/web/node_modules/
 apps/web/out/

@@ -125,7 +125,10 @@ psql -h localhost -U festival_user -d festival_intelligence -f warehouse/schema.
 Or use DuckDB for development (no database server required):
 
 ```bash
-# The application will use DuckDB automatically if DATABASE_URL is not set
+# The application will use DuckDB automatically if DATABASE_URL is not set.
+# warehouse.repository applies schema/duckdb.sql on first connect; to build a
+# warehouse file without Python, pipe the same DDL through the duckdb CLI:
+duckdb data/warehouse/festival_bloomberg.duckdb < schema/duckdb.sql
 ```
 
 #### 5. Collect Sample Data
@@ -176,12 +179,38 @@ festival-intelligence/
 │   └── web/              # Next.js frontend
 ├── pipelines/           # Data ingestion pipelines
 ├── models/              # Prediction models
+├── schema/              # Canonical DuckDB warehouse DDL (duckdb.sql)
+├── src/scraper/         # TypeScript scraper contracts (Zod)
 ├── warehouse/           # Data warehouse layers
 ├── contracts/           # Pydantic data contracts
 ├── scripts/             # Utility scripts
 ├── notebooks/           # Jupyter notebooks
 ├── tests/               # Test suite
 └── docs/                # Documentation
+```
+
+## Data Contracts
+
+The warehouse DDL and the scraper's validation models are two views of the
+same specification and are kept in sync by a parity test:
+
+| Artefact | Purpose |
+|----------|---------|
+| `schema/duckdb.sql` | Canonical DuckDB DDL: artists, festivals, editions, stages, ticket tiers, lineup slots, raw observations, entity resolution, metrics and audit layers. Applied by `warehouse.schema_loader`. |
+| `src/scraper/schemas.ts` | Zod models the scrapers validate against. Each row schema exposes exactly the columns of the table it mirrors. |
+| `contracts/entities.py` | Pydantic contracts used by the API and models. |
+
+Validating both sides:
+
+```bash
+# Python: schema loading + warehouse round-trip
+unset PYTHONPATH && source venv/bin/activate
+pytest tests/ -q
+
+# TypeScript: compilation + contract/parity tests
+npm install
+npm run typecheck
+npm test
 ```
 
 ## API Endpoints
