@@ -22,6 +22,7 @@ def _parse_bool(value: Any, *, default: bool = False) -> bool:
 @dataclass(frozen=True)
 class SeatGeekSnapshot:
     external_event_id:str; external_listing_id:str; listing_url:str; title:str; ticket_type:str|None; section:str|None; row:str|None; quantity:int|None; price_minor:int|None; currency:str|None; fee_components_minor:int|None; total_buyer_price_minor:int|None; is_active:bool; retrieved_at:datetime; content_hash:str; provenance:str; quality_flags:tuple[str,...]
+
 class SeatGeekAdapter:
     source='seatgeek'
     def snapshot(self,raw:Mapping[str,Any],retrieved_at=None):

@@ -973,15 +973,24 @@ class FestivalRepository:
 
     def get_artist_metrics(self, artist_key: str) -> List[Dict[str, Any]]:
         rows = self.conn.execute(
-            "SELECT source_system, metric_type, value, observed_date, fetched_at, meta_data "
-            "FROM metrics.artist_metrics WHERE artist_key = ? ORDER BY source_system, metric_type",
+            """SELECT source_system, metric_type, value, observed_date, fetched_at, meta_data,
+                   source_publication_time, source_as_of, retrieved_at,
+                   valid_from, valid_to, knowledge_time, calculated_at,
+                   source_url, source_record_id, confidence, quality_flags,
+                   license_class, commercial_use_status, feature_version, model_version
+            FROM metrics.artist_metrics WHERE artist_key = ? ORDER BY source_system, metric_type""",
             [artist_key],
         ).fetchall()
-        cols = ["source_system", "metric_type", "value", "observed_date", "fetched_at", "meta_data"]
+        cols = ["source_system", "metric_type", "value", "observed_date", "fetched_at", "meta_data",
+                "source_publication_time", "source_as_of", "retrieved_at",
+                "valid_from", "valid_to", "knowledge_time", "calculated_at",
+                "source_url", "source_record_id", "confidence", "quality_flags",
+                "license_class", "commercial_use_status", "feature_version", "model_version"]
         out = []
         for r in rows:
             d = dict(zip(cols, r))
             d["meta_data"] = self._coerce_json(d["meta_data"])
+            d["quality_flags"] = self._coerce_json(d["quality_flags"])
             out.append(d)
         return out
 
@@ -1236,7 +1245,7 @@ class FestivalRepository:
         ).fetchone()
         if not row:
             return None
-        cols = ["artist_key", "sentiment_label", "compound", "positive", neutral",
+        cols = ["artist_key", "sentiment_label", "compound", "positive", "neutral",
                 "negative", "sample_size", "mention_volume", "attention_score",
                 "top_topics", "top_positive", "top_negative", "llm_summary",
                 "sources_used", "generated_at"]
@@ -1252,7 +1261,7 @@ class FestivalRepository:
             "ORDER BY source_system",
             [artist_key],
         ).fetchall()
-        cols = ["source_system", "mention_count", "points", comments",
+        cols = ["source_system", "mention_count", "points", "comments",
                 "pageviews_30d", "news_mentions"]
         return [dict(zip(cols, r)) for r in rows]
 
@@ -1305,3 +1314,70 @@ def get_repository(db_path: Optional[str] = None, read_only: bool = False) -> Fe
         ro = read_only or os.path.exists(path)
         _DEFAULT_REPO = FestivalRepository(path, read_only=ro)
     return _DEFAULT_REPO
+
+
+def reset_repository() -> None:
+    """Clear the process-wide repository singleton.
+
+    Used by tests to prevent singleton leakage across test cases.
+    """
+    global _DEFAULT_REPO
+    if _DEFAULT_REPO is not None:
+        _DEFAULT_REPO.close()
+        _DEFAULT_REPO = None
+
+
+# --------------------------------------------------------------------------- # 
+# TicketRepository (ported from main's warehouse/repository.py)              # 
+# --------------------------------------------------------------------------- #
+class TicketRepository:
+    """Repository for ticket price spread tracking functionality."""
+
+    _tables = {
+        "tier": "core.festival_ticket_tiers",
+        "observation": "core.secondary_ticket_observations",
+        "spread": "metrics.ticket_price_spreads",
+    }
+
+    def __init__(self, connection):
+        self.connection = connection
+
+    def _insert(self, kind: str, row: dict) -> None:
+        if kind not in self._tables or not row:
+            raise ValueError("invalid record")
+        cols = list(row)
+        names = ", ".join('"' + c + '"' for c in cols)
+        marks = ", ".join("?" for _ in cols)
+        self.connection.execute(
+            f"INSERT INTO {self._tables[kind]} ({names}) VALUES ({marks})",
+            [row[c] for c in cols],
+        )
+
+    def insert_primary_tier(self, row):
+        """Insert a primary ticket tier record."""
+        self._insert("tier", row)
+        self.connection.commit()
+
+    def insert_secondary_observation(self, row):
+        """Insert a secondary market ticket observation."""
+        self._insert("observation", row)
+        self.connection.commit()
+
+    def insert_price_spread(self, row):
+        """Insert a calculated price spread metric."""
+        self._insert("spread", row)
+        self.connection.commit()
+
+    def insert_all(self, *, tier=None, observation=None, spread=None):
+        """Insert multiple records in a single transaction."""
+        try:
+            if tier is not None:
+                self._insert("tier", tier)
+            if observation is not None:
+                self._insert("observation", observation)
+            if spread is not None:
+                self._insert("spread", spread)
+            self.connection.commit()
+        except Exception:
+            self.connection.rollback()
+            raise

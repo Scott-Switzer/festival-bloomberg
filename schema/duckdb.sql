@@ -820,6 +820,19 @@ CREATE TABLE IF NOT EXISTS raw.lineup_observations (
     match_method            VARCHAR,
     requires_review         BOOLEAN,
 
+    -- Point-in-time temporal
+    source_publication_time TIMESTAMP,
+    source_as_of            TIMESTAMP,
+    retrieved_at            TIMESTAMP,
+    valid_from              TIMESTAMP,
+    valid_to                TIMESTAMP,
+    knowledge_time          TIMESTAMP,
+    confidence              DOUBLE,
+    quality_flags           JSON,
+    license_class           VARCHAR,
+    commercial_use_status   VARCHAR,
+    feature_version         VARCHAR,
+
     ingested_at             TIMESTAMP,
 
     CHECK (extraction_confidence IS NULL
@@ -994,7 +1007,24 @@ CREATE TABLE IF NOT EXISTS metrics.artist_metrics (
     value                   DOUBLE,
     observed_date           DATE,
     fetched_at              TIMESTAMP,
-    meta_data               JSON
+    meta_data               JSON,
+
+    -- Point-in-time temporal / provenance
+    source_publication_time TIMESTAMP,
+    source_as_of            TIMESTAMP,
+    retrieved_at            TIMESTAMP,
+    valid_from              TIMESTAMP,
+    valid_to                TIMESTAMP,
+    knowledge_time          TIMESTAMP,
+    calculated_at           TIMESTAMP,
+    source_url              VARCHAR,
+    source_record_id        VARCHAR,
+    confidence              DOUBLE,
+    quality_flags           JSON,
+    license_class           VARCHAR,
+    commercial_use_status   VARCHAR,
+    feature_version         VARCHAR,
+    model_version           VARCHAR
 );
 
 CREATE INDEX IF NOT EXISTS idx_artist_metrics_artist ON metrics.artist_metrics (artist_key);
