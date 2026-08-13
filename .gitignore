@@ -8,3 +8,29 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*
+secrets*
+config/.encryption_key
+
+# Generated security reports
+gitleaks-report.json
+*.security-report
+*.audit-report
+
+# Runtime databases and cache
+*.duckdb
+*.db
+*.sqlite
+*.sqlite3
+
+# Generated reports and artifacts
+reports/
+*.report
+generated/
