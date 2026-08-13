@@ -841,7 +841,15 @@ CREATE TABLE IF NOT EXISTS raw.lineup_observations (
     announcement_date       DATE,
     source_url              VARCHAR,
     source_system           VARCHAR,
-    source_retrieved_at     TIMESTAMP,
+    
+    -- Point-in-time temporal fields
+    source_publication_time TIMESTAMP,
+    source_as_of            TIMESTAMP,
+    retrieved_at            TIMESTAMP,
+    valid_from              TIMESTAMP,
+    valid_to                TIMESTAMP,
+    knowledge_time          TIMESTAMP,
+    
     parser_version          VARCHAR,
     extraction_method       VARCHAR,
     extraction_confidence   DOUBLE,
@@ -854,6 +862,14 @@ CREATE TABLE IF NOT EXISTS raw.lineup_observations (
     match_confidence        DOUBLE,
     match_method            VARCHAR,
     requires_review         BOOLEAN,
+
+    -- Data quality and provenance
+    metric_type             VARCHAR NOT NULL DEFAULT 'OBSERVED',
+    confidence              DOUBLE,
+    quality_flags           JSON,
+    license_class          VARCHAR,
+    commercial_use_status   VARCHAR,
+    feature_version         VARCHAR,
 
     ingested_at             TIMESTAMP,
 
@@ -1025,10 +1041,31 @@ CREATE TABLE IF NOT EXISTS metrics.artist_metrics (
     metric_key              VARCHAR PRIMARY KEY,
     artist_key              VARCHAR NOT NULL,
     source_system           VARCHAR NOT NULL,
-    metric_type             VARCHAR NOT NULL,
+    metric_type             VARCHAR NOT NULL CHECK (
+        metric_type IN ('OBSERVED', 'MODELED', 'ASSUMPTION', 'PRIVATE', 'SYNTHETIC')
+    ),
     value                   DOUBLE,
+    
+    -- Point-in-time temporal fields
     observed_date           DATE,
-    fetched_at              TIMESTAMP,
+    source_publication_time TIMESTAMP,
+    source_as_of            TIMESTAMP,
+    retrieved_at            TIMESTAMP,
+    valid_from              TIMESTAMP,
+    valid_to                TIMESTAMP,
+    knowledge_time          TIMESTAMP,
+    calculated_at           TIMESTAMP,
+    
+    -- Data quality and provenance
+    source_url              VARCHAR,
+    source_record_id        VARCHAR,
+    confidence              DOUBLE,
+    quality_flags           JSON,
+    license_class          VARCHAR,
+    commercial_use_status   VARCHAR,
+    feature_version         VARCHAR,
+    model_version          VARCHAR,
+    
     meta_data               JSON
 );
 
@@ -1051,6 +1088,30 @@ CREATE TABLE IF NOT EXISTS metrics.artist_sentiment (
     top_negative            JSON,
     llm_summary             VARCHAR,
     sources_used            JSON,
+    
+    -- Point-in-time temporal fields
+    observed_date           DATE,
+    source_publication_time TIMESTAMP,
+    source_as_of            TIMESTAMP,
+    retrieved_at            TIMESTAMP,
+    valid_from              TIMESTAMP,
+    valid_to                TIMESTAMP,
+    knowledge_time          TIMESTAMP,
+    calculated_at           TIMESTAMP,
+    
+    -- Data quality and provenance
+    metric_type             VARCHAR NOT NULL DEFAULT 'MODELED' CHECK (
+        metric_type IN ('OBSERVED', 'MODELED', 'ASSUMPTION', 'PRIVATE', 'SYNTHETIC')
+    ),
+    source_url              VARCHAR,
+    source_record_id        VARCHAR,
+    confidence              DOUBLE,
+    quality_flags           JSON,
+    license_class          VARCHAR,
+    commercial_use_status   VARCHAR,
+    feature_version         VARCHAR,
+    model_version          VARCHAR,
+    
     generated_at            TIMESTAMP
 );
 
@@ -1059,11 +1120,33 @@ CREATE TABLE IF NOT EXISTS metrics.social_signals (
     signal_key              VARCHAR PRIMARY KEY,
     artist_key              VARCHAR NOT NULL,
     source_system           VARCHAR NOT NULL,
+    metric_type             VARCHAR NOT NULL DEFAULT 'OBSERVED' CHECK (
+        metric_type IN ('OBSERVED', 'MODELED', 'ASSUMPTION', 'PRIVATE', 'SYNTHETIC')
+    ),
     mention_count           INTEGER,
     points                  DOUBLE,
     comments                DOUBLE,
     pageviews_30d           DOUBLE,
     news_mentions           DOUBLE,
+    
+    -- Point-in-time temporal fields
+    observed_date           DATE,
+    source_publication_time TIMESTAMP,
+    source_as_of            TIMESTAMP,
+    retrieved_at            TIMESTAMP,
+    valid_from              TIMESTAMP,
+    valid_to                TIMESTAMP,
+    knowledge_time          TIMESTAMP,
+    
+    -- Data quality and provenance
+    source_url              VARCHAR,
+    source_record_id        VARCHAR,
+    confidence              DOUBLE,
+    quality_flags           JSON,
+    license_class          VARCHAR,
+    commercial_use_status   VARCHAR,
+    feature_version         VARCHAR,
+    
     fetched_at              TIMESTAMP
 );
 
@@ -1074,13 +1157,33 @@ CREATE TABLE IF NOT EXISTS metrics.artist_popularity (
     popularity_key          VARCHAR PRIMARY KEY,
     artist_key              VARCHAR NOT NULL,
     source_system           VARCHAR NOT NULL,
+    metric_type             VARCHAR NOT NULL DEFAULT 'OBSERVED' CHECK (
+        metric_type IN ('OBSERVED', 'MODELED', 'ASSUMPTION', 'PRIVATE', 'SYNTHETIC')
+    ),
     observed_date           DATE,
     popularity_score        DOUBLE,
     popularity_rank         INTEGER,
     followers               BIGINT,
     monthly_listeners       BIGINT,
     playcount               BIGINT,
+    
+    -- Point-in-time temporal fields
+    source_publication_time TIMESTAMP,
+    source_as_of            TIMESTAMP,
+    retrieved_at            TIMESTAMP,
+    valid_from              TIMESTAMP,
+    valid_to                TIMESTAMP,
+    knowledge_time          TIMESTAMP,
+    
+    -- Data quality and provenance
     evidence_url            VARCHAR,
+    source_record_id        VARCHAR,
+    confidence              DOUBLE,
+    quality_flags           JSON,
+    license_class          VARCHAR,
+    commercial_use_status   VARCHAR,
+    feature_version         VARCHAR,
+    
     fetched_at              TIMESTAMP,
 
     CHECK (popularity_score IS NULL
@@ -1102,6 +1205,9 @@ CREATE TABLE IF NOT EXISTS metrics.artist_attention_observations (
     edition_year            INTEGER,
     source_system           VARCHAR NOT NULL,
     metric_kind             VARCHAR NOT NULL,
+    metric_type             VARCHAR NOT NULL DEFAULT 'OBSERVED' CHECK (
+        metric_type IN ('OBSERVED', 'MODELED', 'ASSUMPTION', 'PRIVATE', 'SYNTHETIC')
+    ),
     project                 VARCHAR,
     access_method           VARCHAR,
     agent                   VARCHAR,
@@ -1118,10 +1224,26 @@ CREATE TABLE IF NOT EXISTS metrics.artist_attention_observations (
     error_code              VARCHAR,
     error_message           VARCHAR,
     source_url              VARCHAR NOT NULL,
+    
+    -- Point-in-time temporal fields
+    source_publication_time TIMESTAMP,
+    source_as_of            TIMESTAMP,
     retrieved_at            TIMESTAMP NOT NULL,
+    valid_from              TIMESTAMP,
+    valid_to                TIMESTAMP,
+    knowledge_time          TIMESTAMP,
+    
     raw_response_json       JSON,
     provenance_json         JSON,
     metric_version          VARCHAR NOT NULL,
+    
+    -- Data quality and provenance
+    confidence              DOUBLE,
+    quality_flags           JSON,
+    license_class          VARCHAR,
+    commercial_use_status   VARCHAR,
+    feature_version         VARCHAR,
+    
     ingested_at             TIMESTAMP
 );
 
@@ -1245,6 +1367,288 @@ CREATE INDEX IF NOT EXISTS idx_edition_analytical_festival_year
   ON metrics.edition_analytical_metrics (festival_key, edition_year);
 CREATE INDEX IF NOT EXISTS idx_edition_analytical_version
   ON metrics.edition_analytical_metrics (metric_version, computed_at);
+
+-- ===========================================================================
+-- Point-in-time feature store for backtesting and modeling
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS metrics.artist_feature_store (
+    feature_key             VARCHAR PRIMARY KEY,
+    artist_key              VARCHAR NOT NULL,
+    festival_key            VARCHAR,
+    edition_key             VARCHAR,
+    edition_year            INTEGER,
+    feature_name            VARCHAR NOT NULL,
+    feature_type            VARCHAR NOT NULL CHECK (
+        feature_type IN ('raw', 'derived', 'modeled', 'composite')
+    ),
+    feature_value           DOUBLE,
+    feature_category        VARCHAR,
+    
+    -- Point-in-time temporal fields
+    feature_date            DATE,
+    source_publication_time TIMESTAMP,
+    source_as_of            TIMESTAMP,
+    retrieved_at            TIMESTAMP,
+    valid_from              TIMESTAMP,
+    valid_to                TIMESTAMP,
+    knowledge_time          TIMESTAMP,
+    calculated_at           TIMESTAMP,
+    
+    -- Feature metadata
+    feature_version         VARCHAR,
+    model_version          VARCHAR,
+    formula                VARCHAR,
+    input_features         JSON,
+    confidence              DOUBLE,
+    quality_flags           JSON,
+    
+    -- Provenance
+    source_system           VARCHAR,
+    source_url              VARCHAR,
+    source_record_id        VARCHAR,
+    license_class          VARCHAR,
+    commercial_use_status   VARCHAR,
+    
+    evidence_json           JSON,
+    ingested_at             TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_feature_store_artist_date
+  ON metrics.artist_feature_store (artist_key, feature_date);
+CREATE INDEX IF NOT EXISTS idx_feature_store_edition
+  ON metrics.artist_feature_store (edition_key, edition_year);
+CREATE INDEX IF NOT EXISTS idx_feature_store_name
+  ON metrics.artist_feature_store (feature_name, feature_type);
+CREATE INDEX IF NOT EXISTS idx_feature_store_knowledge_time
+  ON metrics.artist_feature_store (knowledge_time);
+
+-- ===========================================================================
+-- Artist factor model outputs
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS metrics.artist_factors (
+    factor_key              VARCHAR PRIMARY KEY,
+    artist_key              VARCHAR NOT NULL,
+    festival_key            VARCHAR,
+    edition_key             VARCHAR,
+    edition_year            INTEGER,
+    
+    -- Core factor scores (0-100)
+    momentum_score          DOUBLE,
+    relevance_score         DOUBLE,
+    audience_fit_score      DOUBLE,
+    value_proposition_score DOUBLE,
+    booking_complexity_score DOUBLE,
+    risk_score              DOUBLE,
+    
+    -- Factor components
+    momentum_components     JSON,
+    relevance_components    JSON,
+    audience_components     JSON,
+    value_components        JSON,
+    complexity_components   JSON,
+    risk_components         JSON,
+    
+    -- Factor metadata
+    factor_model_version    VARCHAR,
+    scoring_method          VARCHAR,
+    confidence              DOUBLE,
+    quality_flags           JSON,
+    
+    -- Point-in-time temporal fields
+    feature_date            DATE,
+    source_as_of            TIMESTAMP,
+    calculated_at           TIMESTAMP,
+    valid_from              TIMESTAMP,
+    valid_to                TIMESTAMP,
+    knowledge_time          TIMESTAMP,
+    
+    -- Provenance
+    source_system           VARCHAR,
+    evidence_json           JSON,
+    ingested_at             TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_artist_factors_artist
+  ON metrics.artist_factors (artist_key, factor_date);
+CREATE INDEX IF NOT EXISTS idx_artist_factors_edition
+  ON metrics.artist_factors (edition_key, edition_year);
+CREATE INDEX IF NOT EXISTS idx_artist_factors_momentum
+  ON metrics.artist_factors (momentum_score);
+CREATE INDEX IF NOT EXISTS idx_artist_factors_knowledge_time
+  ON metrics.artist_factors (knowledge_time);
+
+-- ===========================================================================
+-- Expected billing baseline model
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS metrics.expected_billing (
+    billing_key             VARCHAR PRIMARY KEY,
+    artist_key              VARCHAR NOT NULL,
+    festival_key            VARCHAR,
+    edition_key             VARCHAR,
+    edition_year            INTEGER,
+    
+    -- Expected billing prediction
+    expected_billing_tier   VARCHAR CHECK (
+        expected_billing_tier IN ('HEADLINER', 'SUB_HEADLINER', 'SUPPORTING', 'EARLY_DAY', 'DJ_ONLY')
+    ),
+    expected_billing_order  INTEGER,
+    billing_confidence      DOUBLE,
+    
+    -- Billing justification
+    booking_probability     DOUBLE,
+    expected_day            INTEGER,
+    expected_stage          VARCHAR,
+    billing_reasoning       VARCHAR,
+    billing_factors         JSON,
+    
+    -- Model metadata
+    model_version           VARCHAR,
+    training_period         VARCHAR,
+    confidence              DOUBLE,
+    quality_flags           JSON,
+    
+    -- Point-in-time temporal fields
+    feature_date            DATE,
+    source_as_of            TIMESTAMP,
+    calculated_at           TIMESTAMP,
+    valid_from              TIMESTAMP,
+    valid_to                TIMESTAMP,
+    knowledge_time          TIMESTAMP,
+    
+    -- Provenance
+    source_system           VARCHAR,
+    evidence_json           JSON,
+    ingested_at             TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_expected_billing_artist
+  ON metrics.expected_billing (artist_key, feature_date);
+CREATE INDEX IF NOT EXISTS idx_expected_billing_edition
+  ON metrics.expected_billing (edition_key, edition_year);
+CREATE INDEX IF NOT EXISTS idx_expected_billing_tier
+  ON metrics.expected_billing (expected_billing_tier);
+CREATE INDEX IF NOT EXISTS idx_expected_billing_knowledge_time
+  ON metrics.expected_billing (knowledge_time);
+
+-- ===========================================================================
+-- Relative value calculations
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS metrics.relative_value (
+    value_key               VARCHAR PRIMARY KEY,
+    artist_key              VARCHAR NOT NULL,
+    festival_key            VARCHAR,
+    edition_key             VARCHAR,
+    edition_year            INTEGER,
+    
+    -- Relative value metrics
+    relative_value_score    DOUBLE,
+    value_category          VARCHAR CHECK (
+        value_category IN ('UNDERVALUED', 'FAIR_VALUE', 'OVERVALUED', 'UNCERTAIN')
+    ),
+    value_percentile        DOUBLE,
+    
+    -- Value components
+    current_billing_tier    VARCHAR,
+    expected_billing_tier   VARCHAR,
+    billing_gap             DOUBLE,
+    momentum_vs_billing     DOUBLE,
+    audience_vs_billing     DOUBLE,
+    
+    -- Market comparison
+    peer_group              VARCHAR,
+    peer_comparison         JSON,
+    market_position         VARCHAR,
+    
+    -- Value metadata
+    value_model_version     VARCHAR,
+    scoring_method          VARCHAR,
+    confidence              DOUBLE,
+    quality_flags           JSON,
+    
+    -- Point-in-time temporal fields
+    feature_date            DATE,
+    source_as_of            TIMESTAMP,
+    calculated_at           TIMESTAMP,
+    valid_from              TIMESTAMP,
+    valid_to                TIMESTAMP,
+    knowledge_time          TIMESTAMP,
+    
+    -- Provenance
+    source_system           VARCHAR,
+    evidence_json           JSON,
+    ingested_at             TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_relative_value_artist
+  ON metrics.relative_value (artist_key, feature_date);
+CREATE INDEX IF NOT EXISTS idx_relative_value_edition
+  ON metrics.relative_value (edition_key, edition_year);
+CREATE INDEX IF NOT EXISTS idx_relative_value_score
+  ON metrics.relative_value (relative_value_score);
+CREATE INDEX IF NOT EXISTS idx_relative_value_knowledge_time
+  ON metrics.relative_value (knowledge_time);
+
+-- ===========================================================================
+-- Festival portfolio analytics
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS metrics.festival_portfolio (
+    portfolio_key           VARCHAR PRIMARY KEY,
+    festival_key            VARCHAR NOT NULL,
+    edition_key             VARCHAR,
+    edition_year            INTEGER,
+    
+    -- Portfolio composition
+    total_artists           INTEGER,
+    headliner_count         INTEGER,
+    sub_headliner_count     INTEGER,
+    supporting_count        INTEGER,
+    early_day_count        INTEGER,
+    
+    -- Portfolio metrics
+    portfolio_momentum_avg  DOUBLE,
+    portfolio_momentum_median DOUBLE,
+    portfolio_risk_avg      DOUBLE,
+    portfolio_value_avg     DOUBLE,
+    portfolio_diversity_score DOUBLE,
+    
+    -- Budget allocation
+    total_budget           DOUBLE,
+    headliner_budget        DOUBLE,
+    supporting_budget       DOUBLE,
+    budget_utilization      DOUBLE,
+    
+    -- Portfolio efficiency
+    cost_per_momentum       DOUBLE,
+    cost_per_attendance     DOUBLE,
+    roi_score               DOUBLE,
+    efficiency_score       DOUBLE,
+    
+    -- Portfolio metadata
+    portfolio_version        VARCHAR,
+    optimization_method     VARCHAR,
+    confidence              DOUBLE,
+    quality_flags           JSON,
+    
+    -- Point-in-time temporal fields
+    feature_date            DATE,
+    source_as_of            TIMESTAMP,
+    calculated_at           TIMESTAMP,
+    valid_from              TIMESTAMP,
+    valid_to                TIMESTAMP,
+    knowledge_time          TIMESTAMP,
+    
+    -- Provenance
+    source_system           VARCHAR,
+    evidence_json           JSON,
+    ingested_at             TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_festival_portfolio_edition
+  ON metrics.festival_portfolio (edition_key, edition_year);
+CREATE INDEX IF NOT EXISTS idx_festival_portfolio_festival
+  ON metrics.festival_portfolio (festival_key, feature_date);
+CREATE INDEX IF NOT EXISTS idx_festival_portfolio_knowledge_time
+  ON metrics.festival_portfolio (knowledge_time);
 
 -- ===========================================================================
 -- Canonical entity resolution (artists, festivals, venues, events)

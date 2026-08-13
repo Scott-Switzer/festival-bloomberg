@@ -1,0 +1,435 @@
+# Festival Bloomberg Source Registry Configuration
+# Machine-readable metadata for all data sources
+# Generated from python/festival_bloomberg/governance/source_registry.py
+
+wikidata:
+  source_id: wikidata
+  name: Wikidata
+  base_url: https://www.wikidata.org
+  category: ARTIST_ENTITY
+  access_type: PUBLIC_API
+  auth_required: false
+  rate_limit: null
+  cost_class: FREE
+  portfolio_research_allowed: true
+  academic_allowed: true
+  commercial_use_status: OPEN_COMMERCIAL_OK
+  redistribution_status: CC0_1.0
+  raw_storage_status: CC0_1.0
+  derived_data_status: CC0_1.0
+  attribution_required: false
+  terms_url: https://www.wikidata.org/wiki/Wikidata:Licensing
+  license_url: https://creativecommons.org/publicdomain/zero/1.0/
+  terms_checked_at: '2026-08-12T00:00:00'
+  legal_review_status: APPROVED
+  notes: CC0 public domain license, no attribution required. Excellent for canonical entity resolution.
+  historical_depth: Extensive
+  geographic_coverage: Global
+  update_frequency: Continuous
+  confidence: 0.95
+  metadata: {}
+
+wikimedia_analytics:
+  source_id: wikimedia_analytics
+  name: Wikimedia Analytics API
+  base_url: https://doc.wikimedia.org/generated-data-platform/aqs/analytics-api/
+  category: ATTENTION
+  access_type: PUBLIC_API
+  auth_required: false
+  rate_limit: null
+  cost_class: FREE
+  portfolio_research_allowed: true
+  academic_allowed: true
+  commercial_use_status: OPEN_WITH_ATTRIBUTION
+  redistribution_status: VARIES_BY_PROJECT
+  raw_storage_status: VARIES_BY_PROJECT
+  derived_data_status: VARIES_BY_PROJECT
+  attribution_required: true
+  terms_url: https://doc.wikimedia.org/generated-data-platform/aqs/analytics-api/
+  license_url: https://creativecommons.org/licenses/by-sa/3.0/
+  terms_checked_at: '2026-08-12T00:00:00'
+  legal_review_status: APPROVED
+  notes: Pageview data for Wikipedia articles. License varies by project, attribution required.
+  historical_depth: Several years
+  geographic_coverage: Global (by project)
+  update_frequency: Daily
+  confidence: 0.9
+  metadata: {}
+
+gdelt:
+  source_id: gdelt
+  name: GDELT Project
+  base_url: https://www.gdeltproject.org
+  category: NEWS_SENTIMENT
+  access_type: PUBLIC_API
+  auth_required: false
+  rate_limit: null
+  cost_class: FREE
+  portfolio_research_allowed: true
+  academic_allowed: true
+  commercial_use_status: OPEN_WITH_ATTRIBUTION
+  redistribution_status: CC_BY_4.0
+  raw_storage_status: CC_BY_4.0
+  derived_data_status: CC_BY_4.0
+  attribution_required: true
+  terms_url: https://www.gdeltproject.org/about.html
+  license_url: https://creativecommons.org/licenses/by/4.0/
+  terms_checked_at: '2026-08-12T00:00:00'
+  legal_review_status: APPROVED
+  notes: Massive news event database, excellent for sentiment analysis. CC BY 4.0 with attribution.
+  historical_depth: 1979-present
+  geographic_coverage: Global
+  update_frequency: Every 15 minutes
+  confidence: 0.9
+  metadata: {}
+
+noaa_nws:
+  source_id: noaa_nws
+  name: NOAA National Weather Service
+  base_url: https://www.weather.gov/documentation/services-web-alerts
+  category: WEATHER
+  access_type: PUBLIC_API
+  auth_required: false
+  rate_limit: null
+  cost_class: FREE
+  portfolio_research_allowed: true
+  academic_allowed: true
+  commercial_use_status: OPEN_COMMERCIAL_OK
+  redistribution_status: PUBLIC_DOMAIN
+  raw_storage_status: PUBLIC_DOMAIN
+  derived_data_status: PUBLIC_DOMAIN
+  attribution_required: false
+  terms_url: https://www.weather.gov/documentation/services-web-alerts
+  license_url: https://www.noaa.gov/weather-atmosphere-data
+  terms_checked_at: '2026-08-12T00:00:00'
+  legal_review_status: APPROVED
+  notes: Public domain weather data. Excellent for US weather risk analysis.
+  historical_depth: Extensive
+  geographic_coverage: United States
+  update_frequency: Real-time
+  confidence: 0.95
+  metadata: {}
+
+noaa_ncei:
+  source_id: noaa_ncei
+  name: NOAA NCEI Climate Data
+  base_url: https://www.ncei.noaa.gov/support/access-data-service-api-user-documentation
+  category: WEATHER
+  access_type: AUTHENTICATED_API
+  auth_required: false
+  rate_limit: null
+  cost_class: FREE
+  portfolio_research_allowed: true
+  academic_allowed: true
+  commercial_use_status: OPEN_COMMERCIAL_OK
+  redistribution_status: PUBLIC_DOMAIN
+  raw_storage_status: PUBLIC_DOMAIN
+  derived_data_status: PUBLIC_DOMAIN
+  attribution_required: false
+  terms_url: https://www.ncei.noaa.gov/support/access-data-service-api-user-documentation
+  license_url: https://www.noaa.gov/weather-atmosphere-data
+  terms_checked_at: '2026-08-12T00:00:00'
+  legal_review_status: APPROVED
+  notes: Historical weather data for backtesting. Public domain.
+  historical_depth: Extensive
+  geographic_coverage: Global
+  update_frequency: Monthly
+  confidence: 0.95
+  metadata: {}
+
+bts_transtats:
+  source_id: bts_transtats
+  name: BTS TranStats
+  base_url: https://www.transtats.bts.gov/
+  category: AIR_TRAVEL
+  access_type: DATA_DOWNLOAD
+  auth_required: false
+  rate_limit: null
+  cost_class: FREE
+  portfolio_research_allowed: true
+  academic_allowed: true
+  commercial_use_status: OPEN_COMMERCIAL_OK
+  redistribution_status: PUBLIC_DOMAIN
+  raw_storage_status: PUBLIC_DOMAIN
+  derived_data_status: PUBLIC_DOMAIN
+  attribution_required: false
+  terms_url: https://www.transtats.bts.gov/
+  license_url: https://www.transportation.gov/policy/accessibility
+  terms_checked_at: '2026-08-12T00:00:00'
+  legal_review_status: APPROVED
+  notes: Air travel statistics for routing analysis. Public domain.
+  historical_depth: Extensive
+  geographic_coverage: United States
+  update_frequency: Monthly
+  confidence: 0.9
+  metadata: {}
+
+census_acs:
+  source_id: census_acs
+  name: US Census ACS
+  base_url: https://www.census.gov/data/developers/data-sets/acs-5year.html
+  category: DEMOGRAPHICS
+  access_type: AUTHENTICATED_API
+  auth_required: true
+  rate_limit: null
+  cost_class: FREE
+  portfolio_research_allowed: true
+  academic_allowed: true
+  commercial_use_status: OPEN_WITH_ATTRIBUTION
+  redistribution_status: PUBLIC_DOMAIN
+  raw_storage_status: PUBLIC_DOMAIN
+  derived_data_status: PUBLIC_DOMAIN
+  attribution_required: true
+  terms_url: https://www.census.gov/data/developers/data-sets/acs-5year.html
+  license_url: https://www.census.gov/about/policies/privacy/data-stewardship
+  terms_checked_at: '2026-08-12T00:00:00'
+  legal_review_status: APPROVED
+  notes: Detailed demographic data for market analysis. Public domain with attribution.
+  historical_depth: 5-year estimates
+  geographic_coverage: United States
+  update_frequency: Annual
+  confidence: 0.9
+  metadata: {}
+
+bea_api:
+  source_id: bea_api
+  name: BEA API
+  base_url: https://apps.bea.gov/api/signup/
+  category: REGIONAL_ECONOMICS
+  access_type: AUTHENTICATED_API
+  auth_required: true
+  rate_limit: 120 requests/minute
+  cost_class: FREE
+  portfolio_research_allowed: true
+  academic_allowed: true
+  commercial_use_status: OPEN_WITH_ATTRIBUTION
+  redistribution_status: PUBLIC_DOMAIN
+  raw_storage_status: PUBLIC_DOMAIN
+  derived_data_status: PUBLIC_DOMAIN
+  attribution_required: true
+  terms_url: https://apps.bea.gov/api/signup/
+  license_url: https://www.bea.gov/about/policies
+  terms_checked_at: '2026-08-12T00:00:00'
+  legal_review_status: APPROVED
+  notes: Regional economic indicators. Public domain with attribution.
+  historical_depth: Extensive
+  geographic_coverage: United States
+  update_frequency: Quarterly/Annual
+  confidence: 0.9
+  metadata: {}
+
+bls_api:
+  source_id: bls_api
+  name: BLS API
+  base_url: https://www.bls.gov/developers/home.htm
+  category: LABOR_ECONOMICS
+  access_type: AUTHENTICATED_API
+  auth_required: true
+  rate_limit: Unknown (reasonable use policy)
+  cost_class: FREE
+  portfolio_research_allowed: true
+  academic_allowed: true
+  commercial_use_status: OPEN_WITH_ATTRIBUTION
+  redistribution_status: PUBLIC_DOMAIN
+  raw_storage_status: PUBLIC_DOMAIN
+  derived_data_status: PUBLIC_DOMAIN
+  attribution_required: true
+  terms_url: https://www.bls.gov/developers/home.htm
+  license_url: https://www.bls.gov/about/policies
+  terms_checked_at: '2026-08-12T00:00:00'
+  legal_review_status: APPROVED
+  notes: Labor market and economic indicators. Public domain with attribution.
+  historical_depth: Extensive
+  geographic_coverage: United States
+  update_frequency: Monthly/Annual
+  confidence: 0.9
+  metadata: {}
+
+ecb_api:
+  source_id: ecb_api
+  name: ECB API
+  base_url: https://data.ecb.europa.eu/help/api/overview
+  category: FX
+  access_type: PUBLIC_API
+  auth_required: false
+  rate_limit: null
+  cost_class: FREE
+  portfolio_research_allowed: true
+  academic_allowed: true
+  commercial_use_status: OPEN_COMMERCIAL_OK
+  redistribution_status: PUBLIC_DOMAIN
+  raw_storage_status: PUBLIC_DOMAIN
+  derived_data_status: PUBLIC_DOMAIN
+  attribution_required: false
+  terms_url: https://data.ecb.europa.eu/help/api/overview
+  license_url: https://www.ecb.europa.eu/home/policy/legal
+  terms_checked_at: '2026-08-12T00:00:00'
+  legal_review_status: APPROVED
+  notes: Exchange rate data for international festival economics. Public domain.
+  historical_depth: Extensive
+  geographic_coverage: Global (major currencies)
+  update_frequency: Daily
+  confidence: 0.95
+  metadata: {}
+
+openstreetmap:
+  source_id: openstreetmap
+  name: OpenStreetMap
+  base_url: https://www.openstreetmap.org/copyright
+  category: GEOGRAPHY
+  access_type: PUBLIC_API
+  auth_required: false
+  rate_limit: null
+  cost_class: FREE
+  portfolio_research_allowed: true
+  academic_allowed: true
+  commercial_use_status: OPEN_WITH_ATTRIBUTION
+  redistribution_status: ODBL
+  raw_storage_status: ODBL
+  derived_data_status: ODBL
+  attribution_required: true
+  terms_url: https://www.openstreetmap.org/copyright
+  license_url: https://opendatacommons.org/licenses/odbl/1-0/
+  terms_checked_at: '2026-08-12T00:00:00'
+  legal_review_status: APPROVED
+  notes: Geographic data for venue and routing analysis. ODbL with attribution.
+  historical_depth: Extensive
+  geographic_coverage: Global
+  update_frequency: Continuous
+  confidence: 0.9
+  metadata: {}
+
+musicbrainz:
+  source_id: musicbrainz
+  name: MusicBrainz
+  base_url: https://musicbrainz.org/doc/MusicBrainz_API
+  category: ARTIST_ENTITY
+  access_type: PUBLIC_API
+  auth_required: false
+  rate_limit: 1 req/sec
+  cost_class: FREE
+  portfolio_research_allowed: true
+  academic_allowed: true
+  commercial_use_status: TERMS_REVIEW_REQUIRED
+  redistribution_status: CC_BY_SA_4.0
+  raw_storage_status: CC_BY_SA_4.0
+  derived_data_status: CC_BY_SA_4.0
+  attribution_required: true
+  terms_url: https://musicbrainz.org/doc/MusicBrainz_API
+  license_url: https://creativecommons.org/licenses/by-sa/4.0/
+  terms_checked_at: '2026-08-12T00:00:00'
+  legal_review_status: PENDING_REVIEW
+  notes: CC BY-SA 4.0 share-alike license may restrict commercial SaaS use. Legal review required.
+  historical_depth: Extensive (founded 2000)
+  geographic_coverage: Global
+  update_frequency: Continuous
+  confidence: 0.7
+  metadata: {}
+
+ticketmaster_api:
+  source_id: ticketmaster_api
+  name: Ticketmaster Discovery API
+  base_url: https://developer.ticketmaster.com/products-and-docs/apis/discovery-manual/v2/
+  category: TICKET_EVENT
+  access_type: AUTHENTICATED_API
+  auth_required: true
+  rate_limit: Documented (varies by plan)
+  cost_class: ENTERPRISE_LICENSING
+  portfolio_research_allowed: false
+  academic_allowed: false
+  commercial_use_status: COMMERCIAL_AGREEMENT_REQUIRED
+  redistribution_status: PROPRIETARY
+  raw_storage_status: PROPRIETARY
+  derived_data_status: PROPRIETARY
+  attribution_required: true
+  terms_url: https://developer.ticketmaster.com/support/terms-of-use
+  license_url: null
+  terms_checked_at: '2026-08-12T00:00:00'
+  legal_review_status: REQUIRES_AGREEMENT
+  notes: Primary source but restricted access. Commercial agreement required.
+  historical_depth: Current events + some historical
+  geographic_coverage: Global (30+ countries)
+  update_frequency: Real-time
+  confidence: 0.6
+  metadata: {}
+
+setlist_fm:
+  source_id: setlist_fm
+  name: Setlist.fm API
+  base_url: https://api.setlist.fm/docs/1.0/index.html
+  category: CONCERT_HISTORY
+  access_type: AUTHENTICATED_API
+  auth_required: true
+  rate_limit: Documented
+  cost_class: CUSTOM_PRICING
+  portfolio_research_allowed: true
+  academic_allowed: true
+  commercial_use_status: COMMERCIAL_AGREEMENT_REQUIRED
+  redistribution_status: PROPRIETARY
+  raw_storage_status: PROPRIETARY
+  derived_data_status: PROPRIETARY
+  attribution_required: true
+  terms_url: https://api.setlist.fm/docs/1.0/index.html
+  license_url: null
+  terms_checked_at: '2026-08-12T00:00:00'
+  legal_review_status: REQUIRES_AGREEMENT
+  notes: Excellent for concert history but commercial restrictions. Free for development, paid for commercial.
+  historical_depth: Extensive concert history
+  geographic_coverage: Global
+  update_frequency: Continuous
+  confidence: 0.65
+  metadata: {}
+
+youtube_api:
+  source_id: youtube_api
+  name: YouTube Data API
+  base_url: https://developers.google.com/youtube/v3/getting-started
+  category: VIDEO
+  access_type: OAUTH_REQUIRED
+  auth_required: true
+  rate_limit: 10,000 units/day (free tier)
+  cost_class: FREE_WITH_QUOTA
+  portfolio_research_allowed: true
+  academic_allowed: true
+  commercial_use_status: TERMS_REVIEW_REQUIRED
+  redistribution_status: YOUTUBE_TOS
+  raw_storage_status: YOUTUBE_TOS
+  derived_data_status: YOUTUBE_TOS
+  attribution_required: true
+  terms_url: https://developers.google.com/youtube/v3/getting-started
+  license_url: https://www.youtube.com/t/terms
+  terms_checked_at: '2026-08-12T00:00:00'
+  legal_review_status: PENDING_REVIEW
+  notes: Excellent for video engagement metrics. Quota limits, terms of service restrictions. Legal review recommended.
+  historical_depth: Extensive
+  geographic_coverage: Global
+  update_frequency: Real-time
+  confidence: 0.75
+  metadata: {}
+
+songkick:
+  source_id: songkick
+  name: Songkick API
+  base_url: https://www.songkick.com/developer/
+  category: TOURING_DISCOVERY
+  access_type: AUTHENTICATED_API
+  auth_required: true
+  rate_limit: Documented
+  cost_class: CUSTOM_PRICING
+  portfolio_research_allowed: true
+  academic_allowed: true
+  commercial_use_status: COMMERCIAL_AGREEMENT_REQUIRED
+  redistribution_status: PROPRIETARY
+  raw_storage_status: PROPRIETARY
+  derived_data_status: PROPRIETARY
+  attribution_required: true
+  terms_url: https://www.songkick.com/developer/
+  license_url: null
+  terms_checked_at: '2026-08-12T00:00:00'
+  legal_review_status: REQUIRES_AGREEMENT
+  notes: Good tour discovery data but access unclear. Commercial agreement likely required.
+  historical_depth: Extensive
+  geographic_coverage: Global
+  update_frequency: Continuous
+  confidence: 0.5
+  metadata: {}
