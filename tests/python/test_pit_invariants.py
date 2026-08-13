@@ -226,7 +226,8 @@ def test_future_knowledge_excluded_at_cutoff(pit_repo: FestivalRepository):
         f"Future knowledge leaked into PIT query."
     )
     assert rows[0][0] == 1000.0
-    assert rows[0][1] == kt_past.isoformat()
+    # DuckDB returns naive TIMESTAMP values; compare against the naive form.
+    assert rows[0][1] == kt_past.replace(tzinfo=None)
 
     # Without cutoff, both are visible.
     all_rows = pit_repo.conn.execute(
@@ -508,7 +509,7 @@ def test_ticket_repository_exists_and_writes(pit_repo: FestivalRepository):
         "total_primary_price_minor": 11000,
         "is_sold_out": False,
         "url": "https://example.com/tier",
-        "created_at": _utc(datetime(2026, 8, 10, tzinfo=datetime.timezone.utc)),
+        "created_at": _utc(datetime(2026, 8, 10, tzinfo=timezone.utc)),
     }
     tr.insert_primary_tier(tier_row)
 
@@ -529,7 +530,7 @@ def test_ticket_repository_exists_and_writes(pit_repo: FestivalRepository):
         "fee_components_minor": 2000,
         "total_buyer_price_minor": 16000,
         "is_active": True,
-        "retrieved_at": _utc(datetime(2026, 8, 10, 1, tzinfo=datetime.timezone.utc)),
+        "retrieved_at": _utc(datetime(2026, 8, 10, 1, tzinfo=timezone.utc)),
         "content_hash": "abc123",
         "provenance": "seatgeek",
         "retrieval_metadata": {},
@@ -548,7 +549,7 @@ def test_ticket_repository_exists_and_writes(pit_repo: FestivalRepository):
         "timestamp_delta_seconds": 3600,
         "quality_flags": [],
         "arbitrage_candidate": True,
-        "calculated_at": _utc(datetime(2026, 8, 10, 2, tzinfo=datetime.timezone.utc)),
+        "calculated_at": _utc(datetime(2026, 8, 10, 2, tzinfo=timezone.utc)),
     }
     tr.insert_price_spread(spread_row)
 
@@ -583,7 +584,7 @@ def test_ticket_repository_insert_all_atomic(pit_repo: FestivalRepository):
         "total_primary_price_minor": 5500,
         "is_sold_out": False,
         "url": "https://example.com/ga",
-        "created_at": _utc(datetime(2026, 8, 10, tzinfo=datetime.timezone.utc)),
+        "created_at": _utc(datetime(2026, 8, 10, tzinfo=timezone.utc)),
     }
     obs = {
         "id": "obs-atomic",
@@ -602,7 +603,7 @@ def test_ticket_repository_insert_all_atomic(pit_repo: FestivalRepository):
         "fee_components_minor": 1000,
         "total_buyer_price_minor": 9000,
         "is_active": True,
-        "retrieved_at": _utc(datetime(2026, 8, 10, 1, tzinfo=datetime.timezone.utc)),
+        "retrieved_at": _utc(datetime(2026, 8, 10, 1, tzinfo=timezone.utc)),
         "content_hash": "def456",
         "provenance": "seatgeek",
         "retrieval_metadata": {},
@@ -619,7 +620,7 @@ def test_ticket_repository_insert_all_atomic(pit_repo: FestivalRepository):
         "timestamp_delta_seconds": 3600,
         "quality_flags": [],
         "arbitrage_candidate": True,
-        "calculated_at": _utc(datetime(2026, 8, 10, 2, tzinfo=datetime.timezone.utc)),
+        "calculated_at": _utc(datetime(2026, 8, 10, 2, tzinfo=timezone.utc)),
     }
 
     tr.insert_all(tier=tier, observation=obs, spread=spread)

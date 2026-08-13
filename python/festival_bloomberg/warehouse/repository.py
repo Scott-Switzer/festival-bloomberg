@@ -211,8 +211,20 @@ class FestivalRepository:
         model_version: Optional[str] = None,
         meta_data: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Insert an artist metric with full point-in-time temporal fields."""
-        metric_key = f"{artist_key}::{source_system}::{metric_type}"
+        """Insert an artist metric with full point-in-time temporal fields.
+
+        When ``knowledge_time`` is provided the observation key includes it, so
+        re-observations of the same metric at different knowledge times are
+        retained as history instead of overwriting one another. Callers that
+        omit ``knowledge_time`` keep the legacy latest-value upsert semantics.
+        """
+        if knowledge_time is not None:
+            metric_key = (
+                f"{artist_key}::{source_system}::{metric_type}"
+                f"@{knowledge_time.isoformat()}"
+            )
+        else:
+            metric_key = f"{artist_key}::{source_system}::{metric_type}"
         self.conn.execute(
             """
             INSERT INTO metrics.artist_metrics
@@ -352,7 +364,7 @@ class FestivalRepository:
         feature_version: Optional[str] = None,
         model_version: Optional[str] = None,
         formula: Optional[str] = None,
-        input_features: Optional[List[str]] = None,
+        input_features: Optional[Union[List[str], str]] = None,
         confidence: Optional[float] = None,
         quality_flags: Optional[Dict[str, Any]] = None,
         source_system: Optional[str] = None,
@@ -364,9 +376,26 @@ class FestivalRepository:
         edition_key: Optional[str] = None,
         edition_year: Optional[int] = None,
         evidence_json: Optional[Dict[str, Any]] = None,
+        feature_key: Optional[str] = None,
+        calculated_at: Optional[datetime] = None,
     ) -> None:
-        """Insert a feature into the point-in-time feature store."""
-        feature_key = f"{artist_key}::{feature_name}::{feature_date.isoformat() if feature_date else 'latest'}"
+        """Insert a feature into the point-in-time feature store.
+
+        ``feature_key`` and ``calculated_at`` are optional overrides; callers
+        that have already assigned an explicit identity (e.g. feature
+        pipelines) may supply them instead of the generated defaults.
+        """
+        if feature_key is None:
+            feature_key = (
+                f"{artist_key}::{feature_name}::"
+                f"{feature_date.isoformat() if feature_date else 'latest'}"
+            )
+        input_features_json = (
+            input_features
+            if isinstance(input_features, str)
+            else json.dumps(input_features or [])
+        )
+        calc_ts = calculated_at.isoformat() if calculated_at else datetime.utcnow()
         self.conn.execute(
             """
             INSERT INTO metrics.artist_feature_store
@@ -421,11 +450,11 @@ class FestivalRepository:
                 valid_from.isoformat() if valid_from else None,
                 valid_to.isoformat() if valid_to else None,
                 knowledge_time.isoformat() if knowledge_time else None,
-                datetime.utcnow(),
+                calc_ts,
                 feature_version,
                 model_version,
                 formula,
-                json.dumps(input_features or []),
+                input_features_json,
                 confidence,
                 json.dumps(quality_flags or {}),
                 source_system,
