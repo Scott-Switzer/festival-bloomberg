@@ -65,9 +65,13 @@ def score_texts(texts: Sequence[str] | Iterable[str]) -> list[SentimentScore]:
     return [score_text(t) for t in texts]
 
 
-def mean_compound(texts: Sequence[str] | Iterable[str]) -> float:
-    """Average compound score across texts (0.0 if empty)."""
+def mean_compound(texts: Sequence[str] | Iterable[str]) -> float | None:
+    """Average compound score across texts, or ``None`` when there is no text.
+
+    Missing evidence is NOT zero: callers must treat a ``None`` result as
+    ``NOT_OBSERVED`` rather than as neutral sentiment.
+    """
     scored = score_texts(list(texts))
     if not scored:
-        return 0.0
+        return None
     return sum(s.compound for s in scored) / len(scored)
