@@ -98,11 +98,42 @@ class FestivalRepository:
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
 
+    @contextmanager
+    def transaction(self) -> Iterator["FestivalRepository"]:
+        """Context manager for transactional batch operations.
+        
+        Usage:
+            with repo.transaction():
+                repo.upsert_artist(artist1)
+                repo.upsert_artist(artist2)
+                # All or nothing
+        """
+        try:
+            self.conn.execute("BEGIN TRANSACTION")
+            yield self
+            self.conn.execute("COMMIT")
+        except Exception:
+            try:
+                self.conn.execute("ROLLBACK")
+            except Exception as e:
+                logger.error("Failed to rollback transaction: %s", e)
+            raise
+
     # -- write: artists ------------------------------------------------------ #
     def upsert_artist(self, artist: Dict[str, Any], source_system: str = "musicbrainz") -> str:
         """Insert or update a canonical artist. Returns the artist_key."""
+        # Validate required fields
+        if not artist.get("name"):
+            raise ValueError("Artist must have a name")
+        if not artist.get("normalized_name"):
+            raise ValueError("Artist must have a normalized_name")
+        
         mb_id = artist.get("musicbrainz_id")
         key = mb_id or f"name::{artist['normalized_name']}"
+        
+        # Use timezone-aware UTC timestamp
+        ingested_at = datetime.utcnow().replace(microsecond=0)
+        
         self.conn.execute(
             """
             INSERT INTO core.artists
@@ -135,13 +166,25 @@ class FestivalRepository:
                 artist.get("life_span_begin"),
                 artist.get("life_span_end"),
                 source_system,
-                datetime.utcnow(),
+                ingested_at,
             ],
         )
+        logger.debug("Upserted artist: %s", key)
         return key
 
     def upsert_festival(self, festival: Dict[str, Any], source_system: str = "c3") -> str:
+        """Insert or update a canonical festival. Returns the festival_key."""
+        # Validate required fields
+        if not festival.get("name"):
+            raise ValueError("Festival must have a name")
+        if not festival.get("normalized_name"):
+            raise ValueError("Festival must have a normalized_name")
+        
         key = festival.get("festival_key") or f"name::{festival['normalized_name']}"
+        
+        # Use timezone-aware UTC timestamp
+        ingested_at = datetime.utcnow().replace(microsecond=0)
+        
         self.conn.execute(
             """
             INSERT INTO core.festivals
@@ -178,9 +221,10 @@ class FestivalRepository:
                 festival.get("duration_days"),
                 festival.get("typical_month"),
                 source_system,
-                datetime.utcnow(),
+                ingested_at,
             ],
         )
+        logger.debug("Upserted festival: %s", key)
         return key
 
     def insert_artist_metric(
@@ -192,7 +236,20 @@ class FestivalRepository:
         observed_date: Optional[date] = None,
         meta_data: Optional[Dict[str, Any]] = None,
     ) -> None:
+        """Insert or update an artist metric observation."""
+        # Validate required fields
+        if not artist_key:
+            raise ValueError("artist_key is required")
+        if not source_system:
+            raise ValueError("source_system is required")
+        if not metric_type:
+            raise ValueError("metric_type is required")
+        
         metric_key = f"{artist_key}::{source_system}::{metric_type}"
+        
+        # Use timezone-aware UTC timestamp
+        fetched_at = datetime.utcnow().replace(microsecond=0)
+        
         self.conn.execute(
             """
             INSERT INTO metrics.artist_metrics
@@ -212,10 +269,11 @@ class FestivalRepository:
                 metric_type,
                 value,
                 observed_date.isoformat() if observed_date else None,
-                datetime.utcnow(),
-                json.dumps(meta_data or {}),
+                fetched_at,
+                json.dumps(meta_data or {}, sort_keys=True),
             ],
         )
+        logger.debug("Upserted artist metric: %s", metric_key)
 
     def insert_lineup_observation(
         self,
@@ -229,12 +287,23 @@ class FestivalRepository:
         parser_version: Optional[str] = None,
         observed_raw: Optional[Dict[str, Any]] = None,
     ) -> None:
+        """Insert a lineup observation with deterministic content hashing."""
+        # Validate required fields
+        if not artist_name:
+            raise ValueError("artist_name is required")
+        
         import hashlib
 
+        # Deterministic JSON serialization for content hash
         raw = json.dumps(observed_raw or {}, sort_keys=True)
-        obs_key = hashlib.sha256(
-            f"{festival_key}|{edition_year}|{artist_name}|{position}".encode()
-        ).hexdigest()[:16]
+        
+        # Deterministic observation key generation
+        key_input = f"{festival_key}|{edition_year}|{artist_name}|{position}"
+        obs_key = hashlib.sha256(key_input.encode()).hexdigest()[:16]
+        
+        # Use timezone-aware UTC timestamp
+        ingested_at = datetime.utcnow().replace(microsecond=0)
+        
         self.conn.execute(
             """
             INSERT INTO raw.lineup_observations
@@ -254,9 +323,10 @@ class FestivalRepository:
                 source_url,
                 parser_version,
                 raw,
-                datetime.utcnow(),
+                ingested_at,
             ],
         )
+        logger.debug("Inserted lineup observation: %s", obs_key)
 
     # -- read: festivals ----------------------------------------------------- #
     def list_festivals(self) -> List[Dict[str, Any]]:
@@ -708,28 +778,52 @@ class TicketRepository:
         self.connection = connection
     
     def _insert(self, kind: str, row: Mapping[str, Any]) -> None:
-        if kind not in self._tables or not row:
-            raise ValueError('invalid record')
+        """Insert a record with validation."""
+        if kind not in self._tables:
+            raise ValueError(f'Invalid record kind: {kind}')
+        if not row:
+            raise ValueError('Row data cannot be empty')
+        
         cols = list(row)
         names = ', '.join('"' + c + '"' for c in cols)
         marks = ', '.join('?' for _ in cols)
-        self.connection.execute(
-            f'INSERT INTO {self._tables[kind]} ({names}) VALUES ({marks})',
-            [row[c] for c in cols]
-        )
+        
+        try:
+            self.connection.execute(
+                f'INSERT INTO {self._tables[kind]} ({names}) VALUES ({marks})',
+                [row[c] for c in cols]
+            )
+            logger.debug("Inserted %s record", kind)
+        except Exception as e:
+            logger.error("Failed to insert %s record: %s", kind, e)
+            raise
     
     def insert_primary_tier(self, row):
         """Insert a primary ticket tier record."""
+        if not row.get('id'):
+            raise ValueError('Primary tier must have an id')
+        if not row.get('edition_id'):
+            raise ValueError('Primary tier must have an edition_id')
         self._insert('tier', row)
         self.connection.commit()
     
     def insert_secondary_observation(self, row):
         """Insert a secondary market ticket observation."""
+        if not row.get('id'):
+            raise ValueError('Secondary observation must have an id')
+        if not row.get('edition_id'):
+            raise ValueError('Secondary observation must have an edition_id')
         self._insert('observation', row)
         self.connection.commit()
     
     def insert_price_spread(self, row):
         """Insert a calculated price spread metric."""
+        if not row.get('id'):
+            raise ValueError('Price spread must have an id')
+        if not row.get('primary_tier_id'):
+            raise ValueError('Price spread must have a primary_tier_id')
+        if not row.get('secondary_observation_id'):
+            raise ValueError('Price spread must have a secondary_observation_id')
         self._insert('spread', row)
         self.connection.commit()
     

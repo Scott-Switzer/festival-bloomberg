@@ -152,11 +152,30 @@ def apply_schema(connection: Any, path: Optional[str] = None) -> int:
         The number of statements executed.
     """
     statements = schema_statements(path)
-    for statement in statements:
+    executed_count = 0
+    
+    try:
+        # Begin transaction for atomic schema application
+        connection.execute("BEGIN TRANSACTION")
+        
+        for statement in statements:
+            try:
+                connection.execute(statement)
+                executed_count += 1
+            except Exception as e:
+                logger.error("Failed to apply schema statement: %s", statement[:200])
+                logger.error("Error: %s", str(e))
+                connection.execute("ROLLBACK")
+                raise
+        
+        connection.execute("COMMIT")
+        logger.debug("Applied %d DuckDB schema statements", executed_count)
+        return executed_count
+        
+    except Exception:
+        # Ensure rollback if commit wasn't reached
         try:
-            connection.execute(statement)
+            connection.execute("ROLLBACK")
         except Exception:
-            logger.error("Failed to apply schema statement: %s", statement[:200])
-            raise
-    logger.debug("Applied %d DuckDB schema statements", len(statements))
-    return len(statements)
+            pass
+        raise
