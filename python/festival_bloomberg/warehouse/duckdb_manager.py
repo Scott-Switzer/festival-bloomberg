@@ -37,8 +37,10 @@ class DuckDBWarehouse:
     def _initialize_connection(self):
         """Initialize DuckDB connection"""
         try:
-            # Ensure directory exists
-            os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+            # Ensure directory exists (skip when path has no directory part)
+            parent = os.path.dirname(self.db_path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
             
             self._connection = duckdb.connect(
                 self.db_path,
