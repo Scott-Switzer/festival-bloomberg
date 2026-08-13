@@ -34,3 +34,6 @@ gitleaks-report.json
 reports/
 *.report
 generated/
+
+# Freebuff desktop tool state (not project data)
+.freebuff/
