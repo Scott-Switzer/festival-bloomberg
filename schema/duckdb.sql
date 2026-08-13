@@ -674,40 +674,7 @@ CREATE TABLE IF NOT EXISTS core.festival_stages (
 CREATE INDEX IF NOT EXISTS idx_stages_festival_year ON core.festival_stages (festival_key, year);
 CREATE INDEX IF NOT EXISTS idx_stages_normalized_name ON core.festival_stages (normalized_stage_name);
 
--- ---------------------------------------------------------------------------
--- core.festival_ticket_tiers - priced inventory per edition
--- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS core.festival_ticket_tiers (
-    tier_key                VARCHAR PRIMARY KEY,
-    festival_key            VARCHAR NOT NULL,
-    edition_key             VARCHAR,
-    year                    INTEGER,
-    tier_name               VARCHAR NOT NULL,
-    normalized_tier_name    VARCHAR,
-    tier_type               VARCHAR,
-    tier_rank               INTEGER,
-    price                   DECIMAL(12,2),
-    fees                    DECIMAL(12,2),
-    price_with_fees         DECIMAL(12,2),
-    currency                VARCHAR,
-    quantity                INTEGER,
-    quantity_sold           INTEGER,
-    on_sale_at              TIMESTAMP,
-    sold_out_at             TIMESTAMP,
-    sold_out                BOOLEAN,
-    tier_status             VARCHAR,
-    inclusions              JSON,
-    source_system           VARCHAR,
-    source_url              VARCHAR,
-    evidence_url            VARCHAR,
-    extraction_confidence   DOUBLE,
-    ingested_at             TIMESTAMP,
-
-    CHECK (price IS NULL OR price >= 0)
-);
-
-CREATE INDEX IF NOT EXISTS idx_ticket_tiers_festival_year ON core.festival_ticket_tiers (festival_key, year);
-CREATE INDEX IF NOT EXISTS idx_ticket_tiers_edition ON core.festival_ticket_tiers (edition_key);
+-- Note: core.festival_ticket_tiers is defined in the Ticket Secondary Market section below
 
 -- ===========================================================================
 -- core.lineup_slots - resolved lineup (one row per artist performance slot)
@@ -1735,7 +1702,10 @@ CREATE INDEX IF NOT EXISTS idx_ingest_error_run ON audit.ingest_error (run_id);
 -- ===========================================================================
 -- Ticket Secondary Market Spread Tracking
 -- ===========================================================================
-CREATE TABLE IF NOT EXISTS core.festival_ticket_tiers (
+-- Drop the old festival_ticket_tiers definition if it exists
+DROP TABLE IF EXISTS core.festival_ticket_tiers CASCADE;
+
+CREATE TABLE core.festival_ticket_tiers (
     id VARCHAR PRIMARY KEY,
     edition_id VARCHAR NOT NULL,
     tier_name VARCHAR NOT NULL,
