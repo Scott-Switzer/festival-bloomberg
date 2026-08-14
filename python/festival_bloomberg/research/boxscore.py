@@ -86,6 +86,9 @@ class BoxofficeEngagement:
     price_max: float | None = None
     prices_raw: str | None = None
     capacity_tier: str | None = None
+    tour: str | None = None
+    headcount_source_label: str | None = None
+    sell_through_pct: float | None = None
     source_url: str | None = None
     source_publication_time: str | None = None
     is_multi_show: bool = False
@@ -342,6 +345,10 @@ def _price_range(prices_raw: str) -> tuple[float | None, float | None]:
 # Pollstar Hot Tickets / Top Shows (semi-structured text)
 # ---------------------------------------------------------------------------
 _POLLSTAR_HEAD = re.compile(r"^\s*(\d+)\)\s*(.+)$")
+_POLLSTAR_TIER_LABEL = re.compile(
+    r"^more than [\d,]+$|^\d[\d,]+\s*[–-]\s*\d[\d,]+$|^\d[\d,]+\s+or less$",
+    re.IGNORECASE,
+)
 _POLLSTAR_FIELDS = {
     "tickets_sold": re.compile(r"Tickets Sold:\s*([\d,]+)", re.IGNORECASE),
     "venue": re.compile(r"Venue:\s*(.+?)\s*;", re.IGNORECASE),
@@ -353,19 +360,46 @@ _POLLSTAR_FIELDS = {
 }
 
 
+def _pollstar_tier_labels(lines: list[str]) -> list[str]:
+    """Extract Pollstar capacity-tier labels (in page order)."""
+    tiers: list[str] = []
+    pending: str | None = None
+    for line in lines:
+        head = _POLLSTAR_HEAD.match(line)
+        if head:
+            break  # tiers are all listed before the first record
+        if line.lower() == "capacity":
+            if pending:
+                tiers.append(f"{pending} Capacity")
+                pending = None
+            continue
+        if _POLLSTAR_TIER_LABEL.match(line):
+            pending = line
+            continue
+        one_line = re.match(r"^(.+?)\s+capacity$", line, re.IGNORECASE)
+        if one_line and _POLLSTAR_TIER_LABEL.match(one_line.group(1).strip()):
+            tiers.append(line)
+            pending = None
+    return tiers
+
+
 def parse_pollstar_hot_tickets(text: str, *, source_url: str | None = None) -> list[BoxofficeEngagement]:
+    """Parse a Pollstar Hot Tickets page.
+
+    The chart lists top-5 engagements per capacity tier (4 tiers, up to 20
+    records). Tier headers appear as a block before the records, and each tier
+    restarts ranking at 1, so a record's tier is inferred from its position
+    (records are grouped in blocks of 5 per tier).
+    """
     engagements: list[BoxofficeEngagement] = []
     lines = [ln.strip() for ln in text.splitlines()]
-    current_tier: str | None = None
+    tiers = _pollstar_tier_labels(lines)
+
     pending_artist: str | None = None
     pending_rank: int | None = None
+    records: list[tuple[int | None, str, dict[str, str | None]]] = []
 
     for line in lines:
-        if not line:
-            continue
-        if re.search(r"capacity", line, re.IGNORECASE) and not _POLLSTAR_HEAD.match(line):
-            current_tier = line
-            continue
         head = _POLLSTAR_HEAD.match(line)
         if head:
             pending_rank = int(head.group(1))
@@ -376,50 +410,53 @@ def parse_pollstar_hot_tickets(text: str, *, source_url: str | None = None) -> l
             for key, pat in _POLLSTAR_FIELDS.items():
                 m = pat.search(line)
                 fields[key] = m.group(1) if m else None
-            headcount = _to_float(fields["tickets_sold"])
-            gross = _to_float(fields["gross"])
-            price_min = _to_float(fields["range"]) if fields["range"] else None
-            price_max = None
-            if fields["range"]:
-                rm = _POLLSTAR_FIELDS["range"].search(line)
-                if rm:
-                    price_min = _to_float(rm.group(1))
-                    price_max = _to_float(rm.group(2))
-            shows = _to_int(fields["shows"])
-            venue_full = fields["venue"]
-            venue = venue_full
-            city = None
-            if venue_full and "," in venue_full:
-                before, _, after = venue_full.rpartition(",")
-                venue = before.strip()
-                city = after.strip()
-            start, end, _ = _dates_from_raw(fields["dates"])
-            engagements.append(BoxofficeEngagement.build(
-                reporting_source=SOURCE_POLLSTAR,
-                rank=pending_rank,
-                artist=pending_artist,
-                venue=venue,
-                market=venue_full,
-                city=city,
-                promoter=fields["promoter"],
-                start_date=start,
-                end_date=end,
-                dates_raw=fields["dates"],
-                number_of_shows=shows,
-                headcount_total=headcount,
-                headcount_definition=HEADCOUNT_PAID_TICKETS,
-                ticket_gross_total=gross,
-                price_min=price_min,
-                price_max=price_max,
-                prices_raw=fields["range"],
-                capacity_tier=current_tier,
-                source_url=source_url,
-                is_multi_show=bool(shows and shows > 1),
-                is_reported=True,
-                is_estimated=False,
-            ))
+            rm = _POLLSTAR_FIELDS["range"].search(line)
+            if rm:
+                fields["range_min"] = rm.group(1)
+                fields["range_max"] = rm.group(2)
+            records.append((pending_rank, pending_artist, fields))
             pending_artist = None
             pending_rank = None
+
+    for index, (rank, artist, fields) in enumerate(records):
+        headcount = _to_float(fields["tickets_sold"])
+        gross = _to_float(fields["gross"])
+        price_min = _to_float(fields.get("range_min"))
+        price_max = _to_float(fields.get("range_max"))
+        shows = _to_int(fields["shows"])
+        venue_full = fields["venue"]
+        venue = venue_full
+        city = None
+        if venue_full and "," in venue_full:
+            before, _, after = venue_full.rpartition(",")
+            venue = before.strip()
+            city = after.strip()
+        start, end, _ = _dates_from_raw(fields["dates"])
+        tier = tiers[index // 5] if tiers and index // 5 < len(tiers) else None
+        engagements.append(BoxofficeEngagement.build(
+            reporting_source=SOURCE_POLLSTAR,
+            rank=rank,
+            artist=artist,
+            venue=venue,
+            market=venue_full,
+            city=city,
+            promoter=fields["promoter"],
+            start_date=start,
+            end_date=end,
+            dates_raw=fields["dates"],
+            number_of_shows=shows,
+            headcount_total=headcount,
+            headcount_definition=HEADCOUNT_PAID_TICKETS,
+            ticket_gross_total=gross,
+            price_min=price_min,
+            price_max=price_max,
+            prices_raw=fields["range"],
+            capacity_tier=tier,
+            source_url=source_url,
+            is_multi_show=bool(shows and shows > 1),
+            is_reported=True,
+            is_estimated=False,
+        ))
     return engagements
 
 
@@ -487,3 +524,147 @@ def parse_touring_data(
             is_estimated=is_estimated,
         ))
     return engagements
+
+
+# ---------------------------------------------------------------------------
+# Touring Data (2024+) block format
+# ---------------------------------------------------------------------------
+# Current Touring Data pages render each engagement as a 7-line block:
+#
+#   March 5-7, 2024          <- dates (start of block)
+#   Zach Bryan               <- artist
+#   United Center            <- venue
+#   Chicago, United States   <- city
+#   $12,648,557              <- gross (or "TBA" for unreported/upcoming)
+#   56,931 (100%)            <- headcount + sell-through (or "TBA")
+#   3 shows                  <- number of shows
+#
+# Only blocks with numeric gross AND headcount are REPORTED outcomes.
+# "TBA" blocks are upcoming/unreported shows and are skipped (never promoted).
+# A block whose headcount/gross carries a tilde is treated as estimated.
+# ---------------------------------------------------------------------------
+
+_TOURING_DATE_LINE = re.compile(
+    r"^(?P<month>[A-Za-z]+)\.?\s+(?P<day>\d{1,2})"
+    r"(?:\s*[–-]\s*(?:(?P<end_month>[A-Za-z]+)\.?\s+)?(?P<end_day>\d{1,2}))?"
+    r",?\s+(?P<year>(?:19|20)\d{2})$",
+    re.IGNORECASE,
+)
+_TOURING_SHOWS_LINE = re.compile(r"^(?P<shows>\d+)\s+shows?$", re.IGNORECASE)
+_TOURING_HEADCOUNT_LINE = re.compile(r"^([\d,]+)\s*\((\d+(?:\.\d+)?)%\)$")
+
+
+def parse_touring_data_blocks(
+    text: str,
+    *,
+    source_url: str | None = None,
+    artist: str | None = None,
+    tour: str | None = None,
+) -> tuple[list[BoxofficeEngagement], dict[str, int]]:
+    """Parse the current (2024+) Touring Data block layout.
+
+    Returns ``(engagements, skipped)`` where ``skipped`` counts unreported
+    (TBA) and estimated blocks that were NOT emitted as reported outcomes.
+    """
+    engagements: list[BoxofficeEngagement] = []
+    skipped = {"unreported": 0, "estimated": 0, "malformed": 0}
+    lines = [ln.strip() for ln in (text or "").splitlines()]
+    tour_artist = (artist or "").strip()
+
+    i = 0
+    n = len(lines)
+    while i < n:
+        m = _TOURING_DATE_LINE.match(lines[i])
+        if not m:
+            i += 1
+            continue
+        if i + 6 >= n:
+            break
+        block = lines[i : i + 7]
+        dates_raw = block[0]
+        block_artist = block[1].strip()
+        venue = block[2].strip()
+        city = block[3].strip()
+        gross_raw = block[4].strip()
+        headcount_raw = block[5].strip()
+        shows_raw = block[6].strip()
+        i += 7
+
+        # start / end date from the block's own date line
+        month = m.group("month")
+        day = int(m.group("day"))
+        year = int(m.group("year"))
+        start = _parse_iso_date(month, day, year)
+        end = start
+        if m.group("end_day"):
+            end_month = m.group("end_month") or month
+            end = _parse_iso_date(end_month, int(m.group("end_day")), year)
+
+        shows_m = _TOURING_SHOWS_LINE.match(shows_raw)
+        shows = int(shows_m.group("shows")) if shows_m else None
+
+        is_estimated = bool(re.search(r"~|\best\.?\b|\bestimated\b", gross_raw + " " + headcount_raw, re.IGNORECASE))
+        if gross_raw.upper() == "TBA" or headcount_raw.upper() == "TBA":
+            skipped["unreported"] += 1
+            continue
+
+        gross = _to_float(gross_raw.lstrip("~ "))
+        headcount = None
+        sell_through = None
+        headcount_clean = headcount_raw.lstrip("~ ")
+        hm = _TOURING_HEADCOUNT_LINE.match(headcount_clean)
+        if hm:
+            headcount = _to_float(hm.group(1))
+            sell_through = _to_float(hm.group(2))
+        else:
+            headcount = _to_float(headcount_clean)
+
+        if gross is None or headcount is None:
+            skipped["malformed"] += 1
+            continue
+        if is_estimated:
+            skipped["estimated"] += 1
+
+        engagements.append(BoxofficeEngagement.build(
+            reporting_source=SOURCE_TOURING_DATA,
+            artist=block_artist or tour_artist,
+            tour=tour,
+            venue=venue,
+            city=city,
+            start_date=start,
+            end_date=end,
+            dates_raw=dates_raw,
+            number_of_shows=shows,
+            headcount_total=headcount,
+            headcount_definition=HEADCOUNT_REPORTED_ATTENDANCE,
+            headcount_source_label="Tickets Sold (reported headcount)",
+            sell_through_pct=sell_through,
+            ticket_gross_total=gross,
+            source_url=source_url,
+            is_multi_show=bool(shows and shows > 1),
+            is_reported=not is_estimated,
+            is_estimated=is_estimated,
+        ))
+    return engagements, skipped
+
+
+def parse_touring_data_auto(
+    text: str,
+    *,
+    source_url: str | None = None,
+    artist: str | None = None,
+    tour: str | None = None,
+) -> tuple[list[BoxofficeEngagement], dict[str, int]]:
+    """Dispatch to the right Touring Data parser.
+
+    The 2024+ block layout is tried first; if it finds nothing, fall back to
+    the legacy inline ``Date: Venue, City (attendance - $gross)`` layout used
+    by 2019-era pages.
+    """
+    blocks, skipped = parse_touring_data_blocks(
+        text, source_url=source_url, artist=artist, tour=tour,
+    )
+    if blocks:
+        return blocks, skipped
+    legacy = parse_touring_data(text, source_url=source_url, artist=artist)
+    return legacy, {"unreported": 0, "estimated": 0, "malformed": 0}
