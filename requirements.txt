@@ -3,4 +3,5 @@ duckdb>=1.1.0,<2
 pandas>=2.0.0,<4
 pyarrow>=14.0.0,<26
 vaderSentiment>=3.3.2,<4
+openpyxl>=3.1.0,<4
 pytest>=8.0.0,<10
