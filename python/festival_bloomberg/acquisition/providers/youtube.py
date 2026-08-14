@@ -205,6 +205,12 @@ class YouTubeProvider(BaseProvider):
             "published_at": _parse_iso(published),
             "media_type": "video",
             "canonical_url": f"https://www.youtube.com/watch?v={item.get('id')}",
+            # A video title/description is the channel's own content, never a
+            # fan comment; it must not enter fan sentiment aggregation.
+            "content_role": None,
+            "content_role_method": None,
+            "resolution_method": "EXACT_PLATFORM_ID",
+            "resolution_evidence": "YouTube video id",
             "engagement": {
                 "views": _int(stats.get("viewCount")),
                 "likes": _int(stats.get("likeCount")),
@@ -229,6 +235,11 @@ class YouTubeProvider(BaseProvider):
             "published_at": _parse_iso(published),
             "media_type": "text",
             "canonical_url": f"https://www.youtube.com/watch?v={snippet.get('videoId')}&lc={item.get('id')}",
+            # Top-level viewer comments are fan-generated discourse.
+            "content_role": "FAN_GENERATED",
+            "content_role_method": "source_type",
+            "resolution_method": "EXACT_PLATFORM_ID",
+            "resolution_evidence": "YouTube comment thread id",
             "engagement": {
                 "likes": _int(top.get("likeCount")),
             },

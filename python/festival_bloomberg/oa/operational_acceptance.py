@@ -44,6 +44,7 @@ from ..acquisition.router import AcquisitionRouter
 from ..acquisition.transport import UrllibTransport
 from ..evidence.provenance import parse_iso, utc
 from ..evidence.semantics import ContentRole, is_fan_role
+from ..localenv import load_local_env
 from ..social.sentiment import (
     TWEETNLP_AVAILABLE,
     VADER_MODEL_NAME,
@@ -121,7 +122,11 @@ def detect_chicago_mentions(text: str | None) -> list[str]:
 
 def provider_readiness(env: dict[str, str] | None = None) -> dict[str, str]:
     """Report provider readiness by credential presence only (never values)."""
-    environ = dict(os.environ if env is None else env)
+    if env is None:
+        load_local_env()
+        environ = dict(os.environ)
+    else:
+        environ = dict(env)
     readiness = {
         "youtube": "CONFIGURED" if environ.get("YOUTUBE_API_KEY") else "NOT_CONFIGURED",
         "monid": "CONFIGURED" if environ.get("MONID_API_KEY") else "NOT_CONFIGURED",

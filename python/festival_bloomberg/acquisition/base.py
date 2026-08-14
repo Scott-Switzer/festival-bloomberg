@@ -20,6 +20,7 @@ import time
 from datetime import datetime, timezone
 from typing import Protocol, runtime_checkable
 
+from ..localenv import load_local_env
 from .contracts import (
     AcquisitionRequest,
     AcquisitionResult,
@@ -52,6 +53,10 @@ class BaseProvider:
         transport: HttpTransport | None = None,
         env: dict[str, str] | None = None,
     ) -> None:
+        # Load the canonical local .env (process env wins, never overwrites).
+        # Explicitly-passed env dicts (tests) are used as-is.
+        if env is None:
+            load_local_env()
         self.transport = transport or UrllibTransport()
         self.env = env if env is not None else os.environ
 

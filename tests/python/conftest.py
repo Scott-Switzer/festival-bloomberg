@@ -7,8 +7,13 @@ All tests run OFFLINE: every provider request goes through the scripted
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
+
+# Tests are hermetic: never load the developer's local .env into os.environ
+# during the suite. Env-file loading is tested explicitly in test_localenv.py.
+os.environ.setdefault("FESTIVAL_BLOOMBERG_SKIP_ENV_FILE", "1")
 
 ROOT = Path(__file__).resolve().parents[2]
 PYTHON_DIR = ROOT / "python"

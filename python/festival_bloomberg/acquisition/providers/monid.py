@@ -70,9 +70,17 @@ class MonidProvider(BaseProvider):
             )
             if response.status == 200:
                 balance = response.json()
+                # Real API: {"balance": {"value": int, "currency": str}};
+                # legacy fallback: {"balance_usd": float}.
+                inner = balance.get("balance") or {}
+                if "value" in inner:
+                    estimated = float(inner.get("value") or 0.0)
+                else:
+                    estimated = float(balance.get("balance_usd") or 0.0)
                 return CostEstimate(
                     provider=self.name,
-                    estimated_cost_usd=float(balance.get("balance_usd") or 0.0),
+                    estimated_cost_usd=estimated,
+                    currency=str(inner.get("currency") or "USD"),
                     source="monid_wallet_balance",
                 )
         except (TransportError, ValueError):
@@ -113,9 +121,13 @@ class MonidProvider(BaseProvider):
             return self._fail(request, started, AcquisitionStatus.PROVIDER_ERROR, "discover", f"http {discover.status}")
 
         try:
-            endpoints = discover.json().get("endpoints") or []
+            discover_payload = discover.json()
         except ValueError:
             return self._fail(request, started, AcquisitionStatus.SCHEMA_INVALID, "discover_response")
+
+        # Real API returns {"results": [{... "endpoint": "/path"}]};
+        # legacy fallback {"endpoints": [{"id": ...}]}.
+        endpoints = discover_payload.get("results") or discover_payload.get("endpoints") or []
 
         if not endpoints:
             return self._result(
@@ -126,7 +138,8 @@ class MonidProvider(BaseProvider):
                 provider_metadata={"phase": "discover", "endpoints_found": 0},
             )
 
-        endpoint_id = endpoints[0].get("id") or endpoints[0].get("endpoint_id")
+        first = endpoints[0]
+        endpoint_id = first.get("endpoint") or first.get("id") or first.get("endpoint_id")
         if not endpoint_id:
             return self._fail(request, started, AcquisitionStatus.SCHEMA_INVALID, "discover_endpoint_id")
 
