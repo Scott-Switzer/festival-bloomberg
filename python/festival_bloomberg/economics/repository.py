@@ -6,8 +6,10 @@ import json
 from datetime import datetime
 from typing import Any
 
+from ..acquisition.contracts import utc_now
 from ..migrations import apply_pending_migrations
 from .capacity import CapacityClaim
+from .outcome_claims import OutcomeClaim
 from .outcomes import EventOutcome
 from .snapshots import PrimaryTicketSnapshot, SecondaryTicketSnapshot
 
@@ -267,6 +269,151 @@ class EconomicsRepository:
         if cutoff is not None:
             sql += " AND knowledge_time <= ?"
             params.append(cutoff.isoformat() if isinstance(cutoff, datetime) else str(cutoff))
+        return _rows(self.conn.execute(sql, params), self.conn)
+
+    def insert_outcome_claim(self, claim: "OutcomeClaim") -> bool:
+        """Insert an outcome claim. Returns False if the claim_id already
+        exists (idempotent append-only; history is never overwritten)."""
+        existing = self.conn.execute(
+            "SELECT claim_id FROM economics.event_outcome_claims WHERE claim_id = ?",
+            [claim.claim_id],
+        ).fetchone()
+        if existing:
+            return False
+        row = claim.to_row()
+        self.conn.execute(
+            """
+            INSERT INTO economics.event_outcome_claims
+                (claim_id, canonical_event_id, outcome_type, value_numeric, value_text,
+                 unit, currency, attendance_definition, ticket_definition,
+                 revenue_definition, capacity_definition, source_provider, source_name,
+                 source_url, source_document_id, event_time, source_publication_time,
+                 source_as_of, retrieved_at, knowledge_time, valid_from, valid_to,
+                 evidence_observation_id, raw_payload_hash, source_quality,
+                 claim_confidence, entity_resolution_confidence, rights_status,
+                 commercial_use_status, observation_class, is_censored, censoring_type,
+                 censoring_threshold, conflict_group_id, supersedes_claim_id, notes,
+                 software_version)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                row["claim_id"],
+                row["canonical_event_id"],
+                row["outcome_type"],
+                row["value_numeric"],
+                row["value_text"],
+                row["unit"],
+                row["currency"],
+                row["attendance_definition"],
+                row["ticket_definition"],
+                row["revenue_definition"],
+                row["capacity_definition"],
+                row["source_provider"],
+                row["source_name"],
+                row["source_url"],
+                row["source_document_id"],
+                row["event_time"],
+                row["source_publication_time"],
+                row["source_as_of"],
+                row["retrieved_at"],
+                row["knowledge_time"],
+                row["valid_from"],
+                row["valid_to"],
+                row["evidence_observation_id"],
+                row["raw_payload_hash"],
+                row["source_quality"],
+                row["claim_confidence"],
+                row["entity_resolution_confidence"],
+                row["rights_status"],
+                row["commercial_use_status"],
+                row["observation_class"],
+                row["is_censored"],
+                row["censoring_type"],
+                row["censoring_threshold"],
+                row["conflict_group_id"],
+                row["supersedes_claim_id"],
+                row["notes"],
+                row["software_version"],
+            ],
+        )
+        self.conn.commit()
+        return True
+
+    def query_outcome_claims(
+        self,
+        *,
+        event_id: str | None = None,
+        outcome_type: str | None = None,
+        observation_class: str | None = None,
+        cutoff: datetime | str | None = None,
+    ) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM economics.event_outcome_claims WHERE 1=1"
+        params: list[Any] = []
+        if event_id:
+            sql += " AND canonical_event_id = ?"
+            params.append(event_id)
+        if outcome_type:
+            sql += " AND outcome_type = ?"
+            params.append(outcome_type)
+        if observation_class:
+            sql += " AND observation_class = ?"
+            params.append(observation_class)
+        if cutoff is not None:
+            sql += " AND knowledge_time <= ?"
+            params.append(cutoff.isoformat() if isinstance(cutoff, datetime) else str(cutoff))
+        sql += " ORDER BY knowledge_time, claim_id"
+        return _rows(self.conn.execute(sql, params), self.conn)
+
+    def supersede_outcome_claim(
+        self, *, old_claim_id: str, new_claim_id: str, knowledge_time: str
+    ) -> bool:
+        """Record supersession on the OLD claim (never delete it)."""
+        row = self.conn.execute(
+            "SELECT claim_id FROM economics.event_outcome_claims WHERE claim_id = ?",
+            [old_claim_id],
+        ).fetchone()
+        if not row:
+            return False
+        self.conn.execute(
+            """
+            UPDATE economics.event_outcome_claims
+            SET supersedes_claim_id = ?, valid_to = ?
+            WHERE claim_id = ?
+            """,
+            [new_claim_id, knowledge_time, old_claim_id],
+        )
+        self.conn.commit()
+        return True
+
+    def upsert_decision_cutoffs(self, cutoffs: dict[str, Any]) -> None:
+        self.conn.execute(
+            """
+            INSERT OR REPLACE INTO economics.event_decision_cutoffs
+                (event_id, canonical_event_id, booking_cutoff, announcement_cutoff,
+                 onsale_cutoff, event_cutoff, cutoff_notes, software_version,
+                 knowledge_time)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                cutoffs["event_id"],
+                cutoffs["canonical_event_id"],
+                cutoffs.get("booking_cutoff"),
+                cutoffs.get("announcement_cutoff"),
+                cutoffs.get("onsale_cutoff"),
+                cutoffs.get("event_cutoff"),
+                cutoffs.get("cutoff_notes"),
+                cutoffs.get("software_version", "historical_laboratory_v1"),
+                cutoffs.get("knowledge_time") or utc_now().isoformat(),
+            ],
+        )
+        self.conn.commit()
+
+    def query_decision_cutoffs(self, *, event_id: str | None = None) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM economics.event_decision_cutoffs WHERE 1=1"
+        params: list[Any] = []
+        if event_id:
+            sql += " AND canonical_event_id = ?"
+            params.append(event_id)
         return _rows(self.conn.execute(sql, params), self.conn)
 
     def _duplicate_snapshot(self, table: str, provider: str, provider_event_id: str | None, bucket: str, price_type: str | None) -> bool:
