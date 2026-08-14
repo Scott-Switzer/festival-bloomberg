@@ -14,6 +14,7 @@ from .apify import ApifyProvider
 from .http import HttpProvider
 from .monid import MonidProvider
 from .scrapling import ScraplingProvider
+from .setlistfm import SetlistFmProvider
 from .ticketmaster import TicketmasterProvider
 from .wikimedia import WikimediaProvider
 from .youtube import YouTubeProvider
@@ -24,6 +25,7 @@ __all__ = [
     "HttpProvider",
     "MonidProvider",
     "ScraplingProvider",
+    "SetlistFmProvider",
     "TicketmasterProvider",
     "WikimediaProvider",
     "YouTubeProvider",
@@ -41,5 +43,6 @@ def default_providers(**overrides) -> dict[str, AcquisitionProvider]:
         "scrapling": ScraplingProvider(**overrides.pop("scrapling", {})),
         "wikimedia": WikimediaProvider(**overrides.pop("wikimedia", {})),
         "ticketmaster": TicketmasterProvider(**overrides.pop("ticketmaster", {})),
+        "setlistfm": SetlistFmProvider(**overrides.pop("setlistfm", {})),
     }
     return providers
