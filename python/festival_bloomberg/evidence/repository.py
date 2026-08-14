@@ -146,6 +146,7 @@ class EvidenceRepository:
             "entity_id": request.entity_id,
             "entity_type": request.entity_type,
             "published_at": published.isoformat() if published else None,
+            "event_time": record.get("event_time"),
             "retrieved_at": retrieved_at.isoformat(),
             "knowledge_time": knowledge_time.isoformat(),
             "content_hash": record.get("content_hash"),
@@ -176,6 +177,12 @@ class EvidenceRepository:
                 "channel_title": record.get("channel_title"),
                 "source_publication_time": record.get("source_publication_time"),
                 "source_updated_at": record.get("source_updated_at"),
+                "event_time": record.get("event_time"),
+                "local_date": record.get("local_date"),
+                "venue_name": record.get("venue_name"),
+                "event_name": record.get("event_name"),
+                "event_type": record.get("event_type"),
+                "tour_name": record.get("tour_name"),
             },
         }
 
@@ -208,11 +215,11 @@ class EvidenceRepository:
             INSERT INTO acquisition.raw_observations
                 (observation_id, run_id, canonical_observation_id, source_platform,
                  provider, provider_endpoint, platform_object_id, parent_object_id,
-                 source_url, entity_id, entity_type, published_at, retrieved_at,
+                 source_url, entity_id, entity_type, event_time, published_at, retrieved_at,
                  knowledge_time, content_hash, raw_payload_hash, evidence_class,
                  cost_usd, correlation_id, source_revision_id, source_revision_time,
                  parser_version, provider_version, source_updated_at, metadata_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 raw["observation_id"],
@@ -226,6 +233,7 @@ class EvidenceRepository:
                 raw["source_url"],
                 raw["entity_id"],
                 raw["entity_type"],
+                raw.get("event_time"),
                 raw["published_at"],
                 raw["retrieved_at"],
                 raw["knowledge_time"],
