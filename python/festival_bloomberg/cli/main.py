@@ -680,6 +680,235 @@ def cmd_economics_merge_united_center(args: argparse.Namespace) -> int:
         repo.close()
 
 
+def _backtest_db(args: argparse.Namespace):
+    from ..warehouse.repository import FestivalRepository
+
+    return FestivalRepository(args.db) if args.db else FestivalRepository(
+        "data/warehouse/design_partner_retrospective.duckdb"
+    )
+
+
+def cmd_backtest_import(args: argparse.Namespace) -> int:
+    from ..economics.partner_import import ingest_partner_files
+    from ..economics.repository import EconomicsRepository
+    from ..events.repository import EventRepository
+
+    repo = _backtest_db(args)
+    try:
+        econ = EconomicsRepository(repo.conn)
+        events_repo = EventRepository(repo.conn)
+        file_paths = [p for p in args.events.split(",") if p.strip()]
+        if not file_paths:
+            print("ERROR: no input files provided")
+            return 1
+        report = ingest_partner_files(
+            economics_repo=econ,
+            file_paths=file_paths,
+            customer_id=args.customer,
+            dataset_id=args.dataset or f"ds_{args.customer}",
+            sharing_policy=args.sharing_policy,
+            events_repo=events_repo,
+        )
+        print("=== BACKTEST IMPORT ===")
+        print(f"customer:            {args.customer}")
+        print(f"dataset:             {report.dataset_id}")
+        print(f"files read:          {report.files_read}")
+        print(f"rows read:           {report.rows_read}")
+        print(f"claims inserted:     {report.claims_inserted}")
+        print(f"duplicates skipped:  {report.duplicates_skipped}")
+        print(f"pii quarantined:     {report.pii_quarantined}")
+        print(f"quality issues:      {len(report.quality_issues)}")
+        print(f"reconciliation:      {len(report.reconciliation)}")
+        print(f"events resolved:     {len(set(report.events_resolved))}")
+        return 0
+    finally:
+        repo.close()
+
+
+def cmd_backtest_audit(args: argparse.Namespace) -> int:
+    from ..economics.audit_report import build_audit_report, write_audit_report
+    from ..economics.repository import EconomicsRepository
+    from ..events.repository import EventRepository
+    from ..economics.retrospective import (
+        CUTOFF_EVENT, DEFAULT_ALLOWED_PRIVATE_INPUTS, DEFAULT_HIDDEN_OUTCOMES, RetrospectiveStudy,
+    )
+
+    repo = _backtest_db(args)
+    try:
+        econ = EconomicsRepository(repo.conn)
+        events_repo = EventRepository(repo.conn)
+        dataset_row = econ.conn.execute(
+            "SELECT customer_id FROM economics.customer_datasets WHERE dataset_id = ?",
+            [args.dataset],
+        ).fetchone()
+        if not dataset_row:
+            print(f"ERROR: dataset {args.dataset} not found — run `backtest import` first")
+            return 1
+        customer_id = dataset_row[0]
+        event_ids = [
+            r[0]
+            for r in econ.conn.execute(
+                "SELECT DISTINCT canonical_event_id FROM economics.event_outcome_claims WHERE source_name = ?",
+                [args.dataset],
+            ).fetchall()
+        ]
+        study = RetrospectiveStudy(
+            study_id=f"audit_{args.dataset}",
+            customer_id=customer_id,
+            dataset_id=args.dataset,
+            target="SCANNED_ATTENDANCE",
+            decision_cutoff_type=CUTOFF_EVENT,
+            hidden_outcomes=DEFAULT_HIDDEN_OUTCOMES,
+            allowed_private_inputs=DEFAULT_ALLOWED_PRIVATE_INPUTS,
+            event_ids=tuple(sorted(event_ids)),
+        )
+        econ.create_retrospective_study(study.to_dict())
+        # Rebuild an ingestion-shaped report from what is already persisted.
+        from ..economics.partner_import import PartnerIngestionReport
+
+        ingestion = PartnerIngestionReport(dataset_id=args.dataset, customer_id=customer_id)
+        audit = build_audit_report(ingestion=ingestion, economics_repo=econ, events_repo=events_repo, study=study)
+        json_path = args.output_json or f"reports/promoter_data_audit_{args.dataset}.json"
+        html_path = args.output_html or f"reports/promoter_data_audit_{args.dataset}.html"
+        write_audit_report(audit, json_path=json_path, html_path=html_path)
+        print("=== BACKTEST AUDIT ===")
+        print(f"dataset:             {args.dataset}")
+        print(f"events resolved:     {len(event_ids)}")
+        print(f"baseline readiness:  {audit['baseline_readiness']['verdict']}")
+        print(f"json report:         {json_path}")
+        print(f"html report:         {html_path}")
+        return 0
+    finally:
+        repo.close()
+
+
+def cmd_backtest_create_study(args: argparse.Namespace) -> int:
+    from ..economics.outcome_claims import validate_outcome_type
+    from ..economics.repository import EconomicsRepository
+    from ..economics.retrospective import (
+        CUTOFF_TYPES, DEFAULT_ALLOWED_PRIVATE_INPUTS, DEFAULT_HIDDEN_OUTCOMES, RetrospectiveStudy,
+    )
+
+    repo = _backtest_db(args)
+    try:
+        econ = EconomicsRepository(repo.conn)
+        target = args.target.strip().upper()
+        try:
+            validate_outcome_type(target)
+        except ValueError as exc:
+            print(f"ERROR: {exc}")
+            return 1
+        cutoff = args.cutoff.upper()
+        if cutoff not in CUTOFF_TYPES:
+            print(f"ERROR: cutoff must be one of {sorted(CUTOFF_TYPES)}")
+            return 1
+        dataset_row = econ.conn.execute(
+            "SELECT customer_id FROM economics.customer_datasets WHERE dataset_id = ?",
+            [args.dataset],
+        ).fetchone()
+        if not dataset_row:
+            print(f"ERROR: dataset {args.dataset} not found — run `backtest import` first")
+            return 1
+        event_ids = [
+            r[0]
+            for r in econ.conn.execute(
+                "SELECT DISTINCT canonical_event_id FROM economics.event_outcome_claims WHERE source_name = ?",
+                [args.dataset],
+            ).fetchall()
+        ]
+        study = RetrospectiveStudy(
+            study_id=args.study or f"study_{args.dataset}_{target.lower()}_{cutoff.lower()}",
+            customer_id=dataset_row[0],
+            dataset_id=args.dataset,
+            target=target,
+            decision_cutoff_type=cutoff,
+            hidden_outcomes=DEFAULT_HIDDEN_OUTCOMES,
+            allowed_private_inputs=DEFAULT_ALLOWED_PRIVATE_INPUTS,
+            event_ids=tuple(sorted(event_ids)),
+        )
+        econ.create_retrospective_study(study.to_dict())
+        print("=== BACKTEST CREATE STUDY ===")
+        print(f"study:               {study.study_id}")
+        print(f"target:              {study.target}")
+        print(f"cutoff:              {study.decision_cutoff_type}")
+        print(f"events:              {len(study.event_ids)}")
+        return 0
+    finally:
+        repo.close()
+
+
+def cmd_backtest_freeze(args: argparse.Namespace) -> int:
+    from ..economics.repository import EconomicsRepository
+    from ..economics.retrospective import STUDY_FROZEN, vault_outcomes, RetrospectiveStudy
+
+    repo = _backtest_db(args)
+    try:
+        econ = EconomicsRepository(repo.conn)
+        raw = econ.query_retrospective_study(args.study)
+        if not raw:
+            print(f"ERROR: study {args.study} not found — run `backtest create-study` first")
+            return 1
+        study = RetrospectiveStudy(
+            study_id=raw["study_id"],
+            customer_id=raw["customer_id"],
+            dataset_id=raw["dataset_id"],
+            target=raw["target"],
+            decision_cutoff_type=raw["decision_cutoff_type"],
+            hidden_outcomes=frozenset(raw["hidden_outcomes"]),
+            allowed_private_inputs=frozenset(raw["allowed_private_inputs"]),
+            event_ids=tuple(raw["event_ids"]),
+        )
+        vault = vault_outcomes(econ, study)
+        econ.freeze_retrospective_study(args.study, status=STUDY_FROZEN)
+        print("=== BACKTEST FREEZE ===")
+        print(f"study:               {args.study}")
+        print(f"status:              {STUDY_FROZEN}")
+        print(f"claims vaulted:      {vault['claims_vaulted']}")
+        return 0
+    finally:
+        repo.close()
+
+
+def cmd_backtest_readiness(args: argparse.Namespace) -> int:
+    from ..economics.repository import EconomicsRepository
+    from ..economics.retrospective import (
+        baseline_readiness, pit_reconstructability, training_row_eligibility, RetrospectiveStudy,
+    )
+    from ..events.repository import EventRepository
+
+    repo = _backtest_db(args)
+    try:
+        econ = EconomicsRepository(repo.conn)
+        events_repo = EventRepository(repo.conn)
+        raw = econ.query_retrospective_study(args.study)
+        if not raw:
+            print(f"ERROR: study {args.study} not found")
+            return 1
+        study = RetrospectiveStudy(
+            study_id=raw["study_id"],
+            customer_id=raw["customer_id"],
+            dataset_id=raw["dataset_id"],
+            target=raw["target"],
+            decision_cutoff_type=raw["decision_cutoff_type"],
+            hidden_outcomes=frozenset(raw["hidden_outcomes"]),
+            allowed_private_inputs=frozenset(raw["allowed_private_inputs"]),
+            event_ids=tuple(raw["event_ids"]),
+        )
+        pit = pit_reconstructability(econ, study)
+        eligibility = training_row_eligibility(econ, study)
+        readiness = baseline_readiness(econ, events_repo, study)
+        print("=== BACKTEST READINESS ===")
+        print(f"study:               {args.study}")
+        print(f"verdict:             {readiness['verdict']}")
+        print(f"eligible rows:       {readiness['eligible_rows']} / {readiness['total_rows']}")
+        print(f"pit complete:        {readiness['pit_complete']}")
+        for reason in readiness["reasons"]:
+            print(f"  - {reason}")
+        return 0
+    finally:
+        repo.close()
+
+
 def cmd_labels_export(args: argparse.Namespace) -> int:
     """Export a deterministic, unlabeled fan-text sample for human labeling."""
     import json
@@ -907,6 +1136,44 @@ def build_parser() -> argparse.ArgumentParser:
     merge_uc = economics_sub.add_parser("merge-united-center", help="merge United Center duplicate venues")
     merge_uc.add_argument("--db", default="data/warehouse/artist_market_event_history.duckdb")
     merge_uc.set_defaults(handler=cmd_economics_merge_united_center)
+
+    backtest = sub.add_parser("backtest", help="design-partner blind retrospective workflow")
+    backtest_sub = backtest.add_subparsers(dest="backtest_command", required=True)
+
+    bt_import = backtest_sub.add_parser("import", help="import a customer historical shows file (csv/tsv/xlsx)")
+    bt_import.add_argument("--customer", required=True)
+    bt_import.add_argument("--events", required=True, help="comma-separated paths to csv/tsv/xlsx files")
+    bt_import.add_argument("--dataset", default=None)
+    bt_import.add_argument("--sharing-policy", default="PRIVATE_ONLY",
+                           choices=["PRIVATE_ONLY", "ANONYMIZED_POOL_OPT_IN", "AGGREGATE_BENCHMARK_OPT_IN"])
+    bt_import.add_argument("--db", default=None)
+    bt_import.set_defaults(handler=cmd_backtest_import)
+
+    bt_audit = backtest_sub.add_parser("audit", help="generate a promoter data audit report for a dataset")
+    bt_audit.add_argument("--dataset", required=True)
+    bt_audit.add_argument("--output-json", default=None)
+    bt_audit.add_argument("--output-html", default=None)
+    bt_audit.add_argument("--db", default=None)
+    bt_audit.set_defaults(handler=cmd_backtest_audit)
+
+    bt_study = backtest_sub.add_parser("create-study", help="create a retrospective study")
+    bt_study.add_argument("--dataset", required=True)
+    bt_study.add_argument("--target", required=True)
+    bt_study.add_argument("--cutoff", required=True,
+                          choices=["booking", "announcement", "onsale", "event"])
+    bt_study.add_argument("--study", default=None)
+    bt_study.add_argument("--db", default=None)
+    bt_study.set_defaults(handler=cmd_backtest_create_study)
+
+    bt_freeze = backtest_sub.add_parser("freeze", help="freeze a study and vault its hidden outcomes")
+    bt_freeze.add_argument("--study", required=True)
+    bt_freeze.add_argument("--db", default=None)
+    bt_freeze.set_defaults(handler=cmd_backtest_freeze)
+
+    bt_readiness = backtest_sub.add_parser("readiness", help="report a study's baseline readiness (no model)")
+    bt_readiness.add_argument("--study", required=True)
+    bt_readiness.add_argument("--db", default=None)
+    bt_readiness.set_defaults(handler=cmd_backtest_readiness)
 
     labels = sub.add_parser("labels", help="deterministic human-labeling exports")
     labels_sub = labels.add_subparsers(dest="labels_command", required=True)

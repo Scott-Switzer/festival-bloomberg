@@ -1,0 +1,1 @@
+customer_event_id,artist_name,venue_name,market,city,state,country,event_date,event_time,timezone,offer_date,booking_date,announcement_date,presale_date,onsale_date,venue_capacity,event_usable_capacity,ticket_capacity,configuration_name,event_status,deal_type,artist_guarantee,artist_backend_pct,artist_bonus,artist_expenses,currency,source_system,notes

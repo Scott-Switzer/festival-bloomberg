@@ -416,6 +416,241 @@ class EconomicsRepository:
             params.append(event_id)
         return _rows(self.conn.execute(sql, params), self.conn)
 
+    # ------------------------------------------------------------------
+    # Design Partner Retrospective V1 (migration 014)
+    # ------------------------------------------------------------------
+    def create_customer_dataset(
+        self,
+        *,
+        dataset_id: str,
+        customer_id: str,
+        sharing_policy: str,
+        source_system: str | None = None,
+        notes: str | None = None,
+        created_at: str | None = None,
+    ) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO economics.customer_datasets
+                (dataset_id, customer_id, sharing_policy, source_system, notes, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT (dataset_id) DO NOTHING
+            """,
+            [
+                dataset_id,
+                customer_id,
+                sharing_policy,
+                source_system,
+                notes,
+                created_at or utc_now().isoformat(),
+            ],
+        )
+        self.conn.commit()
+
+    def insert_source_file(
+        self,
+        *,
+        file_id: str,
+        dataset_id: str,
+        file_name: str,
+        format: str,
+        row_count: int,
+        raw_content_hash: str,
+        created_at: str | None = None,
+    ) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO economics.customer_source_files
+                (file_id, dataset_id, file_name, format, row_count, raw_content_hash, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (file_id) DO NOTHING
+            """,
+            [file_id, dataset_id, file_name, format, row_count, raw_content_hash, created_at or utc_now().isoformat()],
+        )
+        self.conn.commit()
+
+    def insert_ingestion_run(
+        self,
+        *,
+        ingestion_run_id: str,
+        dataset_id: str,
+        software_version: str | None = None,
+        created_at: str | None = None,
+    ) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO economics.import_ingestion_runs
+                (ingestion_run_id, dataset_id, software_version, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            [ingestion_run_id, dataset_id, software_version, created_at or utc_now().isoformat()],
+        )
+        self.conn.commit()
+
+    def insert_pii_quarantine(
+        self,
+        *,
+        quarantine_id: str,
+        file_id: str,
+        column_name: str,
+        reason: str,
+        sample_count: int,
+        created_at: str | None = None,
+    ) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO economics.pii_quarantine
+                (quarantine_id, file_id, column_name, reason, sample_count, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT (quarantine_id) DO NOTHING
+            """,
+            [quarantine_id, file_id, column_name, reason, sample_count, created_at or utc_now().isoformat()],
+        )
+        self.conn.commit()
+
+    def create_retrospective_study(self, study: dict[str, Any]) -> None:
+        """Insert a retrospective study configuration (idempotent by study_id)."""
+        self.conn.execute(
+            """
+            INSERT INTO economics.retrospective_studies
+                (study_id, customer_id, dataset_id, target, study_population,
+                 decision_cutoff_type, hidden_outcomes, allowed_private_inputs,
+                 event_ids, feature_policy_version, source_policy_version,
+                 status, created_at, frozen_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (study_id) DO NOTHING
+            """,
+            [
+                study["study_id"],
+                study["customer_id"],
+                study["dataset_id"],
+                study["target"],
+                study.get("study_population"),
+                study["decision_cutoff_type"],
+                json.dumps(study["hidden_outcomes"]),
+                json.dumps(study.get("allowed_private_inputs") or []),
+                json.dumps(study.get("event_ids") or []),
+                study.get("feature_policy_version"),
+                study.get("source_policy_version"),
+                study["status"],
+                study.get("created_at") or utc_now().isoformat(),
+                study.get("frozen_at"),
+            ],
+        )
+        self.conn.commit()
+
+    def query_retrospective_study(self, study_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT * FROM economics.retrospective_studies WHERE study_id = ?",
+            [study_id],
+        ).fetchone()
+        if not row:
+            return None
+        keys = [
+            "study_id", "customer_id", "dataset_id", "target", "study_population",
+            "decision_cutoff_type", "hidden_outcomes", "allowed_private_inputs",
+            "event_ids", "feature_policy_version", "source_policy_version",
+            "status", "created_at", "frozen_at",
+        ]
+        study = dict(zip(keys, row))
+        for json_field in ("hidden_outcomes", "allowed_private_inputs", "event_ids"):
+            raw = study.get(json_field)
+            if isinstance(raw, str):
+                try:
+                    study[json_field] = json.loads(raw)
+                except json.JSONDecodeError:
+                    study[json_field] = []
+        return study
+
+    def freeze_retrospective_study(self, study_id: str, *, status: str, frozen_at: str | None = None) -> bool:
+        """Freeze a study; returns False if the study does not exist."""
+        existing = self.conn.execute(
+            "SELECT study_id FROM economics.retrospective_studies WHERE study_id = ?",
+            [study_id],
+        ).fetchone()
+        if not existing:
+            return False
+        self.conn.execute(
+            "UPDATE economics.retrospective_studies SET status = ?, frozen_at = ? WHERE study_id = ?",
+            [status, frozen_at or utc_now().isoformat(), study_id],
+        )
+        self.conn.commit()
+        return True
+
+    def insert_outcome_vault_entry(self, entry: dict[str, Any]) -> None:
+        """Store a hidden outcome in the vault (idempotent by vault_id)."""
+        self.conn.execute(
+            """
+            INSERT INTO economics.outcome_vault
+                (vault_id, study_id, canonical_event_id, claim_id, outcome_type,
+                 hidden, revealed_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (vault_id) DO NOTHING
+            """,
+            [
+                entry["vault_id"],
+                entry["study_id"],
+                entry["canonical_event_id"],
+                entry["claim_id"],
+                entry["outcome_type"],
+                entry.get("hidden", True),
+                entry.get("revealed_at"),
+                entry.get("created_at") or utc_now().isoformat(),
+            ],
+        )
+        self.conn.commit()
+
+    def query_outcome_vault(self, *, study_id: str, hidden_only: bool = True) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM economics.outcome_vault WHERE study_id = ?"
+        params: list[Any] = [study_id]
+        if hidden_only:
+            sql += " AND hidden = TRUE"
+        return _rows(self.conn.execute(sql, params), self.conn)
+
+    def reveal_outcomes(self, *, study_id: str, revealed_at: str | None = None) -> int:
+        """Reveal a study's hidden outcomes (for scoring only). Returns count."""
+        now = revealed_at or utc_now().isoformat()
+        self.conn.execute(
+            "UPDATE economics.outcome_vault SET hidden = FALSE, revealed_at = ? WHERE study_id = ? AND hidden = TRUE",
+            [now, study_id],
+        )
+        self.conn.commit()
+        return self.conn.execute(
+            "SELECT count(*) FROM economics.outcome_vault WHERE study_id = ? AND revealed_at = ?",
+            [study_id, now],
+        ).fetchone()[0]
+
+    def upsert_training_row_eligibility(self, entry: dict[str, Any]) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO economics.training_row_eligibility
+                (study_id, canonical_event_id, eligible, exclusion_reason, evaluated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (study_id, canonical_event_id) DO UPDATE SET
+                eligible = excluded.eligible,
+                exclusion_reason = excluded.exclusion_reason,
+                evaluated_at = excluded.evaluated_at
+            """,
+            [
+                entry["study_id"],
+                entry["canonical_event_id"],
+                entry["eligible"],
+                entry.get("exclusion_reason"),
+                entry.get("evaluated_at") or utc_now().isoformat(),
+            ],
+        )
+        self.conn.commit()
+
+    def query_training_row_eligibility(self, *, study_id: str) -> list[dict[str, Any]]:
+        return _rows(
+            self.conn.execute(
+                "SELECT * FROM economics.training_row_eligibility WHERE study_id = ? ORDER BY canonical_event_id",
+                [study_id],
+            ),
+            self.conn,
+        )
+
+
     def _duplicate_snapshot(self, table: str, provider: str, provider_event_id: str | None, bucket: str, price_type: str | None) -> bool:
         if price_type is None:
             row = self.conn.execute(

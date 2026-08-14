@@ -20,6 +20,7 @@ from .event_history import run_event_history_oa
 from .market_economics import run_market_economics_oa
 from .historical_laboratory import run_historical_laboratory_oa
 from .economic_outcome import run_economic_outcome_oa
+from .design_partner import run_design_partner_oa
 
 __all__ = [
     "CANDIDATE_ARTISTS",
@@ -33,5 +34,6 @@ __all__ = [
     "run_market_economics_oa",
     "run_historical_laboratory_oa",
     "run_economic_outcome_oa",
+    "run_design_partner_oa",
     "select_artist",
 ]
