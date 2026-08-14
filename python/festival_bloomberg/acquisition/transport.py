@@ -30,6 +30,26 @@ class HttpResponse:
         return json.loads(self.body.decode("utf-8"))
 
 
+_SECRET_QUERY_KEYS = frozenset({"key", "access_token", "token", "api_key"})
+
+
+def _redact_secrets(value: str) -> str:
+    """Strip credential query params from URLs and error strings."""
+    if not value:
+        return value
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        if parsed.query:
+            redacted = [
+                (k, "***") if k.lower() in _SECRET_QUERY_KEYS else (k, v)
+                for k, v in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+            ]
+            value = urllib.parse.urlunsplit(parsed._replace(query=urllib.parse.urlencode(redacted)))
+    except ValueError:
+        pass
+    return value
+
+
 class HttpTransport(Protocol):
     def request(
         self,
@@ -70,6 +90,7 @@ class UrllibTransport:
     ) -> HttpResponse:
         if params:
             url = f"{url}?{urllib.parse.urlencode(params)}"
+        safe_url = _redact_secrets(url)
         request_headers = dict(headers or {})
         request_headers.setdefault("User-Agent", self._user_agent)
         if body is not None and not isinstance(body, bytes):
@@ -97,4 +118,4 @@ class UrllibTransport:
                 headers=dict(exc.headers.items()),
             )
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            raise TransportError(f"network failure: {exc}") from exc
+            raise TransportError(f"network failure: {_redact_secrets(str(exc))}") from None

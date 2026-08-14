@@ -20,7 +20,7 @@ from ..acquisition.contracts import AcquisitionRequest, AcquisitionResult, utc_n
 from ..acquisition.transport import UrllibTransport  # noqa: F401  (re-exported for tests)
 from ..migrations import apply_pending_migrations
 from .dedup import resolve_canonical
-from .provenance import knowledge_time_for, parse_iso, utc
+from .provenance import knowledge_time_for, parse_iso, retrieval_knowledge_time, utc
 from .semantics import normalize_content_role, normalize_resolution_method
 
 
@@ -114,19 +114,22 @@ class EvidenceRepository:
         retrieved_at: datetime,
         run_id: str,
     ) -> dict:
-        published = parse_iso(record.get("published_at"))
+        published = parse_iso(record.get("published_at")) or parse_iso(
+            record.get("source_publication_time")
+        )
         source_revision_time = parse_iso(record.get("source_revision_time"))
-        if (
-            record.get("knowledge_time_source") == "source_revision"
-            and source_revision_time is not None
-        ):
+        knowledge_source = record.get("knowledge_time_source")
+        if knowledge_source == "source_revision" and source_revision_time is not None:
             # Immutable revision identity is proven: the fetched content maps
             # to a specific, stable revision, so its revision time is defensible
             # as knowledge_time.
             knowledge_time = source_revision_time
-        else:
-            # Mutable / current-page content: fail conservative to retrieval.
+        elif knowledge_source == "publication":
             knowledge_time = knowledge_time_for(published, retrieved_at)
+        else:
+            # Mutable live retrieval (YouTube comments, video statistics):
+            # we only learned this representation at retrieval time.
+            knowledge_time = retrieval_knowledge_time(retrieved_at)
         if request.knowledge_cutoff is not None and knowledge_time > utc(request.knowledge_cutoff):
             # Observations learned after the cutoff are stored but flagged so
             # PIT queries can never surface them at the cutoff.
@@ -152,6 +155,9 @@ class EvidenceRepository:
             "correlation_id": request.correlation_id,
             "source_revision_id": record.get("source_revision_id"),
             "source_revision_time": source_revision_time.isoformat() if source_revision_time else None,
+            "parser_version": record.get("parser_version"),
+            "provider_version": record.get("provider_version"),
+            "source_updated_at": record.get("source_updated_at"),
             "metadata_json": {
                 "text": record.get("text"),
                 "author_name": record.get("author_name"),
@@ -160,6 +166,16 @@ class EvidenceRepository:
                 "media_type": record.get("media_type"),
                 "raw_bytes": record.get("raw_bytes"),
                 "content_role": record.get("content_role"),
+                "search_cohort": record.get("search_cohort"),
+                "search_query": record.get("search_query"),
+                "market_context_method": record.get("market_context_method"),
+                "commenter_location": record.get("commenter_location"),
+                "replies_complete": record.get("replies_complete"),
+                "video_id": record.get("video_id") or record.get("parent_object_id"),
+                "channel_id": record.get("channel_id"),
+                "channel_title": record.get("channel_title"),
+                "source_publication_time": record.get("source_publication_time"),
+                "source_updated_at": record.get("source_updated_at"),
             },
         }
 
@@ -195,8 +211,8 @@ class EvidenceRepository:
                  source_url, entity_id, entity_type, published_at, retrieved_at,
                  knowledge_time, content_hash, raw_payload_hash, evidence_class,
                  cost_usd, correlation_id, source_revision_id, source_revision_time,
-                 metadata_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 parser_version, provider_version, source_updated_at, metadata_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 raw["observation_id"],
@@ -220,6 +236,9 @@ class EvidenceRepository:
                 raw["correlation_id"],
                 raw["source_revision_id"],
                 raw["source_revision_time"],
+                raw.get("parser_version"),
+                raw.get("provider_version"),
+                raw.get("source_updated_at"),
                 json.dumps(raw["metadata_json"]),
             ],
         )
@@ -245,8 +264,9 @@ class EvidenceRepository:
                  thread_id, media_type, hashtags, mentions, market_id,
                  geographic_confidence, entity_resolution_confidence, content_role,
                  content_role_method, resolution_method, resolution_evidence,
-                 canonical_url, content_hash, source_count, provider_count, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?)
+                 canonical_url, content_hash, source_count, provider_count, created_at,
+                 search_cohort, market_context_method, commenter_location, source_updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?, ?, ?)
             """,
             [
                 canonical_id,
@@ -272,6 +292,10 @@ class EvidenceRepository:
                 record.get("canonical_url"),
                 record.get("content_hash"),
                 utc_now().isoformat(),
+                record.get("search_cohort"),
+                record.get("market_context_method"),
+                record.get("commenter_location"),
+                record.get("source_updated_at"),
             ],
         )
 
@@ -376,6 +400,9 @@ class EvidenceRepository:
         start_time: datetime | str | None = None,
         cutoff: datetime | str | None = None,
         limit: int | None = None,
+        correlation_id: str | None = None,
+        search_cohort: str | None = None,
+        content_role: str | None = None,
     ) -> list[dict]:
         """Canonical observations at a knowledge cutoff (PIT-safe).
 
@@ -389,7 +416,8 @@ class EvidenceRepository:
                    parent_object_id, thread_id, media_type, hashtags, mentions,
                    market_id, geographic_confidence, content_role, content_role_method,
                    resolution_method, resolution_evidence, canonical_url, content_hash,
-                   source_count, provider_count
+                   source_count, provider_count, search_cohort, market_context_method,
+                   commenter_location, source_updated_at
             FROM acquisition.social_observations
             WHERE 1 = 1
         """
@@ -403,14 +431,26 @@ class EvidenceRepository:
         if market_id:
             query += " AND market_id = ?"
             params.append(market_id)
-        if cutoff is not None:
+        if search_cohort:
+            query += " AND search_cohort = ?"
+            params.append(search_cohort)
+        if content_role:
+            query += " AND content_role = ?"
+            params.append(content_role)
+        if cutoff is not None or correlation_id is not None:
+            raw_filters = []
+            if cutoff is not None:
+                raw_filters.append("knowledge_time <= ?")
+                params.append(cutoff.isoformat() if isinstance(cutoff, datetime) else str(cutoff))
+            if correlation_id is not None:
+                raw_filters.append("correlation_id = ?")
+                params.append(correlation_id)
             query += (
                 " AND observation_id IN ("
                 "   SELECT DISTINCT canonical_observation_id FROM acquisition.raw_observations"
-                "   WHERE knowledge_time <= ?"
+                f"   WHERE {' AND '.join(raw_filters)}"
                 ")"
             )
-            params.append(cutoff.isoformat() if isinstance(cutoff, datetime) else str(cutoff))
         if start_time is not None:
             query += " AND (published_at IS NULL OR published_at >= ?)"
             params.append(start_time.isoformat() if isinstance(start_time, datetime) else str(start_time))
@@ -425,7 +465,8 @@ class EvidenceRepository:
             "parent_object_id", "thread_id", "media_type", "hashtags", "mentions",
             "market_id", "geographic_confidence", "content_role", "content_role_method",
             "resolution_method", "resolution_evidence", "canonical_url", "content_hash",
-            "source_count", "provider_count",
+            "source_count", "provider_count", "search_cohort", "market_context_method",
+            "commenter_location", "source_updated_at",
         ]
         out = []
         for row in rows:

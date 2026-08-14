@@ -73,6 +73,9 @@ class AcquisitionRequest:
     preferred_providers: tuple[str, ...] = ()
     commercial_context: str = "research"
     correlation_id: str | None = None
+    max_videos: int | None = None
+    order: str | None = None
+    search_cohort: str | None = None
 
     @classmethod
     def new(
