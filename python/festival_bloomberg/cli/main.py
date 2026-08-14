@@ -26,6 +26,7 @@ from ..acquisition.policy import PolicyGate
 from ..acquisition.providers import default_providers
 from ..acquisition.router import AcquisitionRouter
 from ..evidence.repository import EvidenceRepository
+from ..oa.operational_acceptance import run_operational_acceptance
 from ..social import features as feature_builder
 from ..warehouse.repository import FestivalRepository
 
@@ -120,6 +121,56 @@ def cmd_collect_social(args: argparse.Namespace) -> int:
         repo.close()
 
 
+def cmd_operational_acceptance(args: argparse.Namespace) -> int:
+    """Run the live Signal Fabric operational acceptance (real public data).
+
+    Live-only: performs real network fetches against a free, key-free,
+    CC-licensed public source (Wikipedia) at $0 cost. Never uses fixtures.
+    """
+    import json
+    import os
+
+    db_path = args.db
+    repo = FestivalRepository(db_path) if db_path else FestivalRepository()
+    try:
+        evidence = EvidenceRepository(repo.conn)
+        manifest = run_operational_acceptance(
+            evidence,
+            market=args.market,
+            lookback_days=args.lookback_days,
+            budget_usd=args.budget_usd,
+            db_path=db_path,
+        )
+
+        manifest_path = args.manifest
+        if manifest_path:
+            parent = os.path.dirname(manifest_path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(manifest_path, "w", encoding="utf-8") as fh:
+                json.dump(manifest, fh, indent=2, sort_keys=True)
+
+        print("=== FESTIVAL SIGNAL FABRIC — OPERATIONAL ACCEPTANCE ===")
+        print(f"market:              {manifest['market']}")
+        print(f"budget_usd:          {manifest['budget_usd']}")
+        print(f"selected artist:     {manifest['artist_selection']['selected_artist']}")
+        print(f"provider readiness:  {manifest['provider_readiness']}")
+        print(f"raw observations:    {manifest['observations']['raw_count']}")
+        print(f"canonical objects:   {manifest['observations']['canonical_count']}")
+        print(f"platforms:           {manifest['observations']['platforms']}")
+        print(f"vader distribution:  {manifest['nlp']['vader']['distribution']}")
+        print(f"tweetnlp:            {manifest['nlp']['tweetnlp']['status']}")
+        print(f"chicago:             {manifest['chicago']['status']}")
+        print(f"pit replay:          {manifest['pit_replay']['status']}")
+        print(f"cost_usd:            {manifest['cost_usd']}")
+        if manifest_path:
+            print(f"manifest:            {manifest_path}")
+        print("NO RECOMMENDATION — live evidence acquisition only.")
+        return 0
+    finally:
+        repo.close()
+
+
 def cmd_summarize_social(args: argparse.Namespace) -> int:
     db_path = args.db
     repo = FestivalRepository(db_path) if db_path else FestivalRepository()
@@ -180,6 +231,17 @@ def build_parser() -> argparse.ArgumentParser:
     summarize.add_argument("--cutoff", default=None)
     summarize.add_argument("--db", default=None)
     summarize.set_defaults(handler=cmd_summarize_social)
+
+    oa = sub.add_parser(
+        "operational-acceptance-social",
+        help="live Signal Fabric operational acceptance (real public data, $0)",
+    )
+    oa.add_argument("--market", default="Chicago, IL")
+    oa.add_argument("--lookback-days", type=int, default=30)
+    oa.add_argument("--budget-usd", type=float, default=0.0)
+    oa.add_argument("--db", default=None)
+    oa.add_argument("--manifest", default="reports/signal_fabric_live_oa.json")
+    oa.set_defaults(handler=cmd_operational_acceptance)
 
     return parser
 
