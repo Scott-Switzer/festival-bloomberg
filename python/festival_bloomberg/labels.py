@@ -20,6 +20,12 @@ MANUAL_FIELDS = (
 )
 
 
+def _jsonable(value: Any):
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return value
+
+
 def stable_sample(observation_ids: list[str], sample_size: int) -> list[str]:
     """Deterministic sample: sort by sha256(observation_id), take the first N."""
     if sample_size <= 0 or not observation_ids:
@@ -58,7 +64,8 @@ def export_fan_text(
             "observation_id": obs["observation_id"],
             "text": obs.get("text"),
             "platform": obs.get("platform"),
-            "published_at": obs.get("published_at"),
+            "video_id": obs.get("video_id") or obs.get("parent_object_id"),
+            "published_at": _jsonable(obs.get("published_at")),
             "market_id": obs.get("market_id"),
             "content_role": obs.get("content_role"),
         }

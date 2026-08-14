@@ -15,6 +15,7 @@ from .operational_acceptance import (
     run_operational_acceptance,
     select_artist,
 )
+from .youtube_fan_signal import run_youtube_fan_signal_oa
 
 __all__ = [
     "CANDIDATE_ARTISTS",
@@ -23,5 +24,6 @@ __all__ = [
     "detect_chicago_mentions",
     "provider_readiness",
     "run_operational_acceptance",
+    "run_youtube_fan_signal_oa",
     "select_artist",
 ]

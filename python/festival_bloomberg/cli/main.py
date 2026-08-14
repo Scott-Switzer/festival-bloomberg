@@ -27,6 +27,7 @@ from ..acquisition.providers import default_providers
 from ..acquisition.router import AcquisitionRouter
 from ..evidence.repository import EvidenceRepository
 from ..oa.operational_acceptance import run_operational_acceptance
+from ..oa.youtube_fan_signal import run_youtube_fan_signal_oa
 from ..social import features as feature_builder
 from ..warehouse.repository import FestivalRepository
 
@@ -175,6 +176,49 @@ def cmd_operational_acceptance(args: argparse.Namespace) -> int:
         repo.close()
 
 
+def cmd_youtube_fan_signal(args: argparse.Namespace) -> int:
+    """Run the live YouTube fan-signal OA. Never prints secrets or raw UGC."""
+    import json
+    import os
+
+    db_path = args.db
+    repo = FestivalRepository(db_path) if db_path else FestivalRepository()
+    try:
+        evidence = EvidenceRepository(repo.conn)
+        manifest = run_youtube_fan_signal_oa(
+            evidence,
+            market=args.market,
+            budget_usd=args.budget_usd,
+            db_path=db_path,
+            batch_universe=not args.no_batch,
+            label_output=args.labels,
+        )
+        manifest_path = args.manifest
+        if manifest_path:
+            parent = os.path.dirname(manifest_path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(manifest_path, "w", encoding="utf-8") as fh:
+                json.dump(manifest, fh, indent=2, sort_keys=True)
+
+        print("=== FESTIVAL BLOOMBERG — REAL YOUTUBE FAN SIGNAL V1 ===")
+        print(f"oa_run_id:           {manifest['oa_run_id']}")
+        print(f"selected artist:     {manifest.get('selected_artist')}")
+        cred = manifest.get("youtube_credential_status") or {}
+        print(f"YOUTUBE_API_KEY:     {cred.get('configured')}")
+        print(f"YOUTUBE_AUTH:        {cred.get('auth')}")
+        print(f"quota_usage:         {manifest.get('quota_usage')}")
+        print(f"cost_usd:            {manifest.get('cost_usd')}")
+        for key, value in (manifest.get("statuses") or {}).items():
+            print(f"{key:34s} {value}")
+        if manifest_path:
+            print(f"manifest:            {manifest_path}")
+        print("NO RECOMMENDATION — observational evidence only.")
+        return 0
+    finally:
+        repo.close()
+
+
 def cmd_labels_export(args: argparse.Namespace) -> int:
     """Export a deterministic, unlabeled fan-text sample for human labeling."""
     import json
@@ -286,6 +330,18 @@ def build_parser() -> argparse.ArgumentParser:
     oa.add_argument("--db", default=None)
     oa.add_argument("--manifest", default="reports/signal_fabric_live_oa.json")
     oa.set_defaults(handler=cmd_operational_acceptance)
+
+    yt_oa = sub.add_parser(
+        "operational-acceptance-youtube-fan-signal",
+        help="live YouTube FAN_GENERATED OA (real comments, $0 monetary, quota counted)",
+    )
+    yt_oa.add_argument("--market", default="Chicago, IL")
+    yt_oa.add_argument("--budget-usd", type=float, default=0.0)
+    yt_oa.add_argument("--db", default=None)
+    yt_oa.add_argument("--manifest", default="reports/youtube_fan_signal_oa.json")
+    yt_oa.add_argument("--labels", default="reports/youtube_fan_labels.json")
+    yt_oa.add_argument("--no-batch", action="store_true")
+    yt_oa.set_defaults(handler=cmd_youtube_fan_signal)
 
     labels = sub.add_parser("labels", help="deterministic human-labeling exports")
     labels_sub = labels.add_subparsers(dest="labels_command", required=True)
