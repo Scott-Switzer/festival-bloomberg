@@ -79,7 +79,7 @@ class TestMigrations:
 
         connection = duckdb.connect(str(tmp_path / "fresh.duckdb"))
         try:
-            assert apply_pending_migrations(connection) == 10
+            assert apply_pending_migrations(connection) == 11
             tables = {
                 row[0]
                 for row in connection.execute(
@@ -152,7 +152,7 @@ class TestMigrations:
         connection = duckdb.connect(str(db_path))
         try:
             applied = apply_pending_migrations(connection)
-            assert applied == 5  # migrations 6, 7, 8, 9 and 10
+            assert applied == 6  # migrations 6, 7, 8, 9, 10 and 11
             # historical rows survive
             metrics = connection.execute(
                 "SELECT value FROM metrics.artist_metrics WHERE artist_key = 'a'"
@@ -185,14 +185,14 @@ class TestMigrations:
                     "SELECT version FROM schema_migrations ORDER BY version"
                 ).fetchall()
             ]
-            assert versions == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+            assert versions == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
         finally:
             connection.close()
 
     def test_migration_order_is_deterministic(self):
         versions = [version for version, _name, _path in load_migration_files()]
         assert versions == sorted(versions)
-        assert versions == list(range(1, 11))
+        assert versions == list(range(1, 12))
 
 
 # ---------------------------------------------------------------------------

@@ -35,11 +35,11 @@ describe("schema migrations", () => {
 
     const db = await createDuckDbWarehouse({ path: temp.path });
     const versions = migrationCatalog().map((migration) => migration.version);
-    assert.deepEqual(versions, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    assert.deepEqual(versions, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
     await db.close();
 
     const rows = await queryMigrations(temp.path);
-    assert.equal(rows.length, 10);
+    assert.equal(rows.length, 11);
     assert.equal(rows[1]?.name, "published_at_point_in_time_v2");
     assert.equal(rows[2]?.name, "intelligence_metrics_v1");
     assert.equal(rows[3]?.name, "canonical_entity_resolution_v1");
@@ -49,13 +49,14 @@ describe("schema migrations", () => {
     assert.equal(rows[7]?.name, "evidence_semantics_v1");
     assert.equal(rows[8]?.name, "youtube_fan_signal_v1");
     assert.equal(rows[9]?.name, "event_performance_v1");
+    assert.equal(rows[10]?.name, "market_economics_v1");
 
     const reopened = await createDuckDbWarehouse({ path: temp.path });
     await reopened.close();
     const again = await queryMigrations(temp.path);
     assert.deepEqual(
       again.map((row) => row.version),
-      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
     );
   });
 });
