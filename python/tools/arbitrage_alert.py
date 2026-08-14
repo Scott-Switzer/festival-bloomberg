@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""
-Arbitrage Alert CLI Tool
+"""LEGACY_EXPERIMENTAL arbitrage alert CLI.
 
-Scans for secondary-market ticket prices exceeding primary tiers by over 15%
-and prints an actionable booking arbitrage summary.
+Not production economics. Do not feed ``arbitrage_candidate`` into
+underwriting, booking, or Festival Bloomberg product truth.
 """
 import sys
 import argparse

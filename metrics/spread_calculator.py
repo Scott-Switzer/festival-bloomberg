@@ -1,9 +1,19 @@
+"""LEGACY_EXPERIMENTAL ticket-spread calculator.
+
+Festival Bloomberg is not a ticket-arbitrage system. This module retains
+historical tests for immutable listing snapshots. Production economics must
+not consume ``arbitrage_candidate``, the invented 1:1 FX fallback, or the
+hard-coded 10%/15% thresholds. Use ``PRICE_COMPARISON_OBSERVATION`` /
+``PRIMARY_SECONDARY_MARKET_COMPARISON`` instead.
+"""
 from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime,timezone
 from decimal import Decimal,ROUND_HALF_UP
 from typing import Mapping
 D=Decimal
+MODULE_STATUS = "LEGACY_EXPERIMENTAL"
+PRODUCTION_ECONOMICS = False
 @dataclass(frozen=True)
 class FXTable:
     rates:Mapping[tuple[str,str,str],Decimal]; fallback_rate:Decimal=D('1')

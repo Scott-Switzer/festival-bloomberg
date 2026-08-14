@@ -1,8 +1,19 @@
+"""LEGACY_EXTERNAL_LISTING_ADAPTER.
+
+This adapter snapshots *individual listing* fields (listing_id, section, row,
+quantity, listing-level buyer price). The official SeatGeek Platform API v2
+does **not** expose individual ticket listings — only event-level aggregate
+``stats``. Do not wire this class to ``api.seatgeek.com``. Production
+secondary-market evidence uses ``seatgeek_official_api``.
+"""
 from __future__ import annotations
 from dataclasses import dataclass,asdict
 from datetime import datetime,timezone
 from typing import Any,Mapping
 import hashlib,json
+
+MODULE_STATUS = "LEGACY_EXTERNAL_LISTING_ADAPTER"
+OFFICIAL_API = False
 
 def _parse_bool(value: Any, *, default: bool = False) -> bool:
     if value is None:
@@ -25,6 +36,8 @@ class SeatGeekSnapshot:
 
 class SeatGeekAdapter:
     source='seatgeek'
+    official_api=False
+    module_status=MODULE_STATUS
     def snapshot(self,raw:Mapping[str,Any],retrieved_at=None):
         def p(*ks):return next((raw[k] for k in ks if raw.get(k) is not None),None)
         vals={'event':p('event_id','external_event_id'),'listing':p('listing_id','external_listing_id'),'url':p('listing_url','url'),'title':p('title')}; flags=tuple('MISSING_'+k.upper() for k,v in vals.items() if v in (None,'')); ts=retrieved_at or datetime.now(timezone.utc); active=p('is_active')
