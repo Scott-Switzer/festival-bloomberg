@@ -303,6 +303,84 @@ def cmd_events_market_history_batch(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_market_economics_oa(args: argparse.Namespace) -> int:
+    from ..oa.market_economics import run_market_economics_oa
+
+    manifest = run_market_economics_oa(
+        db_path=args.db,
+        manifest_path=args.manifest,
+        market=args.market,
+        budget_usd=args.budget_usd,
+    )
+    print("=== FESTIVAL BLOOMBERG — MARKET ECONOMICS EVIDENCE V1 ===")
+    print(f"oa_run_id:           {manifest['oa_run_id']}")
+    print(f"TICKETMASTER_AUTH:   {manifest.get('ticketmaster_auth')}")
+    print(f"SEATGEEK_AUTH:       {manifest.get('seatgeek_auth')}")
+    print(f"cost_usd:            {manifest.get('cost_usd')}")
+    for key, value in (manifest.get("statuses") or {}).items():
+        print(f"{key:34s} {value}")
+    print(f"manifest:            {args.manifest}")
+    print("NO RECOMMENDATION — capacity claims and ticket snapshots only.")
+    return 0
+
+
+def cmd_economics_snapshot_event(args: argparse.Namespace) -> int:
+    from ..economics.collector import snapshot_event
+    from ..economics.repository import EconomicsRepository
+    from ..events.repository import EventRepository
+
+    repo = FestivalRepository(args.db) if args.db else FestivalRepository()
+    try:
+        EvidenceRepository(repo.conn)
+        events_repo = EventRepository(repo.conn)
+        economics = EconomicsRepository(repo.conn)
+        providers = tuple(p.strip() for p in args.providers.split(",") if p.strip())
+        summary = snapshot_event(
+            events_repo=events_repo,
+            economics_repo=economics,
+            canonical_event_id=args.event_id,
+            providers=providers,
+        )
+        print("=== ECONOMICS SNAPSHOT EVENT ===")
+        print(f"event_id:            {args.event_id}")
+        print(f"events_requested:    {summary['events_requested']}")
+        print(f"provider_obs:        {summary['provider_observations']}")
+        print(f"price_snapshots:     {summary['price_snapshots']}")
+        print(f"errors:              {summary['errors']}")
+        print(f"actual_cost:         {summary['actual_cost']}")
+        return 0
+    finally:
+        repo.close()
+
+
+def cmd_economics_snapshot_upcoming(args: argparse.Namespace) -> int:
+    from ..economics.collector import snapshot_upcoming
+    from ..economics.repository import EconomicsRepository
+    from ..events.repository import EventRepository
+
+    repo = FestivalRepository(args.db) if args.db else FestivalRepository()
+    try:
+        EvidenceRepository(repo.conn)
+        events_repo = EventRepository(repo.conn)
+        economics = EconomicsRepository(repo.conn)
+        providers = tuple(p.strip() for p in args.providers.split(",") if p.strip())
+        summary = snapshot_upcoming(
+            events_repo=events_repo,
+            economics_repo=economics,
+            market=args.market,
+            providers=providers,
+        )
+        print("=== ECONOMICS SNAPSHOT UPCOMING ===")
+        print(f"events_requested:    {summary['events_requested']}")
+        print(f"provider_obs:        {summary['provider_observations']}")
+        print(f"price_snapshots:     {summary['price_snapshots']}")
+        print(f"errors:              {summary['errors']}")
+        print(f"actual_cost:         {summary['actual_cost']}")
+        return 0
+    finally:
+        repo.close()
+
+
 def cmd_labels_export(args: argparse.Namespace) -> int:
     """Export a deterministic, unlabeled fan-text sample for human labeling."""
     import json
@@ -461,6 +539,30 @@ def build_parser() -> argparse.ArgumentParser:
     batch.add_argument("--youtube-db", default="data/warehouse/youtube_fan_signal_oa.duckdb")
     batch.add_argument("--manifest", default="reports/artist_market_event_history_v1.json")
     batch.set_defaults(handler=cmd_events_market_history_batch)
+
+    econ_oa = sub.add_parser(
+        "operational-acceptance-market-economics",
+        help="live venue capacity + ticket snapshots + outcome labels OA ($0)",
+    )
+    econ_oa.add_argument("--market", default="Chicago, IL")
+    econ_oa.add_argument("--budget-usd", type=float, default=0.0)
+    econ_oa.add_argument("--db", default="data/warehouse/artist_market_event_history.duckdb")
+    econ_oa.add_argument("--manifest", default="reports/market_economics_evidence_v1.json")
+    econ_oa.set_defaults(handler=cmd_market_economics_oa)
+
+    economics = sub.add_parser("economics", help="venue capacity claims and ticket-market snapshots")
+    economics_sub = economics.add_subparsers(dest="economics_command", required=True)
+    snap_event = economics_sub.add_parser("snapshot-event", help="append-only snapshot for one canonical event")
+    snap_event.add_argument("--event-id", required=True)
+    snap_event.add_argument("--providers", default="ticketmaster,seatgeek")
+    snap_event.add_argument("--db", default="data/warehouse/artist_market_event_history.duckdb")
+    snap_event.set_defaults(handler=cmd_economics_snapshot_event)
+
+    snap_up = economics_sub.add_parser("snapshot-upcoming", help="snapshot upcoming events in a market")
+    snap_up.add_argument("--market", default="Chicago, IL")
+    snap_up.add_argument("--providers", default="ticketmaster,seatgeek")
+    snap_up.add_argument("--db", default="data/warehouse/artist_market_event_history.duckdb")
+    snap_up.set_defaults(handler=cmd_economics_snapshot_upcoming)
 
     labels = sub.add_parser("labels", help="deterministic human-labeling exports")
     labels_sub = labels.add_subparsers(dest="labels_command", required=True)
