@@ -17,6 +17,7 @@ from .operational_acceptance import (
 )
 from .youtube_fan_signal import run_youtube_fan_signal_oa
 from .event_history import run_event_history_oa
+from .market_economics import run_market_economics_oa
 
 __all__ = [
     "CANDIDATE_ARTISTS",
@@ -27,5 +28,6 @@ __all__ = [
     "run_operational_acceptance",
     "run_youtube_fan_signal_oa",
     "run_event_history_oa",
+    "run_market_economics_oa",
     "select_artist",
 ]

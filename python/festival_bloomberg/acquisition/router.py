@@ -41,6 +41,9 @@ MECHANISM_BY_PROVIDER = {
     "wikimedia": "api",
     "ticketmaster": "api",
     "setlistfm": "api",
+    "seatgeek": "api",
+    "wikidata": "api",
+    "openstreetmap": "api",
     "scrapling": "scraping",
 }
 

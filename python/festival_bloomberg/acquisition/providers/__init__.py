@@ -13,9 +13,12 @@ from ..base import AcquisitionProvider
 from .apify import ApifyProvider
 from .http import HttpProvider
 from .monid import MonidProvider
+from .openstreetmap import OpenStreetMapProvider
 from .scrapling import ScraplingProvider
+from .seatgeek import SeatGeekProvider
 from .setlistfm import SetlistFmProvider
 from .ticketmaster import TicketmasterProvider
+from .wikidata import WikidataProvider
 from .wikimedia import WikimediaProvider
 from .youtube import YouTubeProvider
 
@@ -24,9 +27,12 @@ __all__ = [
     "ApifyProvider",
     "HttpProvider",
     "MonidProvider",
+    "OpenStreetMapProvider",
     "ScraplingProvider",
+    "SeatGeekProvider",
     "SetlistFmProvider",
     "TicketmasterProvider",
+    "WikidataProvider",
     "WikimediaProvider",
     "YouTubeProvider",
     "default_providers",
@@ -42,7 +48,10 @@ def default_providers(**overrides) -> dict[str, AcquisitionProvider]:
         "youtube": YouTubeProvider(**overrides.pop("youtube", {})),
         "scrapling": ScraplingProvider(**overrides.pop("scrapling", {})),
         "wikimedia": WikimediaProvider(**overrides.pop("wikimedia", {})),
+        "wikidata": WikidataProvider(**overrides.pop("wikidata", {})),
+        "openstreetmap": OpenStreetMapProvider(**overrides.pop("openstreetmap", {})),
         "ticketmaster": TicketmasterProvider(**overrides.pop("ticketmaster", {})),
         "setlistfm": SetlistFmProvider(**overrides.pop("setlistfm", {})),
+        "seatgeek": SeatGeekProvider(**overrides.pop("seatgeek", {})),
     }
     return providers

@@ -57,6 +57,11 @@ def default_policy_profiles() -> dict[str, RightsProfile]:
             derivative=approved, redistribution=approved, commercial=approved,
             notes="CC0; no attribution required",
         ),
+        "openstreetmap": profile(
+            "openstreetmap", content=conditional, api=conditional, storage=conditional,
+            derivative=conditional, redistribution=conditional, commercial=conditional,
+            notes="ODbL; capacity tags are source claims; attribution required",
+        ),
         "wikimedia": profile(
             "wikimedia", content=conditional, api=conditional, storage=conditional,
             derivative=conditional, redistribution=conditional, commercial=conditional,
@@ -110,7 +115,7 @@ def default_policy_profiles() -> dict[str, RightsProfile]:
         "seatgeek": profile(
             "seatgeek", content=review, api=review, storage=review,
             derivative=review, redistribution=review, commercial=review,
-            notes="listing content; scraping restrictions; review required",
+            notes="Official Platform API v2 event-level stats; research reads with client_id; does not expose individual listings; commercial review required",
         ),
         "ticketmaster": profile(
             "ticketmaster", content=review, api=review, storage=review,

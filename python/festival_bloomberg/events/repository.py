@@ -360,6 +360,35 @@ class EventRepository:
         ]
         return [dict(zip(keys, row)) for row in rows]
 
+    def query_venues(self) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT venue_id, venue_name, city, state, state_code, country, country_code,
+                   market_id, latitude, longitude, ticketmaster_venue_id, setlistfm_venue_id,
+                   first_observed_at, last_observed_at, supporting_observation_ids
+            FROM events.venues
+            ORDER BY venue_name
+            """
+        ).fetchall()
+        keys = [
+            "venue_id",
+            "venue_name",
+            "city",
+            "state",
+            "state_code",
+            "country",
+            "country_code",
+            "market_id",
+            "latitude",
+            "longitude",
+            "ticketmaster_venue_id",
+            "setlistfm_venue_id",
+            "first_observed_at",
+            "last_observed_at",
+            "supporting_observation_ids",
+        ]
+        return [dict(zip(keys, row)) for row in rows]
+
     def query_fan_links(self, *, event_id: str | None = None, video_id: str | None = None) -> list[dict[str, Any]]:
         sql = """
             SELECT link_id, youtube_video_id, canonical_event_id, link_method,
