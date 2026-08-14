@@ -365,7 +365,8 @@ class EventRepository:
             """
             SELECT venue_id, venue_name, city, state, state_code, country, country_code,
                    market_id, latitude, longitude, ticketmaster_venue_id, setlistfm_venue_id,
-                   first_observed_at, last_observed_at, supporting_observation_ids
+                   first_observed_at, last_observed_at, supporting_observation_ids,
+                   superseded_by, canonical_method
             FROM events.venues
             ORDER BY venue_name
             """
@@ -386,6 +387,8 @@ class EventRepository:
             "first_observed_at",
             "last_observed_at",
             "supporting_observation_ids",
+            "superseded_by",
+            "canonical_method",
         ]
         return [dict(zip(keys, row)) for row in rows]
 
