@@ -88,6 +88,8 @@ def make_request(
     order: str | None = None,
     search_cohort: str | None = None,
     correlation_id: str | None = None,
+    operation: str | None = None,
+    external_id: str | None = None,
 ):
     from festival_bloomberg.acquisition.contracts import AcquisitionRequest
 
@@ -107,4 +109,6 @@ def make_request(
         order=order,
         search_cohort=search_cohort,
         correlation_id=correlation_id,
+        operation=operation,
+        external_id=external_id,
     )

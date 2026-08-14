@@ -160,6 +160,10 @@ class YouTubeProvider(BaseProvider):
         records: list[dict] = []
         comments_disabled: list[str] = []
         comment_count = 0
+        comment_pages = 0
+        comment_page_cap_hit = False
+        comment_count_cap_hit = False
+        comments_reported = 0
         for video in videos:
             video_record = self._normalize_video(
                 video,
@@ -169,11 +173,15 @@ class YouTubeProvider(BaseProvider):
                 selection_reason=search_meta.get("selection_rule"),
             )
             records.append(video_record)
+            reported = (video_record.get("engagement") or {}).get("comments")
+            if isinstance(reported, int):
+                comments_reported += reported
             remaining = max_comments - comment_count
             if remaining <= 0:
+                comment_count_cap_hit = True
                 continue
             try:
-                comments, disabled, comment_error = self._list_comment_threads(
+                comments, disabled, comment_error, comment_cov = self._list_comment_threads(
                     video_record["platform_object_id"],
                     max_comments=remaining,
                     retrieved_at=retrieved_at,
@@ -189,6 +197,9 @@ class YouTubeProvider(BaseProvider):
             if disabled:
                 comments_disabled.append(video_record["platform_object_id"])
                 continue
+            comment_pages += comment_cov.get("pages", 0)
+            comment_page_cap_hit = comment_page_cap_hit or comment_cov.get("page_cap_hit", False)
+            comment_count_cap_hit = comment_count_cap_hit or comment_cov.get("count_cap_hit", False)
             for comment in comments:
                 # Source-object market context only — never commenter location.
                 comment["market_id"] = video_record.get("market_id")
@@ -196,6 +207,22 @@ class YouTubeProvider(BaseProvider):
                 comment["commenter_location"] = None
             records.extend(comments)
             comment_count += len(comments)
+
+        from ...social.sampling import annotate_coverage
+
+        enabled = len(videos) - len(comments_disabled)
+        coverage = annotate_coverage(
+            videos_discovered=len(video_ids),
+            videos_selected=len(videos),
+            videos_with_comments_enabled=max(0, enabled),
+            comments_reported=comments_reported or None,
+            comments_requested=max_comments,
+            comments_retrieved=comment_count,
+            comment_pages_fetched=comment_pages,
+            comment_page_cap_hit=comment_page_cap_hit,
+            comment_count_cap_hit=comment_count_cap_hit,
+            comments_disabled=bool(videos) and enabled == 0,
+        )
 
         return self._result(
             request,
@@ -217,6 +244,7 @@ class YouTubeProvider(BaseProvider):
                 "search": search_meta,
                 "provider_version": PROVIDER_VERSION,
                 "parser_version": PARSER_VERSION,
+                "sampling": coverage,
             },
             records=tuple(records),
         )
@@ -345,7 +373,7 @@ class YouTubeProvider(BaseProvider):
         retrieved_at: str,
         search_cohort: str | None,
         search_query: str | None,
-    ) -> tuple[list[dict], bool, dict | None]:
+    ) -> tuple[list[dict], bool, dict | None, dict]:
         records: list[dict] = []
         page_token = None
         pages = 0
@@ -362,8 +390,8 @@ class YouTubeProvider(BaseProvider):
             response, error = self._api_get("commentThreads", params)
             if error is not None:
                 if error["category"] == CAT_COMMENTS_DISABLED:
-                    return [], True, None
-                return records, False, error
+                    return [], True, None, {"pages": 0, "page_cap_hit": False, "count_cap_hit": False}
+                return records, False, error, {"pages": pages, "page_cap_hit": False, "count_cap_hit": False}
             payload = response.json()
             pages += 1
             for item in payload.get("items") or []:
@@ -381,8 +409,16 @@ class YouTubeProvider(BaseProvider):
             if not page_token:
                 break
             if pages >= 10:
-                break
-        return records, False, None
+                return records, False, None, {
+                    "pages": pages,
+                    "page_cap_hit": True,
+                    "count_cap_hit": len(records) >= max_comments,
+                }
+        return records, False, None, {
+            "pages": pages,
+            "page_cap_hit": False,
+            "count_cap_hit": bool(page_token) and len(records) >= max_comments,
+        }
 
     # -- normalization ------------------------------------------------------ #
     def _normalize_video(

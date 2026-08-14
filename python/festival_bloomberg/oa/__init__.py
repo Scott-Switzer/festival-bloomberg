@@ -16,6 +16,7 @@ from .operational_acceptance import (
     select_artist,
 )
 from .youtube_fan_signal import run_youtube_fan_signal_oa
+from .event_history import run_event_history_oa
 
 __all__ = [
     "CANDIDATE_ARTISTS",
@@ -25,5 +26,6 @@ __all__ = [
     "provider_readiness",
     "run_operational_acceptance",
     "run_youtube_fan_signal_oa",
+    "run_event_history_oa",
     "select_artist",
 ]

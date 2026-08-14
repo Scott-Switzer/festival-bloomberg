@@ -30,7 +30,7 @@ class HttpResponse:
         return json.loads(self.body.decode("utf-8"))
 
 
-_SECRET_QUERY_KEYS = frozenset({"key", "access_token", "token", "api_key"})
+_SECRET_QUERY_KEYS = frozenset({"key", "access_token", "token", "api_key", "apikey"})
 
 
 def _redact_secrets(value: str) -> str:
