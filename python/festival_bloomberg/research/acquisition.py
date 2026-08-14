@@ -60,6 +60,12 @@ TOURING_DATA_CATEGORY_URL = "https://touringdata.org/category/data/"
 
 _TOUR_SLUG = re.compile(r"/20\d\d/\d\d/\d\d/([a-z0-9\-]+)/?$")
 _YEAR_END_SLUG = re.compile(r"^(?:19|20)\d{2}|top-touring|year-end|worldwide", re.IGNORECASE)
+_URL_YEAR = re.compile(r"/(20\d{2})/\d{2}/\d{2}/")
+
+
+def _url_year(url: str) -> int | None:
+    m = _URL_YEAR.search(url)
+    return int(m.group(1)) if m else None
 
 
 def discover_touring_data_pages(
@@ -110,7 +116,9 @@ def parse_source_with_meta(
     if source == SOURCE_BILLBOARD:
         return parse_billboard_boxscore_html(content, source_url=source_url), {}
     if source == SOURCE_POLLSTAR:
-        return parse_pollstar_hot_tickets(html_to_text_lines(content), source_url=source_url), {}
+        return parse_pollstar_hot_tickets(
+            html_to_text_lines(content), source_url=source_url, year_hint=_url_year(source_url),
+        ), {}
     if source == SOURCE_TOURING_DATA:
         engagements, skipped = parse_touring_data_auto(
             html_to_text_lines(content), source_url=source_url, **kwargs
