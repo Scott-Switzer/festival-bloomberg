@@ -62,6 +62,11 @@ def default_policy_profiles() -> dict[str, RightsProfile]:
             derivative=conditional, redistribution=conditional, commercial=conditional,
             notes="pageview data; license varies by project; attribution required",
         ),
+        "wikipedia": profile(
+            "wikipedia", content=conditional, api=conditional, storage=conditional,
+            derivative=conditional, redistribution=conditional, commercial=conditional,
+            notes="Wikipedia articles CC BY-SA 4.0; attribution and share-alike required",
+        ),
         "gdelt": profile(
             "gdelt", content=conditional, api=conditional, storage=conditional,
             derivative=conditional, redistribution=conditional, commercial=conditional,

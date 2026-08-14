@@ -38,6 +38,7 @@ MECHANISM_BY_PROVIDER = {
     "monid": "api",
     "apify": "api",
     "youtube": "api",
+    "wikimedia": "api",
     "scrapling": "scraping",
 }
 
