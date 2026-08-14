@@ -79,7 +79,7 @@ class TestMigrations:
 
         connection = duckdb.connect(str(tmp_path / "fresh.duckdb"))
         try:
-            assert apply_pending_migrations(connection) == 8
+            assert apply_pending_migrations(connection) == 9
             tables = {
                 row[0]
                 for row in connection.execute(
@@ -152,7 +152,7 @@ class TestMigrations:
         connection = duckdb.connect(str(db_path))
         try:
             applied = apply_pending_migrations(connection)
-            assert applied == 3  # migrations 6, 7 and 8
+            assert applied == 4  # migrations 6, 7, 8 and 9
             # historical rows survive
             metrics = connection.execute(
                 "SELECT value FROM metrics.artist_metrics WHERE artist_key = 'a'"
@@ -185,14 +185,14 @@ class TestMigrations:
                     "SELECT version FROM schema_migrations ORDER BY version"
                 ).fetchall()
             ]
-            assert versions == [1, 2, 3, 4, 5, 6, 7, 8]
+            assert versions == [1, 2, 3, 4, 5, 6, 7, 8, 9]
         finally:
             connection.close()
 
     def test_migration_order_is_deterministic(self):
         versions = [version for version, _name, _path in load_migration_files()]
         assert versions == sorted(versions)
-        assert versions == list(range(1, 9))
+        assert versions == list(range(1, 10))
 
 
 # ---------------------------------------------------------------------------
@@ -332,7 +332,16 @@ class TestPIT:
             "text": "after cutoff",
             "published_at": "2024-02-01T00:00:00Z",
         }
-        evidence_repo.ingest(request, _result(request, provider="youtube", records=[past, future]))
+        past_retrieved = datetime(2023, 12, 20, tzinfo=timezone.utc)
+        future_retrieved = datetime(2024, 2, 1, tzinfo=timezone.utc)
+        evidence_repo.ingest(
+            request,
+            _result(request, provider="youtube", records=[past], completed_at=past_retrieved),
+        )
+        evidence_repo.ingest(
+            request,
+            _result(request, provider="youtube", records=[future], completed_at=future_retrieved),
+        )
 
         cutoff = datetime(2024, 1, 15, tzinfo=timezone.utc)
         at_cutoff = evidence_repo.query_observations(artist_id="radiohead", cutoff=cutoff)
@@ -358,6 +367,7 @@ class TestPIT:
                         "published_at": "2024-01-01T00:00:00Z",
                     }
                 ],
+                completed_at=datetime(2024, 3, 1, tzinfo=timezone.utc),
             ),
         )
         cutoff = datetime(2024, 6, 1, tzinfo=timezone.utc)
@@ -386,7 +396,24 @@ class TestPIT:
                 "engagement": {"views": 9000, "likes": 50},
             },
         ]
-        evidence_repo.ingest(request, _result(request, provider="youtube", records=records))
+        evidence_repo.ingest(
+            request,
+            _result(
+                request,
+                provider="youtube",
+                records=[records[0]],
+                completed_at=datetime(2024, 1, 5, tzinfo=timezone.utc),
+            ),
+        )
+        evidence_repo.ingest(
+            request,
+            _result(
+                request,
+                provider="youtube",
+                records=[records[1]],
+                completed_at=datetime(2024, 5, 20, tzinfo=timezone.utc),
+            ),
+        )
 
         early = feature_builder.build_artist_market_features(
             evidence_repo, "radiohead", cutoff=datetime(2024, 1, 15, tzinfo=timezone.utc)
@@ -456,11 +483,25 @@ class TestFeatures:
                 "author_public_id": "user-c",
             },
         ]
-        evidence_repo.ingest(request, _result(request, provider="youtube", records=records[:2]))
+        evidence_repo.ingest(
+            request,
+            _result(
+                request,
+                provider="youtube",
+                records=records[:2],
+                completed_at=datetime(2024, 1, 10, tzinfo=timezone.utc),
+            ),
+        )
         # second provider for the same x object via monid-shaped records
         request2 = make_request(entity_id="radiohead", market_id="chi", platform="x")
         evidence_repo.ingest(
-            request2, _result(request2, provider="monid", records=[records[2]])
+            request2,
+            _result(
+                request2,
+                provider="monid",
+                records=[records[2]],
+                completed_at=datetime(2024, 1, 10, tzinfo=timezone.utc),
+            ),
         )
 
         # attach versioned inferences

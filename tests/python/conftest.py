@@ -84,6 +84,10 @@ def make_request(
     max_cost_usd: float = 0.0,
     preferred_providers: tuple[str, ...] = (),
     commercial_context: str = "research",
+    max_videos: int | None = None,
+    order: str | None = None,
+    search_cohort: str | None = None,
+    correlation_id: str | None = None,
 ):
     from festival_bloomberg.acquisition.contracts import AcquisitionRequest
 
@@ -99,4 +103,8 @@ def make_request(
         max_cost_usd=max_cost_usd,
         preferred_providers=preferred_providers,
         commercial_context=commercial_context,
+        max_videos=max_videos,
+        order=order,
+        search_cohort=search_cohort,
+        correlation_id=correlation_id,
     )

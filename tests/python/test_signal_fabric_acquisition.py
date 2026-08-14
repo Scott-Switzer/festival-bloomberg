@@ -228,16 +228,23 @@ class TestYouTubeProvider:
         comment = next(r for r in result.records if r["object_type"] == "comment")
         assert video["platform_object_id"] == "v1"
         assert video["engagement"]["views"] == 1000
+        assert video["content_role"] != "FAN_GENERATED"
+        assert video["knowledge_time_source"] == "retrieval"
         assert comment["text"] == "insane crowd, worth every penny"
-        assert result.provider_metadata["quota_units"] >= 102
+        assert comment["content_role"] == "FAN_GENERATED"
+        assert result.provider_metadata["quota_usage"]["search_list_calls"] == 1
+        assert result.provider_metadata["quota_usage"]["videos_list_calls"] == 1
+        assert result.provider_metadata["quota_usage"]["commentThreads_list_calls"] == 1
         assert result.cost_usd == 0.0
 
     def test_quota_exceeded_is_rate_limited(self):
-        transport = FakeTransport([(403, {"error": {"code": 403}})])
+        transport = FakeTransport(
+            [(403, {"error": {"code": 403, "errors": [{"reason": "quotaExceeded"}]}})]
+        )
         provider = YouTubeProvider(transport=transport, env={"YOUTUBE_API_KEY": "k"})
         result = provider.acquire(make_request())
         assert result.status == AcquisitionStatus.RATE_LIMITED
-        assert result.error_category == "quota_exceeded"
+        assert result.error_category == "QUOTA_EXCEEDED"
 
 
 # ---------------------------------------------------------------------------
