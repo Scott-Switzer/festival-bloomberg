@@ -199,17 +199,25 @@ def _parse_iso_date(month_abbr: str, day: int, year: int) -> str | None:
 _SINGLE_DATE = re.compile(r"([A-Za-z]+)\.?\s+(\d{1,2}),?\s+(\d{4})", re.IGNORECASE)
 
 
-def _dates_from_raw(raw: str | None) -> tuple[str | None, str | None, int | None]:
+def _dates_from_raw(
+    raw: str | None,
+    *,
+    year_hint: int | None = None,
+) -> tuple[str | None, str | None, int | None]:
     """Best-effort start/end + inferred show count from a date string.
 
     Single dates ("Oct. 26, 2013") -> start == end == that date, shows=1.
-    Multi-date ranges -> start/end None (day-level division is not attempted),
-    but a year is recovered and show count stays None (caller sets it from an
-    explicit shows column when present).
+    Multi-date ranges -> start/end None (day-level division is not attempted).
+
+    ``year_hint`` supplies the year when the raw text omits it (Pollstar's
+    "Dates:" field is year-less, e.g. "Feb. 17"; the page publication year is
+    the defensible inference for a current-week chart).
     """
     if not raw:
         return None, None, None
     text = raw.strip()
+    if not re.search(r"(19|20)\d{2}", text) and year_hint:
+        text = f"{text}, {year_hint}"
     dates = list(_SINGLE_DATE.finditer(text))
     year_match = re.search(r"(19|20)\d{2}", text)
     year = int(year_match.group(0)) if year_match else None
@@ -383,7 +391,12 @@ def _pollstar_tier_labels(lines: list[str]) -> list[str]:
     return tiers
 
 
-def parse_pollstar_hot_tickets(text: str, *, source_url: str | None = None) -> list[BoxofficeEngagement]:
+def parse_pollstar_hot_tickets(
+    text: str,
+    *,
+    source_url: str | None = None,
+    year_hint: int | None = None,
+) -> list[BoxofficeEngagement]:
     """Parse a Pollstar Hot Tickets page.
 
     The chart lists top-5 engagements per capacity tier (4 tiers, up to 20
@@ -431,7 +444,7 @@ def parse_pollstar_hot_tickets(text: str, *, source_url: str | None = None) -> l
             before, _, after = venue_full.rpartition(",")
             venue = before.strip()
             city = after.strip()
-        start, end, _ = _dates_from_raw(fields["dates"])
+        start, end, _ = _dates_from_raw(fields["dates"], year_hint=year_hint)
         tier = tiers[index // 5] if tiers and index // 5 < len(tiers) else None
         engagements.append(BoxofficeEngagement.build(
             reporting_source=SOURCE_POLLSTAR,
