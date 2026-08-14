@@ -2,6 +2,7 @@
 
 from .features import build_artist_market_vector
 from .identity import IdentityResolution, canonical_artist_id, merge_identity
+from .reconcile import reconcile_events
 from .repository import EventRepository
 
 __all__ = [
@@ -10,4 +11,5 @@ __all__ = [
     "build_artist_market_vector",
     "canonical_artist_id",
     "merge_identity",
+    "reconcile_events",
 ]
