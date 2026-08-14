@@ -83,7 +83,7 @@ from conftest import FakeTransport
 # Objectives (KPI-corrected vocabulary)
 # ---------------------------------------------------------------------------
 def test_objectives_match_memo_targets():
-    keys = {obj.key for obj in MEDIUM_TERM_OBJECTIVES_V1}
+    keys = {obj.objective_id for obj in MEDIUM_TERM_OBJECTIVES_V1}
     core = {
         "CANONICAL_PERFORMANCES",
         "OUTCOME_CLAIMS",
@@ -97,7 +97,7 @@ def test_objectives_match_memo_targets():
         "PRIVATE_SETTLED_EVENTS",
     }
     assert core <= keys
-    targets = {obj.key: obj.target for obj in MEDIUM_TERM_OBJECTIVES_V1}
+    targets = {obj.objective_id: obj.target for obj in MEDIUM_TERM_OBJECTIVES_V1}
     assert targets["CANONICAL_PERFORMANCES"] == 50_000.0
     assert targets["OUTCOME_CLAIMS"] == 5_000.0
     assert targets["UNIQUE_EVENTS_WITH_OUTCOMES"] == 2_500.0
@@ -121,7 +121,7 @@ def test_objectives_match_memo_targets():
 def test_kpi_vocabulary_is_distinct():
     """OUTCOME_CLAIMS, UNIQUE_EVENTS_WITH_OUTCOMES and FULLY_SETTLED_EVENTS
     are three different KPIs with different definitions."""
-    defs = {obj.key: obj.definition for obj in MEDIUM_TERM_OBJECTIVES_V1}
+    defs = {obj.objective_id: obj.definition for obj in MEDIUM_TERM_OBJECTIVES_V1}
     assert "CLAIMS" in defs["OUTCOME_CLAIMS"].upper()
     assert "not events" in defs["OUTCOME_CLAIMS"].lower()
     assert "Distinct canonical events" in defs["UNIQUE_EVENTS_WITH_OUTCOMES"]
