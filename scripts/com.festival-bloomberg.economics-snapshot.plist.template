@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.festival-bloomberg.economics-snapshot</string>
+    
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-lc</string>
+        <string>FB_HOME={{FB_HOME}} {{REPO_ROOT}}/scripts/economics_snapshot_wrapper.sh</string>
+    </array>
+    
+    <key>WorkingDirectory</key>
+    <string>{{REPO_ROOT}}</string>
+    
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>FB_HOME</key>
+        <string>{{FB_HOME}}</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin</string>
+        <key>PYTHONPATH</key>
+        <string>{{REPO_ROOT}}/python</string>
+        <key>FESTIVAL_BLOOMBERG_WAREHOUSE_PATH</key>
+        <string>{{REPO_ROOT}}/data/warehouse/artist_market_event_history.duckdb</string>
+        <key>FESTIVAL_BLOOMBERG_ECON_CADENCE</key>
+        <string>6h</string>
+    </dict>
+    
+    <key>StandardOutPath</key>
+    <string>{{LOG_DIR}}/economics-snapshot.stdout.log</string>
+    
+    <key>StandardErrorPath</key>
+    <string>{{LOG_DIR}}/economics-snapshot.stderr.log</string>
+    
+    <key>StartInterval</key>
+    <integer>21600</integer>
+    
+    <key>RunAtLoad</key>
+    <false/>
+    
+    <key>Nice</key>
+    <integer>10</integer>
+</dict>
+</plist>
