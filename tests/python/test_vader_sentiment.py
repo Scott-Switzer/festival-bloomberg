@@ -51,4 +51,10 @@ def test_score_texts_and_mean():
     assert scored[0].label == "positive"
     assert scored[1].label == "negative"
     mean = mean_compound(texts)
+    assert mean is not None
     assert -1.0 <= mean <= 1.0
+
+
+def test_mean_compound_missing_evidence_is_none_not_zero():
+    """No texts must produce no evidence (None), never a neutral 0.0."""
+    assert mean_compound([]) is None

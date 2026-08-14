@@ -168,30 +168,15 @@ export class RSSSentimentScraper {
 }
 
 export class RedditSentimentScraper {
-  async scrapeReddit(artistNames: string[], subreddit = "music"): Promise<SentimentResult[]> {
-    const results: SentimentResult[] = [];
-
-    for (const artistName of artistNames) {
-      const mockMentions = [
-        `${artistName} is absolutely amazing live!`,
-        `I think ${artistName}'s new album is disappointing.`,
-        `${artistName} has such a unique sound, love it.`,
-      ];
-      const allText = mockMentions.join(" ");
-      const sentiment = analyzeSentiment(allText);
-      results.push({
-        artist_name: artistName,
-        normalized_artist_name: artistName.toLowerCase().trim(),
-        ...sentiment,
-        source_url: `https://reddit.com/r/${subreddit}`,
-        source_system: "reddit",
-        mention_count: mockMentions.length,
-        sample_text: mockMentions[0],
-        analyzed_at: new Date().toISOString(),
-      });
-    }
-
-    return results;
+  /**
+   * No production Reddit collection is implemented in this repository.
+   *
+   * This method deliberately returns zero observations. It must NEVER
+   * fabricate mentions, engagement, or sentiment scores: missing evidence
+   * is NOT_OBSERVED / UNKNOWN, never a neutral score.
+   */
+  async scrapeReddit(_artistNames: string[], _subreddit = "music"): Promise<SentimentResult[]> {
+    return [];
   }
 }
 
@@ -203,6 +188,11 @@ export class SentimentAggregator {
     artistNames: string[],
     options: { rssFeeds?: string[]; subreddits?: string[] } = {},
   ): Promise<Map<string, SentimentResult>> {
+    /**
+     * Returns entries only for artists with at least one real observation.
+     * An artist absent from the result map has NOT_OBSERVED evidence and
+     * must never be treated as neutral.
+     */
     const { rssFeeds = [], subreddits = ["music"] } = options;
     const allResults = new Map<string, SentimentResult[]>();
 
@@ -210,6 +200,9 @@ export class SentimentAggregator {
       allResults.set(artistName, []);
     }
 
+    // Note: Reddit collection is intentionally NOT part of the ensemble
+    // until a real, non-fabricating collector exists. The loop below is
+    // retained so the aggregation shape is explicit.
     for (const feedUrl of rssFeeds) {
       const results = await this.rssScraper.scrapeRSSFeed(feedUrl, artistNames);
       for (const result of results) {
@@ -232,18 +225,8 @@ export class SentimentAggregator {
 
     for (const [artistName, results] of allResults.entries()) {
       if (results.length === 0) {
-        aggregated.set(artistName, {
-          artist_name: artistName,
-          normalized_artist_name: artistName.toLowerCase().trim(),
-          sentiment_label: "neutral",
-          compound_score: 0,
-          positive_score: 0,
-          neutral_score: 1,
-          negative_score: 0,
-          source_system: "aggregated",
-          mention_count: 0,
-          analyzed_at: new Date().toISOString(),
-        });
+        // No evidence for this artist: do NOT fabricate neutral sentiment.
+        // Callers must treat an absent artist as NOT_OBSERVED / UNKNOWN.
         continue;
       }
 
