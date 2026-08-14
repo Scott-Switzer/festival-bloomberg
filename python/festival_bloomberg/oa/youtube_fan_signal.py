@@ -637,17 +637,27 @@ def _comparison_row(artist, global_features, chicago_features, status: str) -> d
         "artist": artist,
         "global_comments": global_features.comment_count,
         "global_unique_authors": global_features.unique_public_authors,
+        "global_n_videos": global_features.videos_sampled,
+        "global_sampling_status": "CAPPED" if global_features.comment_count >= 500 else "COMPLETE",
         "global_positive_share": global_features.positive_share,
         "global_neutral_share": global_features.neutral_share,
         "global_negative_share": global_features.negative_share,
         "global_comment_engagement": global_features.comment_like_total,
         "chicago_context_comments": chicago_features.comment_count,
         "chicago_context_unique_authors": chicago_features.unique_public_authors,
+        "chicago_n_videos": chicago_features.videos_sampled,
+        "chicago_sampling_status": "CAPPED" if chicago_features.comment_count >= 500 else "COMPLETE",
         "chicago_positive_share": chicago_features.positive_share,
         "chicago_neutral_share": chicago_features.neutral_share,
         "chicago_negative_share": chicago_features.negative_share,
         "chicago_context_video_count": chicago_features.chicago_context_video_count
         or chicago_features.videos_sampled,
         "data_quality_status": status,
-        "coverage_warnings": warnings,
+        "coverage_warnings": warnings
+        + (
+            ["sentiment shares are within sampled comments, not fanbase sentiment"]
+            if status == "COLLECTED"
+            else []
+        ),
+        "sentiment_interpretation": "sentiment within sampled comments",
     }
