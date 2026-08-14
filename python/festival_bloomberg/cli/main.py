@@ -158,14 +158,58 @@ def cmd_operational_acceptance(args: argparse.Namespace) -> int:
         print(f"raw observations:    {manifest['observations']['raw_count']}")
         print(f"canonical objects:   {manifest['observations']['canonical_count']}")
         print(f"platforms:           {manifest['observations']['platforms']}")
-        print(f"vader distribution:  {manifest['nlp']['vader']['distribution']}")
+        print(f"content roles:       {manifest['observations']['content_role_distribution']}")
+        for key, value in manifest["statuses"].items():
+            print(f"{key:34s} {value}")
+        print(f"text sentiment:      {manifest['nlp']['text_sentiment']['distribution']}")
+        print(f"fan sentiment:       {manifest['nlp']['fan_sentiment']['status']}")
         print(f"tweetnlp:            {manifest['nlp']['tweetnlp']['status']}")
-        print(f"chicago:             {manifest['chicago']['status']}")
-        print(f"pit replay:          {manifest['pit_replay']['status']}")
+        print(f"pit replay:          {manifest['pit_replay']['status']} "
+              f"(scoped raw: {manifest['pit_replay'].get('scoped_raw_count', '?')})")
         print(f"cost_usd:            {manifest['cost_usd']}")
         if manifest_path:
             print(f"manifest:            {manifest_path}")
         print("NO RECOMMENDATION — live evidence acquisition only.")
+        return 0
+    finally:
+        repo.close()
+
+
+def cmd_labels_export(args: argparse.Namespace) -> int:
+    """Export a deterministic, unlabeled fan-text sample for human labeling."""
+    import json
+
+    from ..labels import export_fan_text
+
+    db_path = args.db
+    repo = FestivalRepository(db_path) if db_path else FestivalRepository()
+    try:
+        evidence = EvidenceRepository(repo.conn)
+        cutoff = _parse_iso(args.cutoff)
+        rows = export_fan_text(
+            evidence,
+            artist_id=_entity_id_for_artist(args.artist),
+            market_id=args.market,
+            cutoff=cutoff,
+            sample_size=args.sample_size,
+        )
+
+        if args.output and args.output != "-":
+            import os
+
+            parent = os.path.dirname(args.output)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(args.output, "w", encoding="utf-8") as fh:
+                json.dump(rows, fh, indent=2, ensure_ascii=False)
+        else:
+            print(json.dumps(rows, indent=2, ensure_ascii=False))
+
+        print(f"=== LABELS EXPORT ===")
+        print(f"artist:            {args.artist}")
+        print(f"market:            {args.market or '(none)'}")
+        print(f"sample size:       {len(rows)} (requested {args.sample_size})")
+        print(f"manual fields:     all NULL (no labels fabricated)")
         return 0
     finally:
         repo.close()
@@ -242,6 +286,17 @@ def build_parser() -> argparse.ArgumentParser:
     oa.add_argument("--db", default=None)
     oa.add_argument("--manifest", default="reports/signal_fabric_live_oa.json")
     oa.set_defaults(handler=cmd_operational_acceptance)
+
+    labels = sub.add_parser("labels", help="deterministic human-labeling exports")
+    labels_sub = labels.add_subparsers(dest="labels_command", required=True)
+    export = labels_sub.add_parser("export-fan-text", help="export unlabeled fan text sample")
+    export.add_argument("--artist", required=True)
+    export.add_argument("--market", default=None)
+    export.add_argument("--sample-size", type=int, default=100)
+    export.add_argument("--cutoff", default=None)
+    export.add_argument("--db", default=None)
+    export.add_argument("--output", default="-")
+    export.set_defaults(handler=cmd_labels_export)
 
     return parser
 

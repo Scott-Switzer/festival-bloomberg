@@ -1,25 +1,27 @@
 """Live operational acceptance for the Festival Signal Fabric.
 
-This driver proves that REAL public evidence can flow through the canonical
-acquisition, evidence, point-in-time and NLP components end-to-end:
+This driver proves that REAL public evidence flows through the canonical
+acquisition path end-to-end:
 
-    public internet -> raw observation -> canonical evidence -> PIT -> NLP
+    AcquisitionRequest -> AcquisitionRouter -> Provider -> AcquisitionResult
+        -> EvidenceRepository -> PIT -> NLP
 
-It is the live counterpart to the deterministic offline contract tests. It
-**never** uses fixtures, mocks or synthetic observations, and it never makes
-a paid provider call. The default budget is exactly ``$0.00``.
+It performs real network fetches through the :class:`WikimediaProvider` (a
+key-free, CC-licensed, immutable-revision source) at ``$0.00`` cost. It never
+uses fixtures, mocks or synthetic observations.
 
-Real source: Wikipedia (Wikimedia). It is public, key-free, CC-licensed, and
-already registered in the policy layer as research-approved for API access.
-Because the generic ``http``/``scrapling`` providers deliberately return raw
-bytes without extracted text (text is required for the NLP step), this driver
-uses the canonical ``UrllibTransport`` + ``PolicyGate`` + ``EvidenceRepository``
-directly and stores the extracted plain text as observed evidence.
+Semantic boundaries enforced here (and tested offline):
 
-Provider credentials are only ever reported as ``CONFIGURED`` / ``NOT_CONFIGURED``
-— never their values. When no paid provider is configured the run is still
-valid: it reports ``NOT_CONFIGURED`` for each provider and proceeds with the
-free, key-free source. No observation, score or locality is ever fabricated.
+* ``content_role`` — Wikipedia text is ``ENCYCLOPEDIC``, never ``FAN_GENERATED``.
+* ``TEXT_NLP_PIPELINE`` (VADER ran on real text) is reported separately from
+  ``REAL_SOCIAL_NLP`` (only valid for fan-generated discourse).
+* ``MARKET_CONTEXT`` (a venue/festival is in Chicago) is reported separately
+  from ``ARTIST_MARKET_RELATION`` (the artist is linked to that market) and
+  ``ARTIST_MARKET_DEMAND_SIGNAL`` (fan demand, which requires fan text).
+* PIT replay is scoped to this OA run via ``correlation_id``.
+
+Provider credentials are reported only as CONFIGURED / NOT_CONFIGURED — never
+their values. No observation, score, locality or confidence is fabricated.
 """
 
 from __future__ import annotations
@@ -27,21 +29,21 @@ from __future__ import annotations
 import json
 import os
 import re
-import urllib.parse
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Iterable
+from typing import Any
 
 from ..acquisition.contracts import (
     AcquisitionRequest,
     AcquisitionResult,
-    AcquisitionStatus,
-    content_hash_of,
     utc_now,
 )
 from ..acquisition.policy import PolicyGate
-from ..acquisition.transport import HttpResponse, TransportError, UrllibTransport
-from ..evidence.provenance import knowledge_time_for, parse_iso, utc
+from ..acquisition.providers import WikimediaProvider
+from ..acquisition.router import AcquisitionRouter
+from ..acquisition.transport import UrllibTransport
+from ..evidence.provenance import parse_iso, utc
+from ..evidence.semantics import ContentRole, is_fan_role
 from ..social.sentiment import (
     TWEETNLP_AVAILABLE,
     VADER_MODEL_NAME,
@@ -53,8 +55,8 @@ from ..social.sentiment import (
 # Predeclared, deterministic selection universe
 # --------------------------------------------------------------------------- #
 
-#: Ten artists with clear, current live-entertainment relevance. The list is
-#: fixed BEFORE any sentiment is measured; selection never uses a signal.
+#: Ten artists with clear, current live-entertainment relevance. Fixed BEFORE
+#: any sentiment is measured; selection never consults a signal.
 CANDIDATE_ARTISTS: tuple[str, ...] = (
     "Bad Bunny",
     "Beyoncé",
@@ -68,49 +70,23 @@ CANDIDATE_ARTISTS: tuple[str, ...] = (
     "Travis Scott",
 )
 
-#: Availability-only selection rule (documented as an OA artifact).
 SELECTION_RULE = (
-    "first artist alphabetically among CANDIDATE_ARTISTS whose Wikipedia REST "
-    "summary resolves with an extract of at least MIN_EXTRACT_CHARS characters; "
-    "availability metadata only — no sentiment, popularity or booking signal "
-    "is consulted."
+    "first artist alphabetically among CANDIDATE_ARTISTS whose Wikipedia "
+    "article resolves with a plain-text extract of at least MIN_EXTRACT_CHARS "
+    "characters; availability metadata only — no sentiment, popularity or "
+    "booking signal is consulted."
 )
 MIN_EXTRACT_CHARS = 200
 
-#: Real Chicago-specific public pages used as (weak) local-market context.
-#: ``(title, kind)`` pairs; kinds are informational only.
+#: Real Chicago-specific public pages used as (weak) market CONTEXT only.
 CHICAGO_PAGES: tuple[tuple[str, str], ...] = (
     ("United Center", "venue"),
     ("Lollapalooza", "festival"),
 )
 
-PLATFORM = "wikimedia"
-MAX_FULL_TEXT_CHARS = 50_000
-
-REST_BASE = "https://en.wikipedia.org/api/rest_v1/page/summary/"
-ACTION_BASE = "https://en.wikipedia.org/w/api.php"
-
 
 def _title_slug(title: str) -> str:
     return title.strip().replace(" ", "_")
-
-
-def summary_url(title: str) -> str:
-    return REST_BASE + urllib.parse.quote(_title_slug(title))
-
-
-def full_text_url(title: str) -> str:
-    params = urllib.parse.urlencode(
-        {
-            "action": "query",
-            "prop": "extracts",
-            "explaintext": "1",
-            "format": "json",
-            "titles": title,
-            "redirects": "1",
-        }
-    )
-    return f"{ACTION_BASE}?{params}"
 
 
 # --------------------------------------------------------------------------- #
@@ -121,10 +97,8 @@ def full_text_url(title: str) -> str:
 def select_artist(extract_lengths: dict[str, int | None]) -> str | None:
     """Deterministic availability-only selection.
 
-    ``extract_lengths`` maps candidate name -> summary extract length (or
-    ``None`` when the page did not resolve). Returns the first candidate in
-    alphabetical order whose extract is at least ``MIN_EXTRACT_CHARS`` long,
-    or ``None`` when none qualifies.
+    Returns the first candidate in alphabetical order whose extract is at
+    least ``MIN_EXTRACT_CHARS`` long, or ``None`` when none qualifies.
     """
     for artist in sorted(CANDIDATE_ARTISTS):
         length = extract_lengths.get(artist)
@@ -134,33 +108,26 @@ def select_artist(extract_lengths: dict[str, int | None]) -> str | None:
 
 
 def detect_chicago_mentions(text: str | None) -> list[str]:
-    """Return explicit ``Chicago`` mentions with a short context window.
-
-    Only the literal token ``Chicago`` (case-insensitive, word-bounded) is
-    treated as local evidence; no inference or geocoding is performed.
-    """
+    """Explicit, word-bounded ``Chicago`` mentions with a short context window."""
     if not text:
         return []
     matches: list[str] = []
     for m in re.finditer(r"\bChicago\b", text, flags=re.IGNORECASE):
         start = max(0, m.start() - 40)
         end = min(len(text), m.end() + 40)
-        snippet = text[start:end].replace("\n", " ").strip()
-        matches.append(snippet)
+        matches.append(text[start:end].replace("\n", " ").strip())
     return matches
 
 
 def provider_readiness(env: dict[str, str] | None = None) -> dict[str, str]:
-    """Report each provider as CONFIGURED / NOT_CONFIGURED / NOT_AVAILABLE.
-
-    Values are never inspected or printed; only presence is reported.
-    """
+    """Report provider readiness by credential presence only (never values)."""
     environ = dict(os.environ if env is None else env)
     readiness = {
         "youtube": "CONFIGURED" if environ.get("YOUTUBE_API_KEY") else "NOT_CONFIGURED",
         "monid": "CONFIGURED" if environ.get("MONID_API_KEY") else "NOT_CONFIGURED",
         "apify": "CONFIGURED" if environ.get("APIFY_TOKEN") else "NOT_CONFIGURED",
         "http": "AVAILABLE",
+        "wikimedia": "AVAILABLE",
     }
     try:
         import scrapling  # type: ignore  # noqa: F401
@@ -171,48 +138,27 @@ def provider_readiness(env: dict[str, str] | None = None) -> dict[str, str]:
     return readiness
 
 
-# --------------------------------------------------------------------------- #
-# Fetch helpers (real network)
-# --------------------------------------------------------------------------- #
+def _entity_id(title: str) -> str:
+    return title.strip().lower().replace(" ", "-")
 
 
-def _fetch_summary(transport: UrllibTransport, title: str) -> dict | None:
-    url = summary_url(title)
-    try:
-        response = transport.request("GET", url, timeout_seconds=30.0)
-    except TransportError:
-        return None
-    if response.status != 200:
-        return None
-    try:
-        data = response.json()
-    except (ValueError, TypeError):
-        return None
-    if not isinstance(data, dict) or not data.get("extract"):
-        return None
-    return data
-
-
-def _fetch_full_text(transport: UrllibTransport, title: str) -> tuple[str, str | None] | None:
-    url = full_text_url(title)
-    try:
-        response = transport.request("GET", url, timeout_seconds=30.0)
-    except TransportError:
-        return None
-    if response.status != 200:
-        return None
-    try:
-        data = response.json()
-    except (ValueError, TypeError):
-        return None
-    pages = (data or {}).get("query", {}).get("pages", {})
-    if not pages:
-        return None
-    page = next(iter(pages.values()))
-    extract = page.get("extract")
-    if not extract:
-        return None
-    return str(extract)[:MAX_FULL_TEXT_CHARS], page.get("touched")
+def _make_request(
+    *,
+    title: str,
+    oa_run_id: str,
+    entity_type: str,
+    max_cost_usd: float,
+) -> AcquisitionRequest:
+    return AcquisitionRequest.new(
+        entity_id=_entity_id(title),
+        entity_type=entity_type,
+        platform="wikipedia",
+        query=title,
+        commercial_context="research",
+        max_cost_usd=max_cost_usd,
+        correlation_id=oa_run_id,
+        preferred_providers=("wikimedia",),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -220,42 +166,42 @@ def _fetch_full_text(transport: UrllibTransport, title: str) -> tuple[str, str |
 # --------------------------------------------------------------------------- #
 
 
-def _iso(dt: datetime | None) -> str | None:
-    return dt.isoformat() if dt else None
-
-
 def build_manifest(
     *,
     market: str,
     lookback_days: int,
     budget_usd: float,
+    oa_run_id: str,
     selection: dict[str, Any],
     readiness: dict[str, str],
+    statuses: dict[str, str],
     observations: list[dict[str, Any]],
+    content_role_distribution: dict[str, int],
     vader_distribution: dict[str, int],
     tweetnlp_status: str,
-    chicago: dict[str, Any],
     pit_replay: dict[str, Any],
     cost_usd: float,
     generated_at: datetime,
     db_path: str | None,
 ) -> dict[str, Any]:
-    """Assemble the machine-readable OA manifest (no raw text is embedded)."""
-    raw_count = sum(o.get("raw_count", 1) for o in observations)
+    """Assemble the machine-readable OA manifest (no raw text embedded)."""
     return {
-        "schema_version": "1.0",
+        "schema_version": "2.0",
         "generated_at": generated_at.isoformat(),
         "market": market,
         "lookback_days": lookback_days,
         "budget_usd": budget_usd,
+        "oa_run_id": oa_run_id,
         "db_path": db_path,
         "artist_selection": selection,
         "provider_readiness": readiness,
+        "statuses": statuses,
         "observations": {
-            "raw_count": raw_count,
+            "raw_count": sum(o.get("raw_count", 1) for o in observations),
             "canonical_count": len({o.get("canonical_id") for o in observations if o.get("canonical_id")}),
             "platforms": sorted({o["platform"] for o in observations}),
             "providers": sorted({o["provider"] for o in observations}),
+            "content_role_distribution": content_role_distribution,
             "items": [
                 {
                     "title": o.get("title"),
@@ -265,35 +211,37 @@ def build_manifest(
                     "observation_id": o.get("observation_id"),
                     "canonical_id": o.get("canonical_id"),
                     "source_url": o.get("source_url"),
-                    "published_at": o.get("published_at"),
+                    "content_role": o.get("content_role"),
+                    "resolution_method": o.get("resolution_method"),
+                    "source_revision_id": o.get("source_revision_id"),
+                    "source_revision_time": o.get("source_revision_time"),
                     "knowledge_time": o.get("knowledge_time"),
                     "content_hash": o.get("content_hash"),
                     "text_chars": o.get("text_chars"),
                     "market_id": o.get("market_id"),
-                    "geographic_confidence": o.get("geographic_confidence"),
                     "license": o.get("license"),
                 }
                 for o in observations
             ],
         },
         "nlp": {
-            "vader": {
-                "status": "PASS",
+            "text_sentiment": {
+                "status": "PASS" if vader_distribution else "NOT_EVALUATED",
                 "model_name": VADER_MODEL_NAME,
                 "model_version": VADER_MODEL_VERSION,
                 "distribution": vader_distribution,
                 "inference_count": sum(vader_distribution.values()),
+                "note": "VADER over encyclopedic text; NOT fan sentiment",
+            },
+            "fan_sentiment": {
+                "status": "NOT_EVALUATED",
+                "note": "no FAN_GENERATED observations present; fan sentiment is UNKNOWN",
             },
             "tweetnlp": {
                 "status": tweetnlp_status,
-                "note": (
-                    "optional social-transformer baseline; requires the heavy "
-                    "tweetnlp/pytorch install and is intentionally not part of "
-                    "the canonical environment"
-                ),
+                "note": "optional social-transformer baseline; heavy pytorch dependency",
             },
         },
-        "chicago": chicago,
         "pit_replay": pit_replay,
         "cost_usd": cost_usd,
         "no_fabricated_data": True,
@@ -316,31 +264,38 @@ def run_operational_acceptance(
     transport: UrllibTransport | None = None,
     policy_gate: PolicyGate | None = None,
 ) -> dict[str, Any]:
-    """Run the live OA end-to-end and return the manifest dict.
-
-    ``evidence`` is an :class:`~festival_bloomberg.evidence.repository.EvidenceRepository`
-    already wired to a writable warehouse connection.
-    """
+    """Run the live OA end-to-end through the canonical acquisition router."""
     transport = transport or UrllibTransport()
     gate = policy_gate or PolicyGate()
     generated_at = utc_now()
-
-    # -- fail-closed policy gate (research context, API mechanism) ----------- #
-    decision = gate.evaluate(PLATFORM, commercial_context="research", mechanism="api")
-    if not decision.allowed:
-        raise RuntimeError(f"policy denied for {PLATFORM}: {decision.rationale}")
-    evidence.record_policy_decision(decision)
+    oa_run_id = str(uuid.uuid4())
 
     readiness = provider_readiness()
 
-    # -- deterministic artist selection (availability only) ------------------ #
+    providers = {"wikimedia": WikimediaProvider(transport=transport)}
+    router = AcquisitionRouter(providers=providers, policy_gate=gate, budget=None)
+
+    # -- deterministic selection (availability only, no ingest) -------------- #
     extract_lengths: dict[str, int | None] = {}
-    summaries: dict[str, dict] = {}
+    selected = None
+    selected_request: AcquisitionRequest | None = None
+    selected_result: AcquisitionResult | None = None
+    selection_attempts = 0
     for artist in sorted(CANDIDATE_ARTISTS):
-        data = _fetch_summary(transport, artist)
-        summaries[artist] = data
-        extract_lengths[artist] = len(data["extract"]) if data else None
-    selected = select_artist(extract_lengths)
+        request = _make_request(title=artist, oa_run_id=oa_run_id, entity_type="artist", max_cost_usd=budget_usd)
+        result = router.route(request)
+        selection_attempts += 1
+        if result.is_success and result.records:
+            extract_lengths[artist] = len(result.records[0].get("text") or "")
+        else:
+            extract_lengths[artist] = None
+        candidate = select_artist(extract_lengths)
+        if candidate is not None:
+            selected = candidate
+            selected_request = request
+            selected_result = result
+            break
+
     selection = {
         "rule": SELECTION_RULE,
         "min_extract_chars": MIN_EXTRACT_CHARS,
@@ -348,244 +303,172 @@ def run_operational_acceptance(
         "candidates": list(sorted(CANDIDATE_ARTISTS)),
         "selected_artist": selected,
         "selection_basis": "availability_metadata_only",
+        "selection_attempts": selection_attempts,
     }
 
-    observations: list[dict[str, Any]] = []
-    if selected is None:
-        # No candidate resolved; the run is still honest — nothing fabricated.
+    if selected is None or selected_request is None or selected_result is None:
         return build_manifest(
             market=market,
             lookback_days=lookback_days,
             budget_usd=budget_usd,
+            oa_run_id=oa_run_id,
             selection=selection,
             readiness=readiness,
+            statuses={
+                "ACQUISITION_PIPELINE": "FAIL",
+                "WIKIMEDIA_TEXT_PIPELINE": "NOT_EVALUATED",
+                "FAN_GENERATED_DATA": "NOT_EVALUATED",
+                "REAL_SOCIAL_NLP": "NOT_EVALUATED",
+                "MARKET_CONTEXT": "INSUFFICIENT_EVIDENCE",
+                "ARTIST_MARKET_RELATION": "INSUFFICIENT_EVIDENCE",
+                "ARTIST_MARKET_DEMAND_SIGNAL": "INSUFFICIENT_EVIDENCE",
+                "CROSS_PROVIDER_RECONCILIATION": "NOT_EVALUATED",
+                "PIT_REPLAY": "NOT_EVALUATED",
+            },
             observations=[],
+            content_role_distribution={},
             vader_distribution={},
             tweetnlp_status="NOT_AVAILABLE" if not TWEETNLP_AVAILABLE else "AVAILABLE",
-            chicago={"status": "INSUFFICIENT_EVIDENCE", "reason": "no candidate resolved"},
             pit_replay={"status": "NOT_EVALUATED", "reason": "no observations"},
             cost_usd=0.0,
             generated_at=generated_at,
             db_path=db_path,
         )
 
-    # -- ingest the artist's real Wikipedia evidence ------------------------- #
-    artist_summary = summaries[selected]
-    artist_extract = str(artist_summary["extract"])
-    artist_published = artist_summary.get("timestamp")
-    artist_url = (
-        (artist_summary.get("content_urls") or {}).get("desktop", {}).get("page")
-        or summary_url(selected)
-    )
-    observations.append(
-        _ingest_page(
-            evidence,
-            transport,
-            title=selected,
-            kind="artist",
-            text=artist_extract,
-            url=artist_url,
-            published_at=artist_published,
-            market_id=None,
-        )
-    )
-
-    full = _fetch_full_text(transport, selected)
-    if full is not None:
-        full_text, touched = full
-        observations.append(
-            _ingest_page(
-                evidence,
-                transport,
-                title=f"{selected} (full article)",
-                kind="artist_full",
-                text=full_text,
-                url=urllib.parse.quote(
-                    f"https://en.wikipedia.org/wiki/{_title_slug(selected)}",
-                    safe=":/",
-                ),
-                published_at=touched,
-                market_id=None,
-            )
-        )
-
-    # -- real Chicago context pages (explicit, weak locality) ---------------- #
-    chicago_evidence: list[dict[str, str]] = []
+    # -- collection: selected artist + Chicago context pages ----------------- #
+    to_collect: list[tuple[str, str, AcquisitionRequest, AcquisitionResult]] = [
+        (selected, "artist", selected_request, selected_result)
+    ]
     for title, kind in CHICAGO_PAGES:
-        data = _fetch_summary(transport, title)
-        if not data:
-            continue
-        extract = str(data["extract"])
-        mentions = detect_chicago_mentions(extract)
-        market_id = market if mentions else None
-        observations.append(
-            _ingest_page(
-                evidence,
-                transport,
-                title=title,
-                kind=kind,
-                text=extract,
-                url=(
-                    (data.get("content_urls") or {}).get("desktop", {}).get("page")
-                    or summary_url(title)
-                ),
-                published_at=data.get("timestamp"),
-                market_id=market_id,
-            )
-        )
-        if mentions:
-            chicago_evidence.append(
-                {
-                    "title": title,
-                    "kind": kind,
-                    "geo_resolution_method": "textual_mention",
-                    "geo_confidence": "low",
-                    "mention_count": len(mentions),
-                    "first_snippet": mentions[0][:120],
-                }
-            )
+        request = _make_request(title=title, oa_run_id=oa_run_id, entity_type=kind, max_cost_usd=budget_usd)
+        result = router.route(request)
+        to_collect.append((title, kind, request, result))
 
-    # -- NLP baselines over the real text ------------------------------------ #
+    observations: list[dict[str, Any]] = []
     vader_distribution: dict[str, int] = {}
-    for obs in observations:
-        inference = vader_inference(obs["text"])
+    content_role_distribution: dict[str, int] = {}
+    fan_generated_count = 0
+
+    for title, kind, request, result in to_collect:
+        if not (result.is_success and result.records):
+            continue
+        record = result.records[0]
+        text = record.get("text") or ""
+        market_id = None
+        chicago_mentions = detect_chicago_mentions(text)
+        if kind in ("venue", "festival") and chicago_mentions:
+            market_id = market
+
+        evidence.ingest(request, result)
+
+        observation = {
+            "title": title,
+            "kind": kind,
+            "platform": record.get("platform"),
+            "provider": result.provider,
+            "observation_id": _latest_raw_id(evidence, oa_run_id),
+            "canonical_id": _canonical_id_for(evidence, record.get("platform"), record.get("canonical_url")),
+            "source_url": record.get("canonical_url"),
+            "content_role": record.get("content_role"),
+            "resolution_method": record.get("resolution_method"),
+            "source_revision_id": record.get("source_revision_id"),
+            "source_revision_time": record.get("source_revision_time"),
+            "knowledge_time": _knowledge_time_for_obs(evidence, oa_run_id, record.get("source_revision_id")),
+            "content_hash": record.get("content_hash"),
+            "text_chars": len(text),
+            "market_id": market_id,
+            "license": "CC BY-SA 4.0 (attribution + share-alike required)",
+            "raw_count": 1,
+        }
+        observations.append(observation)
+
+        role = record.get("content_role")
+        content_role_distribution[role or "UNKNOWN"] = content_role_distribution.get(role or "UNKNOWN", 0) + 1
+        if is_fan_role(role):
+            fan_generated_count += 1
+
+        # VADER on the real (encyclopedic) text — text pipeline, not fan signal.
+        inference = vader_inference(text)
         evidence.record_text_inference(
-            observation_id=obs["observation_id"],
+            observation_id=observation["observation_id"],
             task="SENTIMENT",
             model_name=inference.model_name,
             model_version=inference.model_version,
             label=inference.label,
             probabilities=inference.probabilities,
-            input_text=obs["text"],
+            input_text=text,
         )
         vader_distribution[inference.label] = vader_distribution.get(inference.label, 0) + 1
-    tweetnlp_status = "AVAILABLE" if TWEETNLP_AVAILABLE else "NOT_AVAILABLE"
 
-    # -- PIT replay: two knowledge cutoffs over the real observation history -- #
-    pit_replay = _pit_replay(evidence, observations, generated_at)
-
-    # -- Chicago summary ------------------------------------------------------ #
+    # -- market semantics (separated, never conflated) ----------------------- #
     chicago_linked = [o for o in observations if o.get("market_id") == market]
-    chicago = {
-        "status": "PASS" if chicago_evidence else "INSUFFICIENT_EVIDENCE",
-        "market": market,
-        "linked_observation_count": len(chicago_linked),
-        "evidence": chicago_evidence,
-        "note": (
-            "locality assigned only from explicit 'Chicago' textual mention; "
-            "no geocoding or private-location inference"
-        ),
+    artist_text = next((o for o in observations if o.get("kind") == "artist"), None)
+    artist_mentions = detect_chicago_mentions(
+        (selected_result.records[0].get("text") or "") if selected_result.records else None
+    )
+
+    statuses = {
+        "ACQUISITION_PIPELINE": "PASS" if observations else "FAIL",
+        "WIKIMEDIA_TEXT_PIPELINE": "PASS" if observations else "NOT_EVALUATED",
+        "FAN_GENERATED_DATA": "PASS" if fan_generated_count else "NOT_EVALUATED",
+        "REAL_SOCIAL_NLP": "PASS" if fan_generated_count else "NOT_EVALUATED",
+        "MARKET_CONTEXT": "PASS" if chicago_linked else "INSUFFICIENT_EVIDENCE",
+        "ARTIST_MARKET_RELATION": "PASS" if artist_mentions else "INSUFFICIENT_EVIDENCE",
+        "ARTIST_MARKET_DEMAND_SIGNAL": "INSUFFICIENT_EVIDENCE",
+        "CROSS_PROVIDER_RECONCILIATION": "NOT_EVALUATED",
+        "PIT_REPLAY": "PENDING",
     }
 
-    manifest = build_manifest(
+    # -- PIT replay scoped to this OA run ------------------------------------ #
+    pit_replay = _pit_replay(evidence, oa_run_id, generated_at)
+    statuses["PIT_REPLAY"] = pit_replay["status"]
+
+    return build_manifest(
         market=market,
         lookback_days=lookback_days,
         budget_usd=budget_usd,
+        oa_run_id=oa_run_id,
         selection=selection,
         readiness=readiness,
+        statuses=statuses,
         observations=observations,
+        content_role_distribution=content_role_distribution,
         vader_distribution=vader_distribution,
-        tweetnlp_status=tweetnlp_status,
-        chicago=chicago,
+        tweetnlp_status="AVAILABLE" if TWEETNLP_AVAILABLE else "NOT_AVAILABLE",
         pit_replay=pit_replay,
         cost_usd=0.0,
         generated_at=generated_at,
         db_path=db_path,
     )
-    return manifest
 
 
-def _ingest_page(
-    evidence,
-    transport,
-    *,
-    title: str,
-    kind: str,
-    text: str,
-    url: str,
-    published_at: str | None,
-    market_id: str | None,
-) -> dict[str, Any]:
-    """Fetch-and-store one real page as an immutable observed observation."""
-    published = parse_iso(published_at)
-    retrieved = utc_now()
-    knowledge_time = knowledge_time_for(published, retrieved)
-
-    request = AcquisitionRequest.new(
-        entity_id=title.strip().lower().replace(" ", "-"),
-        entity_type="web_page",
-        platform=PLATFORM,
-        query=url,
-        commercial_context="research",
-        max_cost_usd=0.0,
-    )
-    result = AcquisitionResult(
-        request_id=request.request_id,
-        provider="http",
-        provider_endpoint=url,
-        status=AcquisitionStatus.SUCCESS,
-        started_at=retrieved,
-        completed_at=retrieved,
-        record_count=1,
-        cost_usd=0.0,
-        raw_payload_hash=content_hash_of(text),
-        provider_metadata={
-            "source": PLATFORM,
-            "kind": kind,
-            "license": "CC BY-SA (attribution required)",
-            "bytes": len(text.encode("utf-8")),
-        },
-        records=(
-            {
-                "platform": PLATFORM,
-                "object_type": "web_page",
-                "platform_object_id": None,
-                "text": text,
-                "source_url": url,
-                "canonical_url": url,
-                "published_at": _iso(published),
-                "content_hash": content_hash_of(text),
-                "market_id": market_id,
-                "geographic_confidence": "low" if market_id else None,
-                "entity_resolution_confidence": 0.95,
-                "language": "en",
-                "raw_bytes": len(text.encode("utf-8")),
-            },
-        ),
-    )
-    evidence.ingest(request, result)
-
-    canonical_id = _canonical_id_for(evidence, PLATFORM, url)
-    return {
-        "title": title,
-        "kind": kind,
-        "platform": PLATFORM,
-        "provider": "http",
-        "observation_id": _latest_raw_id(evidence, request.request_id),
-        "canonical_id": canonical_id,
-        "source_url": url,
-        "published_at": _iso(published),
-        "knowledge_time": knowledge_time.isoformat(),
-        "content_hash": content_hash_of(text),
-        "text_chars": len(text),
-        "market_id": market_id,
-        "geographic_confidence": "low" if market_id else None,
-        "license": "CC BY-SA (attribution required)",
-        "text": text,
-    }
+# --------------------------------------------------------------------------- #
+# Scoped, correct helpers
+# --------------------------------------------------------------------------- #
 
 
-def _latest_raw_id(evidence, request_id: str) -> str | None:
+def _latest_raw_id(evidence, correlation_id: str) -> str | None:
     rows = evidence.conn.execute(
-        "SELECT observation_id FROM acquisition.raw_observations WHERE run_id IN "
-        "(SELECT run_id FROM acquisition.acquisition_runs WHERE request_id = ?) "
-        "ORDER BY retrieved_at DESC LIMIT 1",
-        [request_id],
+        "SELECT observation_id FROM acquisition.raw_observations "
+        "WHERE correlation_id = ? ORDER BY retrieved_at DESC LIMIT 1",
+        [correlation_id],
     ).fetchall()
     return rows[0][0] if rows else None
 
 
-def _canonical_id_for(evidence, platform: str, url: str) -> str | None:
+def _knowledge_time_for_obs(evidence, correlation_id: str, source_revision_id: str | None) -> str | None:
+    rows = evidence.conn.execute(
+        "SELECT knowledge_time FROM acquisition.raw_observations "
+        "WHERE correlation_id = ? AND source_revision_id = ? LIMIT 1",
+        [correlation_id, source_revision_id],
+    ).fetchall()
+    if not rows:
+        return None
+    kt = rows[0][0]
+    return kt.isoformat() if isinstance(kt, datetime) else str(kt)
+
+
+def _canonical_id_for(evidence, platform: str, url: str | None) -> str | None:
     from ..evidence.dedup import canonical_key, canonical_observation_id
 
     key = canonical_key(platform, None, url, None)
@@ -594,18 +477,20 @@ def _canonical_id_for(evidence, platform: str, url: str) -> str | None:
     return canonical_observation_id(platform, key)
 
 
-def _pit_replay(evidence, observations: list[dict[str, Any]], now: datetime) -> dict[str, Any]:
-    """Prove observations learned after a cutoff are invisible at that cutoff.
+def _pit_replay(evidence, correlation_id: str, now: datetime) -> dict[str, Any]:
+    """PIT replay scoped to exactly this OA run (correlation_id).
 
-    ``knowledge_time`` lives on raw observations, so replay is measured at the
-    raw level (canonical objects are dedup aggregates and would hide later
-    re-observations of the same object).
+    Proves observations learned after a cutoff are invisible at that cutoff,
+    using ONLY raw observations produced by the current OA — never unrelated
+    historical rows in the same database.
     """
     rows = evidence.conn.execute(
-        "SELECT observation_id, knowledge_time, retrieved_at FROM acquisition.raw_observations"
+        "SELECT observation_id, knowledge_time, retrieved_at "
+        "FROM acquisition.raw_observations WHERE correlation_id = ?",
+        [correlation_id],
     ).fetchall()
     if not rows:
-        return {"status": "NOT_EVALUATED", "reason": "no observations"}
+        return {"status": "NOT_EVALUATED", "reason": "no scoped observations", "correlation_id": correlation_id}
 
     def as_dt(value) -> datetime | None:
         return utc(value) if isinstance(value, datetime) else parse_iso(str(value))
@@ -613,9 +498,8 @@ def _pit_replay(evidence, observations: list[dict[str, Any]], now: datetime) -> 
     knowledge_times = [t for t in (as_dt(kt) for _, kt, _ in rows) if t]
     retrieved_times = [t for t in (as_dt(rt) for _, _, rt in rows) if t]
     if not knowledge_times:
-        return {"status": "NOT_EVALUATED", "reason": "no knowledge times"}
+        return {"status": "NOT_EVALUATED", "reason": "no knowledge times", "correlation_id": correlation_id}
 
-    #: T2 is the latest retrieval cutoff (when all evidence was actually in hand).
     t2 = max(retrieved_times) if retrieved_times else utc(now)
     ordered = sorted(knowledge_times)
     t1 = ordered[len(ordered) // 2]
@@ -632,6 +516,8 @@ def _pit_replay(evidence, observations: list[dict[str, Any]], now: datetime) -> 
     t2_ids = visible(t2)
     return {
         "status": "PASS",
+        "correlation_id": correlation_id,
+        "scoped_raw_count": len(rows),
         "t1": t1.isoformat(),
         "t2": t2.isoformat(),
         "t1_visible_count": len(t1_ids),
@@ -639,5 +525,5 @@ def _pit_replay(evidence, observations: list[dict[str, Any]], now: datetime) -> 
         "t1_visible_ids": t1_ids,
         "t2_visible_ids": t2_ids,
         "learned_after_t1": sorted(set(t2_ids) - set(t1_ids)),
-        "note": "raw observations whose knowledge_time > T1 are excluded at T1 and present at T2",
+        "note": "scoped raw observations whose knowledge_time > T1 are excluded at T1 and present at T2",
     }
