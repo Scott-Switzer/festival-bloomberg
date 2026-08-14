@@ -91,3 +91,27 @@ The end-to-end fixture at
 initialization, transient resume, logs/errors/metadata, text and URL
 normalization, duplicate merging, changed content, successful replay, and
 idempotency-key conflicts.
+
+## Data Flywheel & Coverage V1
+
+After `BASELINE_RESEARCH_V1` (verdict `COMPS_SIGNAL_ONLY`), the priority is
+data scale + depth + customer utility, not more models. The flywheel layer
+(`python/festival_bloomberg/flywheel/`, schema migration 017) runs four
+pipelines over the warehouse:
+
+- `EVENT_GRAPH` — MusicBrainz identity backbone (CC0) + source registry
+- `OUTCOME_HUNTER` — claims-based outcome acquisition (plans/tasks writing
+  into `economics.event_outcome_claims`)
+- `CONTEXT_PANEL` — attention / market / weather series with PIT vintages
+- `FORWARD_WATCH` — time-sensitive capture of future events
+
+Coverage is measured against medium-term objectives
+(`flywheel.objectives` / `flywheel.coverage_snapshots`) on every run — the
+acquisition metric is decision coverage, not row counts. Live driver:
+
+```bash
+PYTHONPATH=python python3 -m festival_bloomberg.oa.flywheel_v1
+```
+
+See `docs/data-flywheel-and-coverage-v1.md`. Next milestone:
+`COMPARABLE_EVENT_ENGINE_V1` over the expanded graph.
