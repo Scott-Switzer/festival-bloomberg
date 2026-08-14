@@ -87,6 +87,38 @@ def claim_from_wikidata(record: dict[str, Any], *, venue_id: str) -> CapacityCla
     )
 
 
+def claim_from_wikipedia_infobox(record: dict[str, Any], *, venue_id: str) -> CapacityClaim | None:
+    """Extract capacity claim from Wikipedia infobox data."""
+    value = record.get("capacity_value")
+    if value is None:
+        return None
+    retrieved = str(record.get("retrieved_at") or "")
+    payload_hash = content_hash_of(
+        {"page": record.get("page_title"), "field": record.get("source_field"), "value": value}
+    )
+    kind = record.get("capacity_kind") or UNKNOWN
+    usage = UPPER_BOUND if kind in {MAX_PERSONS, UNKNOWN} else None
+    return CapacityClaim(
+        claim_id=f"cap_{payload_hash[:20]}",
+        canonical_venue_id=venue_id,
+        capacity_value=float(value),
+        capacity_kind=kind,
+        configuration_description=record.get("source_field"),
+        effective_from=None,
+        effective_to=None,
+        provider="wikipedia_mediawiki_api",
+        source="wikipedia_infobox",
+        source_url=record.get("source_url"),
+        source_publication_time=None,
+        retrieved_at=retrieved,
+        knowledge_time=retrieved,
+        source_observation_id=record.get("page_title"),
+        claim_status="OBSERVED",
+        wikidata_qid=record.get("wikidata_qid"),
+        usage_label=usage,
+    )
+
+
 def claims_from_osm(record: dict[str, Any], *, venue_id: str) -> list[CapacityClaim]:
     retrieved = str(record.get("retrieved_at") or record.get("knowledge_time") or "")
     out: list[CapacityClaim] = []
