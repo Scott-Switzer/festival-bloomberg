@@ -17,6 +17,7 @@ from typing import Any
 
 from ..evidence.repository import EvidenceRepository
 from ..evidence.provenance import parse_iso, utc
+from ..evidence.semantics import is_fan_role
 
 INTENT_TASKS = ("ATTEND_INTENT", "PURCHASE_INTENT", "PRICE_SENSITIVITY", "RECOMMENDATION_INTENT")
 
@@ -270,6 +271,35 @@ def build_artist_market_features(
         source_observation_ids=obs_ids,
         warnings=warnings,
     )
+
+
+def fan_sentiment_distribution(
+    repo: EvidenceRepository,
+    artist_id: str,
+    cutoff: datetime | str | None = None,
+) -> tuple[dict[str, int] | None, str]:
+    """Aggregate VADER sentiment ONLY over fan-generated observations.
+
+    Fail closed: with zero eligible fan evidence the result is ``(None,
+    "UNKNOWN")`` — never neutral, never zero, never a score. Encyclopedic /
+    editorial / promotional text can never become fan sentiment.
+    """
+    observations = repo.query_observations(artist_id=artist_id, cutoff=cutoff)
+    fan = [o for o in observations if is_fan_role(o.get("content_role"))]
+    if not fan:
+        return None, "UNKNOWN"
+
+    counts: dict[str, int] = {}
+    for obs in fan:
+        inferences = repo.latest_inferences(obs["observation_id"], "SENTIMENT")
+        if not inferences:
+            continue
+        label = inferences[0].get("label")
+        if label and label != "NOT_AVAILABLE":
+            counts[label] = counts.get(label, 0) + 1
+    if not counts:
+        return None, "UNKNOWN"
+    return counts, "OBSERVED"
 
 
 def providers(repo: EvidenceRepository, observation_ids: list[str]) -> set[str]:

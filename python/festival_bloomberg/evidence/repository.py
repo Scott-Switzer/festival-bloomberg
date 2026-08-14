@@ -21,6 +21,7 @@ from ..acquisition.transport import UrllibTransport  # noqa: F401  (re-exported 
 from ..migrations import apply_pending_migrations
 from .dedup import resolve_canonical
 from .provenance import knowledge_time_for, parse_iso, utc
+from .semantics import normalize_content_role, normalize_resolution_method
 
 
 def guard_evidence_class(evidence_class: str) -> str:
@@ -114,7 +115,18 @@ class EvidenceRepository:
         run_id: str,
     ) -> dict:
         published = parse_iso(record.get("published_at"))
-        knowledge_time = knowledge_time_for(published, retrieved_at)
+        source_revision_time = parse_iso(record.get("source_revision_time"))
+        if (
+            record.get("knowledge_time_source") == "source_revision"
+            and source_revision_time is not None
+        ):
+            # Immutable revision identity is proven: the fetched content maps
+            # to a specific, stable revision, so its revision time is defensible
+            # as knowledge_time.
+            knowledge_time = source_revision_time
+        else:
+            # Mutable / current-page content: fail conservative to retrieval.
+            knowledge_time = knowledge_time_for(published, retrieved_at)
         if request.knowledge_cutoff is not None and knowledge_time > utc(request.knowledge_cutoff):
             # Observations learned after the cutoff are stored but flagged so
             # PIT queries can never surface them at the cutoff.
@@ -137,6 +149,9 @@ class EvidenceRepository:
             "raw_payload_hash": result.raw_payload_hash,
             "evidence_class": guard_evidence_class("OBSERVED_PUBLIC"),
             "cost_usd": result.cost_usd,
+            "correlation_id": request.correlation_id,
+            "source_revision_id": record.get("source_revision_id"),
+            "source_revision_time": source_revision_time.isoformat() if source_revision_time else None,
             "metadata_json": {
                 "text": record.get("text"),
                 "author_name": record.get("author_name"),
@@ -144,6 +159,7 @@ class EvidenceRepository:
                 "object_type": record.get("object_type"),
                 "media_type": record.get("media_type"),
                 "raw_bytes": record.get("raw_bytes"),
+                "content_role": record.get("content_role"),
             },
         }
 
@@ -178,8 +194,9 @@ class EvidenceRepository:
                  provider, provider_endpoint, platform_object_id, parent_object_id,
                  source_url, entity_id, entity_type, published_at, retrieved_at,
                  knowledge_time, content_hash, raw_payload_hash, evidence_class,
-                 cost_usd, metadata_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 cost_usd, correlation_id, source_revision_id, source_revision_time,
+                 metadata_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 raw["observation_id"],
@@ -200,6 +217,9 @@ class EvidenceRepository:
                 raw["raw_payload_hash"],
                 raw["evidence_class"],
                 raw["cost_usd"],
+                raw["correlation_id"],
+                raw["source_revision_id"],
+                raw["source_revision_time"],
                 json.dumps(raw["metadata_json"]),
             ],
         )
@@ -223,9 +243,10 @@ class EvidenceRepository:
                 (observation_id, artist_id, platform, platform_object_id,
                  author_public_id, text, language, published_at, parent_object_id,
                  thread_id, media_type, hashtags, mentions, market_id,
-                 geographic_confidence, entity_resolution_confidence,
+                 geographic_confidence, entity_resolution_confidence, content_role,
+                 content_role_method, resolution_method, resolution_evidence,
                  canonical_url, content_hash, source_count, provider_count, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?)
             """,
             [
                 canonical_id,
@@ -244,6 +265,10 @@ class EvidenceRepository:
                 record.get("market_id"),
                 record.get("geographic_confidence"),
                 record.get("entity_resolution_confidence"),
+                normalize_content_role(record.get("content_role")),
+                record.get("content_role_method"),
+                normalize_resolution_method(record.get("resolution_method")),
+                record.get("resolution_evidence"),
                 record.get("canonical_url"),
                 record.get("content_hash"),
                 utc_now().isoformat(),
@@ -362,7 +387,8 @@ class EvidenceRepository:
             SELECT observation_id, artist_id, platform, platform_object_id,
                    author_public_id, text, language, published_at,
                    parent_object_id, thread_id, media_type, hashtags, mentions,
-                   market_id, geographic_confidence, canonical_url, content_hash,
+                   market_id, geographic_confidence, content_role, content_role_method,
+                   resolution_method, resolution_evidence, canonical_url, content_hash,
                    source_count, provider_count
             FROM acquisition.social_observations
             WHERE 1 = 1
@@ -397,7 +423,8 @@ class EvidenceRepository:
             "observation_id", "artist_id", "platform", "platform_object_id",
             "author_public_id", "text", "language", "published_at",
             "parent_object_id", "thread_id", "media_type", "hashtags", "mentions",
-            "market_id", "geographic_confidence", "canonical_url", "content_hash",
+            "market_id", "geographic_confidence", "content_role", "content_role_method",
+            "resolution_method", "resolution_evidence", "canonical_url", "content_hash",
             "source_count", "provider_count",
         ]
         out = []
