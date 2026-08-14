@@ -56,8 +56,9 @@ class ResearchRepository:
                  currency, price_min, price_max, prices_raw, reporting_source,
                  source_url, source_publication_time, retrieved_at, rights_status,
                  commercial_use_status, observation_class, is_multi_show, is_reported,
-                 is_estimated, raw_payload_hash, software_version, capacity_tier)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 is_estimated, raw_payload_hash, software_version, capacity_tier,
+                 tour, headcount_source_label, sell_through_pct)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 row["engagement_id"], row.get("rank"), row["artist"], row.get("venue"),
@@ -71,7 +72,8 @@ class ResearchRepository:
                 row["retrieved_at"], row["rights_status"], row["commercial_use_status"],
                 row["observation_class"], row.get("is_multi_show"), row.get("is_reported"),
                 row.get("is_estimated"), row.get("raw_payload_hash"), row.get("software_version"),
-                row.get("capacity_tier"),
+                row.get("capacity_tier"), row.get("tour"), row.get("headcount_source_label"),
+                row.get("sell_through_pct"),
             ],
         )
         self.conn.commit()
@@ -205,6 +207,159 @@ class ResearchRepository:
             notes=f"promoted from research boxoffice engagement {e.get('engagement_id')}",
             software_version="public_boxscore_research_corpus_v1",
         )
+
+    # -- V2: sources, canonical engagements, resolutions, splits, inventory ---
+    def insert_source(self, row: dict[str, Any]) -> bool:
+        if self.conn.execute(
+            "SELECT source_id FROM research.boxoffice_sources WHERE source_id = ?",
+            [row["source_id"]],
+        ).fetchone():
+            return False
+        self.conn.execute(
+            """
+            INSERT INTO research.boxoffice_sources
+                (source_id, reporting_source, source_url, publication_date, retrieved_at,
+                 content_hash, record_count, selection_method, ranking_or_chart_status,
+                 known_threshold, unknown_threshold, coverage_scope, rights_status,
+                 commercial_use_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                row["source_id"], row["reporting_source"], row["source_url"], row.get("publication_date"),
+                row["retrieved_at"], row.get("content_hash"), row.get("record_count"),
+                row.get("selection_method"), row.get("ranking_or_chart_status"),
+                row.get("known_threshold"), row.get("unknown_threshold"), row.get("coverage_scope"),
+                row["rights_status"], row["commercial_use_status"],
+            ],
+        )
+        self.conn.commit()
+        return True
+
+    def insert_canonical_engagement(self, row: dict[str, Any]) -> bool:
+        if self.conn.execute(
+            "SELECT canonical_engagement_id FROM research.canonical_boxoffice_engagements WHERE canonical_engagement_id = ?",
+            [row["canonical_engagement_id"]],
+        ).fetchone():
+            return False
+        self.conn.execute(
+            """
+            INSERT INTO research.canonical_boxoffice_engagements
+                (canonical_engagement_id, artist, venue, market, city, state, country,
+                 tour, start_date, end_date, number_of_shows, is_multi_show,
+                 resolution_confidence, source_count, software_version)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                row["canonical_engagement_id"], row["artist"], row.get("venue"), row.get("market"),
+                row.get("city"), row.get("state"), row.get("country"), row.get("tour"),
+                row.get("start_date"), row.get("end_date"), row.get("number_of_shows"),
+                row.get("is_multi_show"), row.get("resolution_confidence"), row.get("source_count"),
+                row.get("software_version"),
+            ],
+        )
+        self.conn.commit()
+        return True
+
+    def insert_resolution(self, row: dict[str, Any]) -> bool:
+        if self.conn.execute(
+            "SELECT resolution_id FROM research.boxoffice_engagement_resolutions WHERE resolution_id = ?",
+            [row["resolution_id"]],
+        ).fetchone():
+            return False
+        self.conn.execute(
+            """
+            INSERT INTO research.boxoffice_engagement_resolutions
+                (resolution_id, raw_engagement_id, canonical_engagement_id,
+                 resolution_status, match_key, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                row["resolution_id"], row["raw_engagement_id"], row["canonical_engagement_id"],
+                row["resolution_status"], row.get("match_key"), row["created_at"],
+            ],
+        )
+        self.conn.commit()
+        return True
+
+    def insert_split(self, row: dict[str, Any]) -> bool:
+        if self.conn.execute(
+            "SELECT split_id FROM research.research_splits WHERE split_id = ?",
+            [row["split_id"]],
+        ).fetchone():
+            return False
+        self.conn.execute(
+            """
+            INSERT INTO research.research_splits
+                (split_id, split_type, canonical_engagement_id, fold, group_key,
+                 created_at, seed, deterministic)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                row["split_id"], row["split_type"], row["canonical_engagement_id"], row["fold"],
+                row.get("group_key"), row["created_at"], row.get("seed"), row.get("deterministic"),
+            ],
+        )
+        self.conn.commit()
+        return True
+
+    def insert_inventory_snapshot(self, row: dict[str, Any]) -> bool:
+        if self.conn.execute(
+            "SELECT snapshot_id FROM research.forward_ticket_inventory_snapshots WHERE snapshot_id = ?",
+            [row["snapshot_id"]],
+        ).fetchone():
+            return False
+        self.conn.execute(
+            """
+            INSERT INTO research.forward_ticket_inventory_snapshots
+                (snapshot_id, event_external_id, artist, venue, market, event_date,
+                 general_sale_date, snapshot_time, retrieved_at, estimated_capacity,
+                 tickets_available, tickets_distributed_or_sold_as_reported,
+                 source_methodology, classification, source_url, source_publication_time,
+                 rights_status, commercial_use_status, observation_class, software_version)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                row["snapshot_id"], row.get("event_external_id"), row.get("artist"), row.get("venue"),
+                row.get("market"), row.get("event_date"), row.get("general_sale_date"),
+                row.get("snapshot_time"), row["retrieved_at"], row.get("estimated_capacity"),
+                row.get("tickets_available"), row.get("tickets_distributed_or_sold_as_reported"),
+                row.get("source_methodology"), row["classification"], row.get("source_url"),
+                row.get("source_publication_time"), row["rights_status"], row["commercial_use_status"],
+                row["observation_class"], row.get("software_version"),
+            ],
+        )
+        self.conn.commit()
+        return True
+
+    def query_sources(self) -> list[dict[str, Any]]:
+        return _rows(self.conn.execute(
+            "SELECT * FROM research.boxoffice_sources ORDER BY publication_date NULLS LAST, source_id"
+        ))
+
+    def query_canonical_engagements(self) -> list[dict[str, Any]]:
+        return _rows(self.conn.execute(
+            "SELECT * FROM research.canonical_boxoffice_engagements ORDER BY artist, start_date NULLS LAST, canonical_engagement_id"
+        ))
+
+    def query_resolutions(self) -> list[dict[str, Any]]:
+        return _rows(self.conn.execute(
+            "SELECT * FROM research.boxoffice_engagement_resolutions ORDER BY raw_engagement_id"
+        ))
+
+    def query_splits(self, split_type: str | None = None) -> list[dict[str, Any]]:
+        if split_type:
+            return _rows(self.conn.execute(
+                "SELECT * FROM research.research_splits WHERE split_type = ? ORDER BY canonical_engagement_id",
+                [split_type],
+            ))
+        return _rows(self.conn.execute(
+            "SELECT * FROM research.research_splits ORDER BY split_type, canonical_engagement_id"
+        ))
+
+    def query_inventory_snapshots(self) -> list[dict[str, Any]]:
+        return _rows(self.conn.execute(
+            "SELECT * FROM research.forward_ticket_inventory_snapshots ORDER BY snapshot_time NULLS LAST, snapshot_id"
+        ))
 
 
 def _rows(result) -> list[dict[str, Any]]:

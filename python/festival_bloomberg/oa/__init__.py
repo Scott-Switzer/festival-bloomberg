@@ -22,6 +22,7 @@ from .historical_laboratory import run_historical_laboratory_oa
 from .economic_outcome import run_economic_outcome_oa
 from .design_partner import run_design_partner_oa
 from .boxscore import run_boxscore_oa
+from .boxscore_v2 import run_boxscore_v2_oa
 
 __all__ = [
     "CANDIDATE_ARTISTS",
@@ -37,5 +38,6 @@ __all__ = [
     "run_economic_outcome_oa",
     "run_design_partner_oa",
     "run_boxscore_oa",
+    "run_boxscore_v2_oa",
     "select_artist",
 ]
