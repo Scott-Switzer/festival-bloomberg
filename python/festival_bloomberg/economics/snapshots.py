@@ -199,6 +199,107 @@ def snapshot_deltas(earlier: dict[str, Any], later: dict[str, Any], *, fields: t
     return out
 
 
+def describe_price_change(field_name: str, earlier: float | None, later: float | None) -> dict[str, Any]:
+    """Describe price change with UNKNOWN semantics.
+    
+    Returns:
+    - NO_OBSERVED_PRICE_CHANGE_INFORMATION: UNKNOWN -> UNKNOWN
+    - PRICE_BECAME_OBSERVABLE: UNKNOWN -> known value
+    - PRICE_BECAME_UNOBSERVABLE: known value -> UNKNOWN
+    - OBSERVED_DELTA: known -> known with numeric delta
+    """
+    if earlier is None and later is None:
+        return {
+            "status": "NO_OBSERVED_PRICE_CHANGE_INFORMATION",
+            "change": None,
+            "earlier": "UNKNOWN",
+            "later": "UNKNOWN",
+        }
+    
+    if earlier is None and later is not None:
+        return {
+            "status": "PRICE_BECAME_OBSERVABLE",
+            "change": later,
+            "earlier": "UNKNOWN",
+            "later": later,
+        }
+    
+    if earlier is not None and later is None:
+        return {
+            "status": "PRICE_BECAME_UNOBSERVABLE",
+            "change": None,
+            "earlier": earlier,
+            "later": "UNKNOWN",
+        }
+    
+    # Both are known
+    try:
+        delta = float(later) - float(earlier)
+        return {
+            "status": "OBSERVED_DELTA",
+            "change": delta,
+            "earlier": earlier,
+            "later": later,
+        }
+    except (TypeError, ValueError):
+        return {
+            "status": "NO_OBSERVED_PRICE_CHANGE_INFORMATION",
+            "change": None,
+            "earlier": str(earlier),
+            "later": str(later),
+        }
+
+
+def snapshot_change_semantics(earlier: dict[str, Any], later: dict[str, Any]) -> dict[str, Any]:
+    """Compute comprehensive snapshot change semantics with UNKNOWN handling."""
+    
+    changes = {
+        "earlier_snapshot_id": earlier.get("snapshot_id"),
+        "later_snapshot_id": later.get("snapshot_id"),
+        "earlier_retrieved_at": earlier.get("retrieved_at"),
+        "later_retrieved_at": later.get("retrieved_at"),
+    }
+    
+    # Primary price changes
+    for field in ["minimum_price", "maximum_price"]:
+        earlier_val = earlier.get(field)
+        later_val = later.get(field)
+        changes[f"{field}_change"] = describe_price_change(field, earlier_val, later_val)
+    
+    # Secondary price changes
+    for field in ["lowest_price", "average_price", "highest_price", "listing_count"]:
+        earlier_val = earlier.get(field)
+        later_val = later.get(field)
+        changes[f"{field}_change"] = describe_price_change(field, earlier_val, later_val)
+    
+    # Event status change
+    earlier_status = earlier.get("event_status")
+    later_status = later.get("event_status")
+    if earlier_status != later_status:
+        changes["event_status_changed"] = True
+        changes["event_status_change"] = {
+            "earlier": earlier_status or "UNKNOWN",
+            "later": later_status or "UNKNOWN",
+        }
+    else:
+        changes["event_status_changed"] = False
+    
+    # Onsale window changes
+    for field in ["public_onsale_start", "public_onsale_end"]:
+        earlier_val = earlier.get(field)
+        later_val = later.get(field)
+        if earlier_val != later_val:
+            changes[f"{field}_changed"] = True
+            changes[f"{field}_change"] = {
+                "earlier": earlier_val or "UNKNOWN",
+                "later": later_val or "UNKNOWN",
+            }
+        else:
+            changes[f"{field}_changed"] = False
+    
+    return changes
+
+
 def _float(value: Any) -> float | None:
     if value is None or value == "":
         return None

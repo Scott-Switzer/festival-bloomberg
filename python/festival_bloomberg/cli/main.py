@@ -324,6 +324,34 @@ def cmd_market_economics_oa(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_forward_history_oa(args: argparse.Namespace) -> int:
+    from ..oa.forward_history import run_forward_history_oa
+
+    manifest = run_forward_history_oa(
+        db_path=args.db,
+        manifest_path=args.manifest,
+        market=args.market,
+        budget_usd=args.budget_usd,
+    )
+    print("=== FESTIVAL BLOOMBERG — FORWARD MARKET HISTORY V1 ===")
+    print(f"oa_run_id:           {manifest['oa_run_id']}")
+    print(f"software_version:    {manifest.get('software_version')}")
+    print(f"TICKETMASTER_AUTH:   {manifest.get('ticketmaster_auth')}")
+    print(f"SEATGEEK_AUTH:       {manifest.get('seatgeek_auth')}")
+    print(f"actual_cost_usd:     {manifest.get('actual_cost_usd')}")
+    for key, value in (manifest.get("statuses") or {}).items():
+        print(f"{key:34s} {value}")
+    print(f"launchagent:         {manifest.get('launchagent')}")
+    print(f"venue_audit:         {manifest.get('venue_audit')}")
+    print(f"capacity_enrichment: {manifest.get('capacity_enrichment')}")
+    print(f"two_snapshot_pit:    {manifest.get('two_snapshot_pit')}")
+    print(f"tracked_events:      {manifest.get('tracked_events')}")
+    print(f"collector_runs:      {manifest.get('collector_runs')}")
+    print(f"manifest:            {args.manifest}")
+    print("NO RECOMMENDATION — recurring collection and venue cleanup only.")
+    return 0
+
+
 def cmd_economics_snapshot_event(args: argparse.Namespace) -> int:
     from ..economics.collector import snapshot_event
     from ..economics.repository import EconomicsRepository
@@ -376,6 +404,277 @@ def cmd_economics_snapshot_upcoming(args: argparse.Namespace) -> int:
         print(f"price_snapshots:     {summary['price_snapshots']}")
         print(f"errors:              {summary['errors']}")
         print(f"actual_cost:         {summary['actual_cost']}")
+        return 0
+    finally:
+        repo.close()
+
+
+def cmd_economics_tracked_events(args: argparse.Namespace) -> int:
+    from ..economics.repository import EconomicsRepository
+    from ..economics.tracking import TrackedEventRegistry
+    from ..events.repository import EventRepository
+
+    repo = FestivalRepository(args.db) if args.db else FestivalRepository()
+    try:
+        EvidenceRepository(repo.conn)
+        events_repo = EventRepository(repo.conn)
+        economics = EconomicsRepository(repo.conn)
+        registry = TrackedEventRegistry(economics)
+        
+        events = registry.get_active_events()
+        print("=== TRACKED EVENTS ===")
+        print(f"active events:       {len(events)}")
+        for event in events:
+            print(f"  {event.canonical_event_id}: {event.tracking_status} (event: {event.event_time.isoformat()})")
+        return 0
+    finally:
+        repo.close()
+
+
+def cmd_economics_track_event(args: argparse.Namespace) -> int:
+    from datetime import datetime
+    from ..economics.repository import EconomicsRepository
+    from ..economics.tracking import TrackedEventRegistry
+    from ..events.repository import EventRepository
+
+    repo = FestivalRepository(args.db) if args.db else FestivalRepository()
+    try:
+        EvidenceRepository(repo.conn)
+        events_repo = EventRepository(repo.conn)
+        economics = EconomicsRepository(repo.conn)
+        registry = TrackedEventRegistry(economics)
+        
+        event_time = datetime.fromisoformat(args.event_time) if args.event_time else None
+        if not event_time:
+            # Try to get from events repo
+            event_rows = [e for e in events_repo.query_events() if e.get("event_id") == args.event_id]
+            if event_rows:
+                event_time = datetime.fromisoformat(event_rows[0].get("local_date") or "")
+        
+        if not event_time:
+            print("ERROR: event_time required or not found in events repo")
+            return 1
+        
+        tracked = registry.track_event(
+            canonical_event_id=args.event_id,
+            artist_id=args.artist_id or "unknown",
+            venue_id=args.venue_id or "unknown",
+            event_time=event_time,
+            providers=args.providers.split(",") if args.providers else None,
+            reason=args.reason,
+        )
+        print("=== TRACK EVENT ===")
+        print(f"event_id:            {tracked.canonical_event_id}")
+        print(f"tracking_status:     {tracked.tracking_status}")
+        print(f"tracking_started:    {tracked.tracking_started_at.isoformat()}")
+        return 0
+    finally:
+        repo.close()
+
+
+def cmd_economics_untrack_event(args: argparse.Namespace) -> int:
+    from ..economics.repository import EconomicsRepository
+    from ..economics.tracking import TrackedEventRegistry
+    from ..events.repository import EventRepository
+
+    repo = FestivalRepository(args.db) if args.db else FestivalRepository()
+    try:
+        EvidenceRepository(repo.conn)
+        events_repo = EventRepository(repo.conn)
+        economics = EconomicsRepository(repo.conn)
+        registry = TrackedEventRegistry(economics)
+        
+        success = registry.untrack_event(args.event_id)
+        print("=== UNTRACK EVENT ===")
+        print(f"event_id:            {args.event_id}")
+        print(f"removed:             {success}")
+        return 0 if success else 1
+    finally:
+        repo.close()
+
+
+def cmd_economics_snapshot_tracked(args: argparse.Namespace) -> int:
+    import os
+    from ..acquisition.contracts import utc_now
+    from ..acquisition.providers.seatgeek import SeatGeekProvider
+    from ..acquisition.providers.ticketmaster import TicketmasterProvider
+    from ..economics.collector import LockHeldError, CollectorLock, snapshot_event
+    from ..economics.repository import EconomicsRepository
+    from ..economics.runlog import (
+        EXIT_AUTH_FAILURE,
+        EXIT_LOCK_HELD,
+        EXIT_NO_ACTIVE_EVENTS,
+        EXIT_SUCCESS,
+        persist_run_to_db,
+        PROVIDER_AUTH_FAILED,
+        PROVIDER_AUTH_VALID,
+        PROVIDER_NOT_CONFIGURED,
+        RunLogger,
+    )
+    from ..economics.tracking import TrackedEventRegistry
+    from ..events.repository import EventRepository
+
+    repo = FestivalRepository(args.db) if args.db else FestivalRepository()
+    try:
+        EvidenceRepository(repo.conn)
+        events_repo = EventRepository(repo.conn)
+        economics = EconomicsRepository(repo.conn)
+        registry = TrackedEventRegistry(economics)
+        
+        logger = RunLogger()
+        lock_path = os.environ.get("FESTIVAL_BLOOMBERG_ECON_LOCK", "data/warehouse/economics.lock")
+        
+        try:
+            with CollectorLock(lock_path):
+                active_events = registry.get_active_events()
+                
+                if not active_events:
+                    logger.log_error("No active tracked events")
+                    logger.finish(EXIT_NO_ACTIVE_EVENTS)
+                    persist_run_to_db(economics, logger)
+                    return EXIT_NO_ACTIVE_EVENTS
+                
+                # Check provider auth
+                tm = TicketmasterProvider()
+                sg = SeatGeekProvider()
+                
+                if tm.configured():
+                    logger.log_provider_status("ticketmaster", PROVIDER_AUTH_VALID)
+                else:
+                    logger.log_provider_status("ticketmaster", PROVIDER_NOT_CONFIGURED)
+                    logger.log_error("Ticketmaster not configured")
+                
+                if sg.configured():
+                    logger.log_provider_status("seatgeek", PROVIDER_AUTH_VALID)
+                else:
+                    logger.log_provider_status("seatgeek", PROVIDER_NOT_CONFIGURED)
+                
+                # Snapshot each tracked event
+                for event in active_events:
+                    logger.increment_events_attempted()
+                    providers = []
+                    if tm.configured():
+                        providers.append("ticketmaster")
+                    if sg.configured():
+                        providers.append("seatgeek")
+                    
+                    try:
+                        summary = snapshot_event(
+                            events_repo=events_repo,
+                            economics_repo=economics,
+                            canonical_event_id=event.canonical_event_id,
+                            providers=tuple(providers),
+                            ticketmaster=tm if tm.configured() else None,
+                            seatgeek=sg if sg.configured() else None,
+                        )
+                        logger.increment_events_succeeded()
+                        logger.increment_snapshots_appended(summary["price_snapshots"])
+                        registry.update_snapshot_time(event.canonical_event_id, utc_now())
+                    except Exception as e:
+                        logger.log_error(f"Failed to snapshot {event.canonical_event_id}: {e}")
+                
+                # Transition expired events
+                registry.transition_expired_events()
+                
+                logger.finish(EXIT_SUCCESS)
+                persist_run_to_db(economics, logger)
+                
+                print("=== SNAPSHOT TRACKED ===")
+                print(f"run_id:              {logger.run_id}")
+                print(f"events_attempted:    {logger.events_attempted}")
+                print(f"events_succeeded:    {logger.events_succeeded}")
+                print(f"snapshots_appended:  {logger.snapshots_appended}")
+                print(f"provider_status:     {logger.provider_status}")
+                print(f"exit_code:           {logger.exit_code}")
+                return EXIT_SUCCESS
+                
+        except LockHeldError:
+            logger.log_error("Collector lock already held")
+            logger.finish(EXIT_LOCK_HELD)
+            persist_run_to_db(economics, logger)
+            return EXIT_LOCK_HELD
+            
+    finally:
+        repo.close()
+
+
+def cmd_economics_discover_upcoming(args: argparse.Namespace) -> int:
+    from ..economics.repository import EconomicsRepository
+    from ..economics.tracking import TrackedEventRegistry
+    from ..events.repository import EventRepository
+
+    repo = FestivalRepository(args.db) if args.db else FestivalRepository()
+    try:
+        EvidenceRepository(repo.conn)
+        events_repo = EventRepository(repo.conn)
+        economics = EconomicsRepository(repo.conn)
+        registry = TrackedEventRegistry(economics)
+        
+        # Discover upcoming Chicago events for tracked artists
+        # This is a placeholder - actual discovery logic would query Ticketmaster
+        # for upcoming events matching tracked artist IDs in Chicago market
+        
+        print("=== DISCOVER UPCOMING ===")
+        print("Discovery not yet implemented")
+        return 0
+    finally:
+        repo.close()
+
+
+def cmd_economics_venue_audit(args: argparse.Namespace) -> int:
+    from ..economics.repository import EconomicsRepository
+    from ..events.repository import EventRepository
+
+    repo = FestivalRepository(args.db) if args.db else FestivalRepository()
+    try:
+        EvidenceRepository(repo.conn)
+        events_repo = EventRepository(repo.conn)
+        economics = EconomicsRepository(repo.conn)
+        
+        # Audit venue master
+        venues = events_repo.query_venues()
+        print("=== VENUE AUDIT ===")
+        print(f"total venues:        {len(venues)}")
+        
+        # Count unique names
+        unique_names = len(set(v.get("venue_name") for v in venues))
+        print(f"unique names:         {unique_names}")
+        
+        # Check for duplicates
+        name_counts = {}
+        for v in venues:
+            name = v.get("venue_name")
+            name_counts[name] = name_counts.get(name, 0) + 1
+        
+        duplicates = {name: count for name, count in name_counts.items() if count > 1}
+        if duplicates:
+            print(f"duplicate names:      {duplicates}")
+        else:
+            print("duplicate names:      none")
+        
+        return 0
+    finally:
+        repo.close()
+
+
+def cmd_economics_merge_united_center(args: argparse.Namespace) -> int:
+    from ..economics.repository import EconomicsRepository
+    from ..economics.venues import merge_united_center
+    from ..events.repository import EventRepository
+
+    repo = FestivalRepository(args.db) if args.db else FestivalRepository()
+    try:
+        EvidenceRepository(repo.conn)
+        events_repo = EventRepository(repo.conn)
+        economics = EconomicsRepository(repo.conn)
+        
+        result = merge_united_center(events_repo, economics)
+        print("=== MERGE UNITED CENTER ===")
+        print(f"status:              {result['status']}")
+        if result['status'] == 'merged':
+            print(f"canonical_venue_id:  {result['canonical_venue_id']}")
+            print(f"source_venue_ids:    {result['source_venue_ids']}")
+            print(f"merge_action_id:     {result['merge_action_id']}")
         return 0
     finally:
         repo.close()
@@ -550,6 +849,16 @@ def build_parser() -> argparse.ArgumentParser:
     econ_oa.add_argument("--manifest", default="reports/market_economics_evidence_v1.json")
     econ_oa.set_defaults(handler=cmd_market_economics_oa)
 
+    fh_oa = sub.add_parser(
+        "operational-acceptance-forward-history",
+        help="recurring collection + venue cleanup + capacity enrichment OA ($0)",
+    )
+    fh_oa.add_argument("--market", default="Chicago, IL")
+    fh_oa.add_argument("--budget-usd", type=float, default=0.0)
+    fh_oa.add_argument("--db", default="data/warehouse/artist_market_event_history.duckdb")
+    fh_oa.add_argument("--manifest", default="reports/forward_market_history_v1.json")
+    fh_oa.set_defaults(handler=cmd_forward_history_oa)
+
     economics = sub.add_parser("economics", help="venue capacity claims and ticket-market snapshots")
     economics_sub = economics.add_subparsers(dest="economics_command", required=True)
     snap_event = economics_sub.add_parser("snapshot-event", help="append-only snapshot for one canonical event")
@@ -563,6 +872,41 @@ def build_parser() -> argparse.ArgumentParser:
     snap_up.add_argument("--providers", default="ticketmaster,seatgeek")
     snap_up.add_argument("--db", default="data/warehouse/artist_market_event_history.duckdb")
     snap_up.set_defaults(handler=cmd_economics_snapshot_upcoming)
+
+    tracked = economics_sub.add_parser("tracked-events", help="list tracked events")
+    tracked.add_argument("--db", default="data/warehouse/artist_market_event_history.duckdb")
+    tracked.set_defaults(handler=cmd_economics_tracked_events)
+
+    track = economics_sub.add_parser("track-event", help="add event to tracking registry")
+    track.add_argument("--event-id", required=True)
+    track.add_argument("--artist-id", default=None)
+    track.add_argument("--venue-id", default=None)
+    track.add_argument("--event-time", default=None)
+    track.add_argument("--providers", default=None)
+    track.add_argument("--reason", default=None)
+    track.add_argument("--db", default="data/warehouse/artist_market_event_history.duckdb")
+    track.set_defaults(handler=cmd_economics_track_event)
+
+    untrack = economics_sub.add_parser("untrack-event", help="remove event from tracking registry")
+    untrack.add_argument("--event-id", required=True)
+    untrack.add_argument("--db", default="data/warehouse/artist_market_event_history.duckdb")
+    untrack.set_defaults(handler=cmd_economics_untrack_event)
+
+    snap_tracked = economics_sub.add_parser("snapshot-tracked", help="snapshot all tracked events")
+    snap_tracked.add_argument("--db", default="data/warehouse/artist_market_event_history.duckdb")
+    snap_tracked.set_defaults(handler=cmd_economics_snapshot_tracked)
+
+    discover = economics_sub.add_parser("discover-upcoming", help="discover upcoming events for tracked artists")
+    discover.add_argument("--db", default="data/warehouse/artist_market_event_history.duckdb")
+    discover.set_defaults(handler=cmd_economics_discover_upcoming)
+
+    venue_audit = economics_sub.add_parser("venue-audit", help="audit venue master for duplicates")
+    venue_audit.add_argument("--db", default="data/warehouse/artist_market_event_history.duckdb")
+    venue_audit.set_defaults(handler=cmd_economics_venue_audit)
+
+    merge_uc = economics_sub.add_parser("merge-united-center", help="merge United Center duplicate venues")
+    merge_uc.add_argument("--db", default="data/warehouse/artist_market_event_history.duckdb")
+    merge_uc.set_defaults(handler=cmd_economics_merge_united_center)
 
     labels = sub.add_parser("labels", help="deterministic human-labeling exports")
     labels_sub = labels.add_subparsers(dest="labels_command", required=True)

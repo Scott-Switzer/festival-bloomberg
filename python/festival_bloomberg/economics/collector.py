@@ -21,6 +21,11 @@ from .resolve import match_ticketmaster_seatgeek
 from .snapshots import primary_snapshots_from_ticketmaster, secondary_snapshot_from_seatgeek
 
 
+class LockHeldError(Exception):
+    """Raised when lock is already held by another process."""
+    pass
+
+
 class CollectorLock:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
@@ -29,7 +34,12 @@ class CollectorLock:
     def __enter__(self) -> CollectorLock:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._fh = open(self.path, "a", encoding="utf-8")
-        fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX)
+        try:
+            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            self._fh.close()
+            self._fh = None
+            raise LockHeldError(f"Lock already held: {self.path}")
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
