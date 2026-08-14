@@ -219,6 +219,90 @@ def cmd_youtube_fan_signal(args: argparse.Namespace) -> int:
         repo.close()
 
 
+def cmd_event_history_oa(args: argparse.Namespace) -> int:
+    from ..oa.event_history import run_event_history_oa
+
+    manifest = run_event_history_oa(
+        db_path=args.db,
+        youtube_db_path=args.youtube_db,
+        manifest_path=args.manifest,
+        market=args.market,
+        budget_usd=args.budget_usd,
+    )
+    print("=== FESTIVAL BLOOMBERG — ARTIST × MARKET EVENT HISTORY V1 ===")
+    print(f"oa_run_id:           {manifest['oa_run_id']}")
+    print(f"TICKETMASTER_AUTH:   {manifest.get('ticketmaster_auth')}")
+    print(f"SETLISTFM_AUTH:      {manifest.get('setlistfm_auth')}")
+    print(f"cost_usd:            {manifest.get('cost_usd')}")
+    for key, value in (manifest.get("statuses") or {}).items():
+        print(f"{key:34s} {value}")
+    print(f"manifest:            {args.manifest}")
+    print("NO RECOMMENDATION — observational event history only.")
+    return 0
+
+
+def cmd_events_collect(args: argparse.Namespace) -> int:
+    from ..oa.event_history import run_event_history_oa
+
+    manifest = run_event_history_oa(
+        db_path=args.db,
+        manifest_path=args.manifest,
+        market=args.market,
+        artists=(args.artist,),
+    )
+    artist = (manifest.get("artists") or [{}])[0]
+    print("=== EVENTS COLLECT ===")
+    print(f"artist:              {args.artist}")
+    print(f"market:              {args.market}")
+    print(f"identity:            {artist.get('identity_resolution_status')}")
+    print(f"historical:          {artist.get('historical_chicago_performances')}")
+    print(f"upcoming:            {artist.get('upcoming_chicago_events')}")
+    print(f"cost_usd:            0.0")
+    return 0
+
+
+def cmd_events_market_history(args: argparse.Namespace) -> int:
+    from ..events.features import build_artist_market_vector
+    from ..events.identity import canonical_artist_id
+    from ..events.repository import EventRepository
+
+    repo = FestivalRepository(args.db) if args.db else FestivalRepository()
+    try:
+        EvidenceRepository(repo.conn)
+        events_repo = EventRepository(repo.conn)
+        vector = build_artist_market_vector(
+            events_repo,
+            artist_id=canonical_artist_id(args.artist),
+            market_id=args.market,
+            as_of=datetime.now(timezone.utc),
+        )
+        print("=== MARKET HISTORY ===")
+        for key, value in vector.items():
+            if key == "supporting_observation_ids":
+                print(f"supporting_ids:      {len(value)}")
+                continue
+            print(f"{key}: {value}")
+        return 0
+    finally:
+        repo.close()
+
+
+def cmd_events_market_history_batch(args: argparse.Namespace) -> int:
+    from ..oa.event_history import run_event_history_oa
+
+    manifest = run_event_history_oa(
+        db_path=args.db,
+        youtube_db_path=args.youtube_db,
+        manifest_path=args.manifest,
+        market=args.market,
+    )
+    print("=== MARKET HISTORY BATCH ===")
+    print(f"artists:             {len(manifest.get('artists') or [])}")
+    print(f"EVENT_HISTORY_V1:    {manifest['statuses'].get('EVENT_HISTORY_V1')}")
+    print(f"cost_usd:            {manifest.get('cost_usd')}")
+    return 0
+
+
 def cmd_labels_export(args: argparse.Namespace) -> int:
     """Export a deterministic, unlabeled fan-text sample for human labeling."""
     import json
@@ -342,6 +426,41 @@ def build_parser() -> argparse.ArgumentParser:
     yt_oa.add_argument("--labels", default="reports/youtube_fan_labels.json")
     yt_oa.add_argument("--no-batch", action="store_true")
     yt_oa.set_defaults(handler=cmd_youtube_fan_signal)
+
+    evt_oa = sub.add_parser(
+        "operational-acceptance-event-history",
+        help="live Ticketmaster + Setlist.fm artist×market event history OA ($0)",
+    )
+    evt_oa.add_argument("--market", default="Chicago, IL")
+    evt_oa.add_argument("--budget-usd", type=float, default=0.0)
+    evt_oa.add_argument("--db", default="data/warehouse/artist_market_event_history.duckdb")
+    evt_oa.add_argument("--youtube-db", default="data/warehouse/youtube_fan_signal_oa.duckdb")
+    evt_oa.add_argument("--manifest", default="reports/artist_market_event_history_v1.json")
+    evt_oa.set_defaults(handler=cmd_event_history_oa)
+
+    events = sub.add_parser("events", help="artist × market event/performance history")
+    events_sub = events.add_subparsers(dest="events_command", required=True)
+    collect_ev = events_sub.add_parser("collect", help="collect Ticketmaster + Setlist.fm for one artist")
+    collect_ev.add_argument("--artist", required=True)
+    collect_ev.add_argument("--market", default="Chicago, IL")
+    collect_ev.add_argument("--providers", default="ticketmaster,setlistfm")
+    collect_ev.add_argument("--db", default="data/warehouse/artist_market_event_history.duckdb")
+    collect_ev.add_argument("--manifest", default="reports/artist_market_event_history_v1.json")
+    collect_ev.set_defaults(handler=cmd_events_collect)
+
+    hist = events_sub.add_parser("market-history", help="print stored artist×market event history")
+    hist.add_argument("--artist", required=True)
+    hist.add_argument("--market", default="Chicago, IL")
+    hist.add_argument("--db", default="data/warehouse/artist_market_event_history.duckdb")
+    hist.set_defaults(handler=cmd_events_market_history)
+
+    batch = events_sub.add_parser("market-history-batch", help="collect oa10 universe Chicago history")
+    batch.add_argument("--universe", default="oa10")
+    batch.add_argument("--market", default="Chicago, IL")
+    batch.add_argument("--db", default="data/warehouse/artist_market_event_history.duckdb")
+    batch.add_argument("--youtube-db", default="data/warehouse/youtube_fan_signal_oa.duckdb")
+    batch.add_argument("--manifest", default="reports/artist_market_event_history_v1.json")
+    batch.set_defaults(handler=cmd_events_market_history_batch)
 
     labels = sub.add_parser("labels", help="deterministic human-labeling exports")
     labels_sub = labels.add_subparsers(dest="labels_command", required=True)
