@@ -179,6 +179,106 @@ def selection_bias_report(economics_repo, events_repo) -> dict[str, Any]:
     }
 
 
+CORE_ECONOMIC_TYPES = (
+    "PAID_ATTENDANCE",
+    "SCANNED_ATTENDANCE",
+    "REPORTED_ATTENDANCE",
+    "TICKETS_SOLD",
+    "EXPLICIT_SOLD_OUT_ASSERTION",
+    "EVENT_USABLE_CAPACITY",
+    "PRIMARY_FACE_VALUE_MIN",
+    "PRIMARY_FACE_VALUE_MAX",
+    "TICKET_GROSS",
+    "ARTIST_GUARANTEE",
+    "PROMOTER_CONTRIBUTION",
+)
+
+
+def economic_coverage_report(economics_repo, events_repo) -> dict[str, Any]:
+    """Economic outcome coverage V2: per-type coverage with quality, rights,
+    and conflict breakdowns, plus the research-vs-commercial split."""
+    claims = economics_repo.query_outcome_claims()
+    event_ids = {e["event_id"] for e in events_repo.query_events()}
+
+    by_type = defaultdict(lambda: {"events": set(), "grade": Counter(), "rights": Counter(), "conflicts": 0})
+    for c in claims:
+        bucket = by_type[c["outcome_type"]]
+        bucket["events"].add(c["canonical_event_id"])
+        bucket["grade"][c["source_quality"]] += 1
+        bucket["rights"][c["rights_status"]] += 1
+        if c.get("conflict_group_id"):
+            bucket["conflicts"] += 1
+
+    scorecard: dict[str, Any] = {}
+    for outcome_type in CORE_ECONOMIC_TYPES:
+        bucket = by_type.get(outcome_type, {"events": set(), "grade": Counter(), "rights": Counter(), "conflicts": 0})
+        events_with = bucket["events"]
+        scorecard[outcome_type] = {
+            "events_known": len(events_with),
+            "events_unknown": max(0, len(event_ids) - len(events_with)),
+            "coverage_pct": round(len(events_with) / len(event_ids) * 100, 2) if event_ids else 0.0,
+            "a_tier": sum(v for k, v in bucket["grade"].items() if k.startswith("A_")),
+            "b_tier": sum(v for k, v in bucket["grade"].items() if k.startswith("B_")),
+            "c_d_tier": sum(v for k, v in bucket["grade"].items() if k.startswith(("C_", "D_"))),
+            "commercially_usable": sum(v for k, v in bucket["rights"].items() if k in ("OPEN_COMMERCIAL_OK", "OPEN_WITH_ATTRIBUTION")),
+            "research_only": sum(v for k, v in bucket["rights"].items() if k == "RESEARCH_ONLY"),
+            "conflicts": bucket["conflicts"],
+        }
+
+    # Naive economics readiness: an event needs attendance + capacity or
+    # tickets_sold + gross together.
+    attendance_events = by_type.get("PAID_ATTENDANCE", {"events": set()})["events"] \
+        | by_type.get("SCANNED_ATTENDANCE", {"events": set()})["events"] \
+        | by_type.get("REPORTED_ATTENDANCE", {"events": set()})["events"]
+    capacity_events = by_type.get("EVENT_USABLE_CAPACITY", {"events": set()})["events"] \
+        | by_type.get("VENUE_CAPACITY", {"events": set()})["events"]
+    tickets_events = by_type.get("TICKETS_SOLD", {"events": set()})["events"]
+    gross_events = by_type.get("TICKET_GROSS", {"events": set()})["events"]
+
+    return {
+        "events_searched": len(event_ids),
+        "scorecard": scorecard,
+        "events_with_attendance_and_capacity": len(attendance_events & capacity_events),
+        "events_with_tickets_and_gross": len(tickets_events & gross_events),
+        "events_with_attendance": len(attendance_events),
+        "events_with_tickets_sold": len(tickets_events),
+        "events_with_sold_out": len(by_type.get("EXPLICIT_SOLD_OUT_ASSERTION", {"events": set()})["events"]),
+        "events_with_gross": len(gross_events),
+        "events_with_event_capacity": len(by_type.get("EVENT_USABLE_CAPACITY", {"events": set()})["events"]),
+        "events_with_guarantee": len(by_type.get("ARTIST_GUARANTEE", {"events": set()})["events"]),
+        "events_with_promoter_contribution": len(by_type.get("PROMOTER_CONTRIBUTION", {"events": set()})["events"]),
+        "research_commercial_split": research_commercial_split(economics_repo),
+    }
+
+
+def research_commercial_split(economics_repo) -> dict[str, Any]:
+    """Research-only vs commercial-eligible corpus sizes by rights status."""
+    claims = economics_repo.query_outcome_claims()
+    commercial = {
+        "OPEN_COMMERCIAL_OK",
+        "OPEN_WITH_ATTRIBUTION",
+        "TERMS_REVIEW_REQUIRED",
+    }
+    research = 0
+    eligible = 0
+    unknown = 0
+    for c in claims:
+        status = c["rights_status"]
+        if status in commercial:
+            eligible += 1
+        elif status == "RESEARCH_ONLY":
+            research += 1
+        else:
+            unknown += 1
+    return {
+        "commercial_eligible_claims": eligible,
+        "research_only_claims": research,
+        "unknown_rights_claims": unknown,
+        "commercial_eligible_events": len({c["canonical_event_id"] for c in claims if c["rights_status"] in commercial}),
+        "research_only_events": len({c["canonical_event_id"] for c in claims if c["rights_status"] == "RESEARCH_ONLY"}),
+    }
+
+
 def _duplicate_rate(claims: list[dict[str, Any]]) -> float:
     total = len(claims)
     if total == 0:
