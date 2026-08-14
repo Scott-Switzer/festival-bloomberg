@@ -27,6 +27,7 @@ from festival_bloomberg.economics.outcome_claims import (
     OBSERVED_PUBLIC,
     PROMOTER_CONTRIBUTION,
     REPORTED_ATTENDANCE,
+    SETTLEMENT_GROSS,
     TICKET_GROSS,
     VENUE_CAPACITY,
     OutcomeClaim,
@@ -85,6 +86,8 @@ from conftest import FakeTransport
 def test_objectives_match_memo_targets():
     keys = {obj.objective_id for obj in MEDIUM_TERM_OBJECTIVES_V1}
     core = {
+        "CANONICAL_BOXSCORE_ENGAGEMENTS",
+        "SINGLE_SHOW_ENGAGEMENTS",
         "CANONICAL_PERFORMANCES",
         "OUTCOME_CLAIMS",
         "UNIQUE_EVENTS_WITH_OUTCOMES",
@@ -94,10 +97,12 @@ def test_objectives_match_memo_targets():
         "CANONICAL_VENUES",
         "CONTINUOUS_USEFUL_PERIOD",
         "FORWARD_TRACKED_FUTURE_EVENTS",
-        "PRIVATE_SETTLED_EVENTS",
+        "PRIVATE_EVENTS_WITH_SETTLEMENT_EVIDENCE",
     }
     assert core <= keys
     targets = {obj.objective_id: obj.target for obj in MEDIUM_TERM_OBJECTIVES_V1}
+    assert targets["CANONICAL_BOXSCORE_ENGAGEMENTS"] == 50_000.0
+    assert targets["SINGLE_SHOW_ENGAGEMENTS"] == 45_000.0
     assert targets["CANONICAL_PERFORMANCES"] == 50_000.0
     assert targets["OUTCOME_CLAIMS"] == 5_000.0
     assert targets["UNIQUE_EVENTS_WITH_OUTCOMES"] == 2_500.0
@@ -107,14 +112,14 @@ def test_objectives_match_memo_targets():
     assert targets["CANONICAL_VENUES"] == 1_000.0
     assert targets["CONTINUOUS_USEFUL_PERIOD"] == 8.0
     assert targets["FORWARD_TRACKED_FUTURE_EVENTS"] == 2_000.0
-    assert targets["PRIVATE_SETTLED_EVENTS"] == 500.0
+    assert targets["PRIVATE_EVENTS_WITH_SETTLEMENT_EVIDENCE"] == 500.0
     # the four decision rates
     assert targets["WARM_START_RATE"] == 0.5
     assert targets["OFFER_TIME_RECONSTRUCTABLE_RATE"] == 0.8
     assert targets["TICKET_PACE_COVERAGE"] == 0.6
     assert targets["SETTLEMENT_COVERAGE"] == 0.5
     rows = objective_rows()
-    assert len(rows) == len(MEDIUM_TERM_OBJECTIVES_V1) == 26
+    assert len(rows) == len(MEDIUM_TERM_OBJECTIVES_V1) == 28
     assert all(row["objective_version"] == "data_flywheel_and_coverage_v1" for row in rows)
 
 
@@ -441,13 +446,29 @@ def seeded_db(tmp_path):
     conn.close()
 
 
+def test_canonical_performances_exclude_multi_show(seeded_db):
+    """Engagement != performance. Multi-show aggregates (e6) are bookings,
+    never performances; the performance denominator is single-show only."""
+    from festival_bloomberg.flywheel.coverage import (
+        count_canonical_engagements,
+        count_canonical_performances,
+        count_single_show_engagements,
+    )
+
+    assert count_canonical_engagements(seeded_db) == 7
+    assert count_single_show_engagements(seeded_db) == 6
+    assert count_canonical_performances(seeded_db) == 6
+
+
 def test_coverage_measurement_on_seeded_warehouse(seeded_db):
     rows = measure_coverage(seeded_db, as_of=datetime(2026, 8, 1))
     by_key = {row["objective_key"]: row for row in rows}
-    assert len(rows) == 26
+    assert len(rows) == 28
 
-    # Core scale.
-    assert by_key["CANONICAL_PERFORMANCES"]["actual_value"] == 7.0
+    # Core scale: engagements (incl. aggregates) vs performances (single-show).
+    assert by_key["CANONICAL_BOXSCORE_ENGAGEMENTS"]["actual_value"] == 7.0
+    assert by_key["SINGLE_SHOW_ENGAGEMENTS"]["actual_value"] == 6.0
+    assert by_key["CANONICAL_PERFORMANCES"]["actual_value"] == 6.0
     # OUTCOME_CLAIMS = defensible outcome types only (capacity + settlement are
     # tracked separately and are NOT outcome claims).
     assert by_key["OUTCOME_CLAIMS"]["actual_value"] == 11.0
@@ -458,7 +479,7 @@ def test_coverage_measurement_on_seeded_warehouse(seeded_db):
     assert by_key["CANONICAL_VENUES"]["actual_value"] == 3.0
     assert by_key["CONTINUOUS_USEFUL_PERIOD"]["actual_value"] == 1.0
     assert by_key["FORWARD_TRACKED_FUTURE_EVENTS"]["actual_value"] == 2.0
-    assert by_key["PRIVATE_SETTLED_EVENTS"]["actual_value"] == 1.0
+    assert by_key["PRIVATE_EVENTS_WITH_SETTLEMENT_EVIDENCE"]["actual_value"] == 1.0
 
     # Per-dimension outcome coverage.
     assert by_key["EVENTS_WITH_ATTENDANCE"]["actual_value"] == 5.0
@@ -477,17 +498,63 @@ def test_coverage_measurement_on_seeded_warehouse(seeded_db):
     assert by_key["EVENTS_WITH_TICKET_PACE"]["actual_value"] == 1.0
     assert by_key["EVENTS_WITH_OFFER_OR_BOOKING_CUTOFF"]["actual_value"] == 1.0
 
-    # Rates are fractions of canonical performances.
-    assert by_key["WARM_START_RATE"]["actual_value"] == pytest.approx(1.0 / 7.0)
-    assert by_key["OFFER_TIME_RECONSTRUCTABLE_RATE"]["actual_value"] == pytest.approx(1.0 / 7.0)
-    assert by_key["TICKET_PACE_COVERAGE"]["actual_value"] == pytest.approx(1.0 / 7.0)
-    assert by_key["SETTLEMENT_COVERAGE"]["actual_value"] == pytest.approx(1.0 / 7.0)
+    # Rates are fractions of CANONICAL_PERFORMANCES (single-show denominator).
+    assert by_key["WARM_START_RATE"]["actual_value"] == pytest.approx(1.0 / 6.0)
+    assert by_key["OFFER_TIME_RECONSTRUCTABLE_RATE"]["actual_value"] == pytest.approx(1.0 / 6.0)
+    assert by_key["TICKET_PACE_COVERAGE"]["actual_value"] == pytest.approx(1.0 / 6.0)
+    assert by_key["SETTLEMENT_COVERAGE"]["actual_value"] == pytest.approx(1.0 / 6.0)
 
     # All below their targets; a genuinely-zero dimension has ratio 0.0 (never
     # fabricated into a positive number).
     for row in rows:
         assert row["status"] == BELOW_TARGET
         assert 0.0 <= row["coverage_ratio"] < 1.0
+
+
+def test_private_settlement_requires_settlement_types(tmp_path):
+    """A private attendance-only import is NOT settlement evidence: only
+    OBSERVED_PRIVATE claims of settlement type (PROMOTER_CONTRIBUTION /
+    SETTLEMENT_GROSS / SETTLEMENT_NET) count — and even then it is settlement
+    EVIDENCE, not full settlement completeness."""
+    import duckdb
+
+    from festival_bloomberg.flywheel.coverage import (
+        count_private_events_with_settlement_evidence,
+    )
+
+    conn = duckdb.connect(str(tmp_path / "private_settle.duckdb"))
+    try:
+        econ = EconomicsRepository(conn)
+        econ.insert_outcome_claim(
+            OutcomeClaim.build(
+                canonical_event_id="partner_evt_1",
+                outcome_type=REPORTED_ATTENDANCE,
+                value_numeric=8000.0,
+                source_provider="customer",
+                source_quality="A_PRIMARY_SETTLEMENT",
+                observation_class=OBSERVED_PRIVATE,
+                rights_status="OPEN_COMMERCIAL_OK",
+                commercial_use_status="OPEN_COMMERCIAL_OK",
+            )
+        )
+        assert count_private_events_with_settlement_evidence(conn) == 0
+
+        econ.insert_outcome_claim(
+            OutcomeClaim.build(
+                canonical_event_id="partner_evt_1",
+                outcome_type=SETTLEMENT_GROSS,
+                value_numeric=900000.0,
+                currency="USD",
+                source_provider="customer",
+                source_quality="A_PRIMARY_SETTLEMENT",
+                observation_class=OBSERVED_PRIVATE,
+                rights_status="OPEN_COMMERCIAL_OK",
+                commercial_use_status="OPEN_COMMERCIAL_OK",
+            )
+        )
+        assert count_private_events_with_settlement_evidence(conn) == 1
+    finally:
+        conn.close()
 
 
 def test_prior_results_are_strict_pit(seeded_db):
@@ -514,19 +581,19 @@ def test_coverage_snapshot_persistence_and_pit(seeded_db):
         flywheel.insert_coverage_snapshot(row)
 
     stored = flywheel.query_coverage_snapshots()
-    assert len(stored) == 26
-    assert len(flywheel.latest_coverage()) == 26
+    assert len(stored) == 28
+    assert len(flywheel.latest_coverage()) == 28
 
     # Second run at a later time appends, never overwrites.
     rows2 = measure_coverage(seeded_db, as_of=datetime(2026, 9, 1))
     for row in rows2:
         row["snapshot_id"] = snapshot_id(datetime(2026, 9, 1), row["objective_key"])
         flywheel.insert_coverage_snapshot(row)
-    assert len(flywheel.query_coverage_snapshots()) == 52
+    assert len(flywheel.query_coverage_snapshots()) == 56
 
     # PIT: a cutoff before the September run sees only the August snapshot.
     august_only = flywheel.query_coverage_snapshots(cutoff=datetime(2026, 8, 15))
-    assert len(august_only) == 26
+    assert len(august_only) == 28
     assert all("20260801" in row["snapshot_id"] for row in august_only)
 
 
@@ -632,12 +699,23 @@ def test_forward_milestones_with_onsale():
 
 
 def test_forward_milestones_without_onsale_never_misleading():
+    """D+N means DAYS AFTER ONSALE. Unknown onsale -> D+N timestamps are
+    UNKNOWN (basis=onsale_unknown); the event-relative T-N ladder still runs
+    independently from event_date and is never conflated with it."""
     milestones = {
         m["milestone"]: m
         for m in compute_milestones(date(2026, 8, 20), onsale_date=None)
     }
-    assert milestones["D+7"]["due_at"] == "2026-08-27"
-    assert milestones["D+7"]["basis"] == "event+offset (onsale unknown)"
+    assert milestones["D+1"]["due_at"] is None
+    assert milestones["D+7"]["due_at"] is None
+    assert milestones["D+14"]["due_at"] is None
+    assert milestones["D+7"]["basis"] == "onsale_unknown"
+    # event-relative ladder is unaffected by the unknown onsale
+    assert milestones["T-7"]["due_at"] == "2026-08-13"
+    assert milestones["T-7"]["basis"] == "event-relative"
+    assert milestones["SHOW"]["due_at"] == "2026-08-20"
+    assert milestones["ONSALE"]["due_at"] is None
+    assert milestones["ONSALE"]["basis"] == "observed_live"
 
 
 def test_forward_watch_registration_idempotent(seeded_db):
@@ -694,9 +772,9 @@ def test_flywheel_oa_end_to_end(tmp_path):
 
     assert manifest["software_version"] == "data_flywheel_and_coverage_v1"
     assert manifest["sources"]["total"] == 21
-    assert manifest["objectives_registered"] == 26
-    assert len(manifest["coverage"]["rows"]) == 26
-    assert manifest["coverage"]["objectives_total"] == 26
+    assert manifest["objectives_registered"] == 28
+    assert len(manifest["coverage"]["rows"]) == 28
+    assert manifest["coverage"]["objectives_total"] == 28
 
     event_graph = manifest["pipelines"]["EVENT_GRAPH"]
     assert event_graph["status"] == "PASS"

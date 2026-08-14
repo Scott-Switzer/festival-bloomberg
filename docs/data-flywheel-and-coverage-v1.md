@@ -20,9 +20,12 @@ DATA_FLYWHEEL_AND_COVERAGE_V1   <- this milestone
   -> UNDERWRITING_RESEARCH_V2   <- economics-centered underwriting
 ```
 
-Status: **LOCAL_IMPLEMENTATION — remote PR pending.** The warehouse layer is
-live and tested; keyed/terms-review sources (Census, BLS, Ticketmaster,
-JamBase, ...) are registered with their real access status and never bypassed.
+Status: **remote PR #20 (draft) — operational closure in progress.** The
+warehouse layer is live and tested; keyed/terms-review sources (Census, BLS,
+Ticketmaster, JamBase, ...) are registered with their real access status and
+never bypassed. Three review fixes landed before merge: engagement vs
+performance KPI split, settlement-gated private evidence, and onsale-anchored
+D+N forward-watch milestones (regression-tested).
 
 ## The four pipelines
 
@@ -40,18 +43,30 @@ version and resolution confidence.
 
 ## Coverage objectives (KPI-corrected)
 
-`flywheel.objectives` stores 26 product-development targets (proposed, not
-statistically validated). The vocabulary is deliberate:
+`flywheel.objectives` stores 28 product-development targets (proposed, not
+statistically validated). The vocabulary is deliberate — and engagements are
+NEVER conflated with performances:
 
+* **CANONICAL_BOXSCORE_ENGAGEMENTS** — bookings, incl. multi-show aggregates
+  (an engagement is not a performance)
+* **SINGLE_SHOW_ENGAGEMENTS** — defensible single-show bookings
+* **CANONICAL_PERFORMANCES** — canonical single-performance rows; the
+  explicit eligible denominator for every decision rate (multi-show
+  aggregates never enter a metric called PERFORMANCES)
 * **OUTCOME_CLAIMS** — source-backed claims in the ledger (claims ≠ events)
 * **UNIQUE_EVENTS_WITH_OUTCOMES** — distinct events with ≥1 defensible claim
 * **FULLY_SETTLED_EVENTS** — distinct events with settlement evidence
+* **PRIVATE_EVENTS_WITH_SETTLEMENT_EVIDENCE** — OBSERVED_PRIVATE imports with
+  settlement-TYPE evidence (PROMOTER_CONTRIBUTION / SETTLEMENT_GROSS /
+  SETTLEMENT_NET); an attendance-only private import is NOT settlement
 
 Measured baseline (research corpus, live OA):
 
 | Objective | Target | Actual |
 | --- | ---: | ---: |
-| Canonical performances | 50,000 | **657** |
+| Canonical boxscore engagements | 50,000 | **657** |
+| Single-show engagements | 45,000 | **443** |
+| Canonical performances (denominator for all rates) | 50,000 | **443** |
 | OUTCOME_CLAIMS | 5,000 | **1,110** |
 | UNIQUE_EVENTS_WITH_OUTCOMES | 2,500 | **443** |
 | FULLY_SETTLED_EVENTS | 500 | **0** |
@@ -60,7 +75,7 @@ Measured baseline (research corpus, live OA):
 | Canonical venues | 1,000 | **384** |
 | Continuous useful period (≥2018) | 8 years | **3** |
 | Forward-tracked future events | 2,000 | **0** |
-| Private settled events | 500 | **0** |
+| Private events with settlement evidence | 500 | **0** |
 | Events with attendance | 2,500 | 357 |
 | Events with paid tickets | 1,000 | 86 |
 | Events with gross | 3,000 | 441 |
@@ -78,16 +93,22 @@ Measured baseline (research corpus, live OA):
 | **TICKET_PACE_COVERAGE** | 0.6 | **0.0** |
 | **SETTLEMENT_COVERAGE** | 0.5 | **0.0** |
 
-### The critical finding: 1,110 claims live on only 443 events, and warm-start is 0.0
+### The critical finding: 657 engagements are only 443 single-show performances, 1,110 claims live on 443 events, and warm-start is 0.0
 
-Two numbers change the conversation:
+Three numbers change the conversation:
 
-1. **Claims ≠ events.** The 1,110 outcome claims come from only **443 unique
+1. **Engagements ≠ performances.** The 657 canonical engagements include
+   **214 multi-show aggregates**. Only **443** are defensible single-show
+   engagements — and every decision rate is measured against that eligible
+   denominator, never against the full 657. (Previously reported as 657
+   "performances"; corrected.)
+
+2. **Claims ≠ events.** The 1,110 outcome claims come from only **443 unique
    events** — so "outcome rows" was never a proxy for settled-event depth.
    `UNIQUE_EVENTS_WITH_OUTCOMES` is the number that matters for comparable
    retrieval.
 
-2. **WARM_START_RATE = 0.0 under strict PIT, and it is a data gap, not a
+3. **WARM_START_RATE = 0.0 under strict PIT, and it is a data gap, not a
    modeling verdict.** The strict prior-result metrics require
    `source_publication_time < event start`. **All 657 corpus rows have NULL
    `source_publication_time`** — the product-time knowledge was never
@@ -159,6 +180,10 @@ legitimate sources instead.
   explicit.
 - **Missing publication time is unknown, not zero.** PIT prior metrics fail
   closed.
+- **D+N means days after ONSALE.** An unknown onsale date means the D+1/
+  D+3/D+7/D+14 capture timestamps are UNKNOWN (`basis=onsale_unknown`), never
+  anchored to the event date; the event-relative T-N ladder runs
+  independently. `UNKNOWN_ONSALE != EVENT_DATE`.
 
 ## Running it
 
@@ -181,7 +206,9 @@ pipelines degrade gracefully: no network / no rows is reported honestly
   event_graph, outcome_hunter, context_panel, forward_watch, sources
 - `python/festival_bloomberg/oa/flywheel_v1.py` — live OA driver (execution
   stats, per-provider context gates, pipeline gates)
-- `tests/python/test_flywheel_v1.py` — 28 offline regressions
+- `tests/python/test_flywheel_v1.py` — 30 offline regressions (incl. the
+  engagement/performance split, private settlement gating, and onsale-anchored
+  D+N forward-watch regressions)
 - `docs/baseline-research-v1.md` — the research verdict this milestone answers
 
 ## What is deliberately NOT built yet

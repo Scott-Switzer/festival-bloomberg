@@ -50,10 +50,29 @@ class Objective:
 #: for the rate metrics).
 MEDIUM_TERM_OBJECTIVES_V1: tuple[Objective, ...] = (
     # ---- core scale ------------------------------------------------------
+    # Engagement vs performance is NEVER conflated. An engagement is a booking
+    # (possibly a multi-show aggregate); a performance is one defensible
+    # single-show/event record. Only the latter enters a metric called
+    # PERFORMANCES, and every rate below names CANONICAL_PERFORMANCES as its
+    # explicit eligible denominator.
+    Objective(
+        objective_id="CANONICAL_BOXSCORE_ENGAGEMENTS",
+        metric_name="canonical_boxscore_engagements",
+        definition="Canonical boxscore ENGAGEMENTS in the graph (resolved, deduplicated). Includes multi-show aggregates: an engagement is a booking, not a performance.",
+        target=50_000.0,
+        unit="engagements",
+    ),
+    Objective(
+        objective_id="SINGLE_SHOW_ENGAGEMENTS",
+        metric_name="single_show_engagements",
+        definition="Defensible single-show engagements (multi-show aggregates excluded). The eligible population for performance-level measurement.",
+        target=45_000.0,
+        unit="engagements",
+    ),
     Objective(
         objective_id="CANONICAL_PERFORMANCES",
         metric_name="canonical_performances",
-        definition="Canonical single-performance events in the event graph (resolved, deduplicated).",
+        definition="Canonical single-performance event rows (resolved, deduplicated; multi-show aggregates are NEVER performances). Explicit eligible denominator for WARM_START_RATE / OFFER_TIME_RECONSTRUCTABLE_RATE / TICKET_PACE_COVERAGE / SETTLEMENT_COVERAGE.",
         target=50_000.0,
         unit="events",
     ),
@@ -114,9 +133,9 @@ MEDIUM_TERM_OBJECTIVES_V1: tuple[Objective, ...] = (
         unit="events",
     ),
     Objective(
-        objective_id="PRIVATE_SETTLED_EVENTS",
-        metric_name="private_settled_events",
-        definition="Real private settled events (customer/partner imports) with outcomes vaulted.",
+        objective_id="PRIVATE_EVENTS_WITH_SETTLEMENT_EVIDENCE",
+        metric_name="private_events_with_settlement_evidence",
+        definition="Distinct events with OBSERVED_PRIVATE SETTLEMENT-TYPE evidence (PROMOTER_CONTRIBUTION / SETTLEMENT_GROSS / SETTLEMENT_NET). An attendance-only private import is NOT settlement evidence; this is not full settlement completeness.",
         target=500.0,
         unit="events",
     ),
@@ -209,28 +228,28 @@ MEDIUM_TERM_OBJECTIVES_V1: tuple[Objective, ...] = (
     Objective(
         objective_id="WARM_START_RATE",
         metric_name="warm_start_rate",
-        definition="Share of canonical performances with >= 3 knowable prior artist results at cutoff.",
+        definition="Eligible denominator CANONICAL_PERFORMANCES (single-show). Numerator: events with >= 3 knowable prior artist results at cutoff.",
         target=0.5,
         unit="fraction",
     ),
     Objective(
         objective_id="OFFER_TIME_RECONSTRUCTABLE_RATE",
         metric_name="offer_time_reconstructable_rate",
-        definition="Share of canonical performances with a known offer/booking cutoff.",
+        definition="Eligible denominator CANONICAL_PERFORMANCES (single-show). Numerator: events with a known offer/booking cutoff.",
         target=0.8,
         unit="fraction",
     ),
     Objective(
         objective_id="TICKET_PACE_COVERAGE",
         metric_name="ticket_pace_coverage",
-        definition="Share of canonical performances with forward ticket pace.",
+        definition="Eligible denominator CANONICAL_PERFORMANCES (single-show). Numerator: events with forward ticket pace.",
         target=0.6,
         unit="fraction",
     ),
     Objective(
         objective_id="SETTLEMENT_COVERAGE",
         metric_name="settlement_coverage",
-        definition="Share of canonical performances with settlement evidence.",
+        definition="Eligible denominator CANONICAL_PERFORMANCES (single-show). Numerator: events with settlement evidence.",
         target=0.5,
         unit="fraction",
     ),

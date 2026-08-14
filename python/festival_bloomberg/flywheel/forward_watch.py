@@ -79,18 +79,18 @@ def compute_milestones(
     else:
         ladder.append({"milestone": "ONSALE", "due_at": None, "basis": "observed_live"})
 
-    # D+N milestones are anchored to onsale when known, else to the event date
-    # with an explicit fallback basis (never silently re-anchored later).
+    # D+N milestones mean DAYS AFTER ONSALE. They are anchored ONLY to a known
+    # onsale date; an unknown onsale date means the D+N timestamps are unknown
+    # (UNKNOWN_ONSALE != EVENT_DATE — the event-relative T-N ladder runs
+    # independently below and must never be conflated with onsale-relative
+    # capture windows).
     for offset in (1, 3, 7, 14):
         if onsale_date:
             due = onsale_date + timedelta(days=offset)
             basis = "onsale+offset"
-        elif event_date:
-            due = event_date + timedelta(days=offset)
-            basis = "event+offset (onsale unknown)"
         else:
             due = None
-            basis = "unknown_anchor"
+            basis = "onsale_unknown"
         ladder.append({"milestone": f"D+{offset}", "due_at": due.isoformat() if due else None, "basis": basis})
 
     ladder.append({"milestone": "WEEKLY", "due_at": None, "basis": "recurring_weekly"})

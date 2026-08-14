@@ -51,14 +51,24 @@ AT_TARGET = "AT_TARGET"
 ABOVE_TARGET = "ABOVE_TARGET"
 
 
+def _table_exists(conn, schema: str, table: str) -> bool:
+    row = conn.execute(
+        "SELECT COUNT(*) FROM information_schema.tables "
+        "WHERE table_schema = ? AND table_name = ?",
+        [schema, table],
+    ).fetchone()
+    return bool(row and row[0] and row[0] > 0)
+
+
 # ---------------------------------------------------------------------------
 # Individual measurements (pure: read the warehouse, write nothing)
 # ---------------------------------------------------------------------------
-def count_canonical_performances(conn) -> int:
-    """Canonical single-performance rows.
+def count_canonical_engagements(conn) -> int:
+    """Canonical boxscore ENGAGEMENTS (bookings, incl. multi-show aggregates).
 
     Prefers the resolved corpus (``research.canonical_boxoffice_engagements``)
     and falls back to the raw engagement corpus when resolution has not run.
+    An engagement is NOT a performance — never use this for PERFORMANCES.
     """
     canonical = conn.execute(
         "SELECT COUNT(*) FROM research.canonical_boxoffice_engagements"
@@ -68,6 +78,44 @@ def count_canonical_performances(conn) -> int:
     return int(
         conn.execute("SELECT COUNT(*) FROM research.boxoffice_engagements").fetchone()[0]
     )
+
+
+def count_single_show_engagements(conn) -> int:
+    """Defensible single-show engagements (multi-show aggregates excluded).
+
+    Same preference order as ``count_canonical_engagements``. Only reported,
+    non-aggregate rows qualify.
+    """
+    canonical = conn.execute(
+        "SELECT COUNT(*) FROM research.canonical_boxoffice_engagements "
+        "WHERE (is_multi_show IS NULL OR is_multi_show = FALSE)"
+    ).fetchone()[0]
+    if canonical and canonical > 0:
+        return int(canonical)
+    row = conn.execute(
+        "SELECT COUNT(*) FROM research.boxoffice_engagements "
+        "WHERE is_reported = TRUE "
+        "  AND (is_multi_show IS NULL OR is_multi_show = FALSE)"
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def count_canonical_performances(conn) -> int:
+    """Defensible single-performance denominator.
+
+    Only defensible single-show/event records enter a metric called
+    PERFORMANCES. When a dedicated canonical event-performance table exists
+    (``research.canonical_event_performances``) it is preferred; until then the
+    eligible denominator is the single-show engagement count. Multi-show
+    aggregates are NEVER counted as performances.
+    """
+    if _table_exists(conn, "research", "canonical_event_performances"):
+        row = conn.execute(
+            "SELECT COUNT(*) FROM research.canonical_event_performances"
+        ).fetchone()
+        if row and row[0] and row[0] > 0:
+            return int(row[0])
+    return count_single_show_engagements(conn)
 
 
 def count_outcome_claims(conn) -> int:
@@ -184,14 +232,23 @@ def count_forward_tracked_future_events(conn, *, as_of: date | None = None) -> i
     return int(row[0]) if row else 0
 
 
-def count_private_settled_events(conn) -> int:
-    """Distinct canonical events with OBSERVED_PRIVATE settled claims."""
+def count_private_events_with_settlement_evidence(conn) -> int:
+    """Distinct canonical events with OBSERVED_PRIVATE SETTLEMENT-TYPE evidence.
+
+    A private attendance/capacity/ticket claim does NOT establish settlement:
+    only PROMOTER_CONTRIBUTION / SETTLEMENT_GROSS / SETTLEMENT_NET claims from
+    OBSERVED_PRIVATE imports count. This is settlement EVIDENCE, not full
+    settlement completeness.
+    """
+    placeholders = ",".join("?" for _ in SETTLEMENT_TYPES)
     row = conn.execute(
-        """
+        f"""
         SELECT COUNT(DISTINCT canonical_event_id)
         FROM economics.event_outcome_claims
         WHERE observation_class = 'OBSERVED_PRIVATE'
-        """
+          AND outcome_type IN ({placeholders})
+        """,
+        list(SETTLEMENT_TYPES),
     ).fetchone()
     return int(row[0]) if row else 0
 
@@ -282,7 +339,9 @@ def measure_coverage(conn, *, as_of: datetime | None = None) -> list[dict[str, A
     canonical = count_canonical_performances(conn)
 
     counts: dict[str, tuple[float, str]] = {
-        "CANONICAL_PERFORMANCES": (float(canonical), "research.canonical_boxoffice_engagements / research.boxoffice_engagements"),
+        "CANONICAL_BOXSCORE_ENGAGEMENTS": (float(count_canonical_engagements(conn)), "research.canonical_boxoffice_engagements / research.boxoffice_engagements (engagements incl. multi-show aggregates)"),
+        "SINGLE_SHOW_ENGAGEMENTS": (float(count_single_show_engagements(conn)), "research.canonical_boxoffice_engagements / research.boxoffice_engagements (is_multi_show = FALSE)"),
+        "CANONICAL_PERFORMANCES": (float(canonical), "research.canonical_event_performances if present else single-show engagements (multi-show NEVER performances)"),
         "OUTCOME_CLAIMS": (float(count_outcome_claims(conn)), "economics.event_outcome_claims (outcome claim types)"),
         "UNIQUE_EVENTS_WITH_OUTCOMES": (float(count_unique_events_with_outcomes(conn)), "economics.event_outcome_claims (distinct events, defensible types)"),
         "FULLY_SETTLED_EVENTS": (float(count_fully_settled_events(conn)), "economics.event_outcome_claims (settlement types)"),
@@ -291,7 +350,7 @@ def measure_coverage(conn, *, as_of: datetime | None = None) -> list[dict[str, A
         "CANONICAL_VENUES": (float(count_canonical_venues(conn)), "events.venues / research.boxoffice_engagements.venue"),
         "CONTINUOUS_USEFUL_PERIOD": (float(continuous_useful_period_years(conn)), "research.boxoffice_engagements.start_date distinct years >= 2018"),
         "FORWARD_TRACKED_FUTURE_EVENTS": (float(count_forward_tracked_future_events(conn, as_of=today)), "flywheel.forward_watch_events (TRACKING, event_date >= today)"),
-        "PRIVATE_SETTLED_EVENTS": (float(count_private_settled_events(conn)), "economics.event_outcome_claims (OBSERVED_PRIVATE)"),
+        "PRIVATE_EVENTS_WITH_SETTLEMENT_EVIDENCE": (float(count_private_events_with_settlement_evidence(conn)), "economics.event_outcome_claims (OBSERVED_PRIVATE AND settlement outcome types)"),
         "EVENTS_WITH_ATTENDANCE": (float(_count_distinct_events_with_types(conn, ATTENDANCE_TYPES)), "economics.event_outcome_claims (attendance types)"),
         "EVENTS_WITH_PAID_TICKETS": (float(_count_distinct_events_with_types(conn, {PAID_TICKETS, TICKETS_SOLD})), "economics.event_outcome_claims (paid-ticket types)"),
         "EVENTS_WITH_GROSS": (float(_count_distinct_events_with_types(conn, {TICKET_GROSS, TICKET_NET})), "economics.event_outcome_claims (gross types)"),
@@ -306,27 +365,30 @@ def measure_coverage(conn, *, as_of: datetime | None = None) -> list[dict[str, A
         "EVENTS_WITH_OFFER_OR_BOOKING_CUTOFF": (float(count_events_with_cutoff(conn, "booking_cutoff")), "economics.event_decision_cutoffs.booking_cutoff"),
     }
 
-    # Derived rates (fraction of canonical performances).
+    # Derived rates. The eligible denominator is ALWAYS CANONICAL_PERFORMANCES
+    # (single-show performances), never the full engagement count — multi-show
+    # aggregates are not comparable decision targets. Zero when the denominator
+    # is empty, never NaN.
     denominator = canonical if canonical > 0 else 0.0
     rates: dict[str, tuple[float, str, str]] = {
         "WARM_START_RATE": (
             counts["EVENTS_WITH_3PLUS_PRIOR_ARTIST_RESULTS"][0] / denominator if denominator else 0.0,
-            "EVENTS_WITH_3PLUS_PRIOR_ARTIST_RESULTS / CANONICAL_PERFORMANCES",
+            "EVENTS_WITH_3PLUS_PRIOR_ARTIST_RESULTS / CANONICAL_PERFORMANCES (eligible denominator: single-show performances)",
             "fraction",
         ),
         "OFFER_TIME_RECONSTRUCTABLE_RATE": (
             counts["EVENTS_WITH_OFFER_OR_BOOKING_CUTOFF"][0] / denominator if denominator else 0.0,
-            "EVENTS_WITH_OFFER_OR_BOOKING_CUTOFF / CANONICAL_PERFORMANCES",
+            "EVENTS_WITH_OFFER_OR_BOOKING_CUTOFF / CANONICAL_PERFORMANCES (eligible denominator: single-show performances)",
             "fraction",
         ),
         "TICKET_PACE_COVERAGE": (
             counts["EVENTS_WITH_TICKET_PACE"][0] / denominator if denominator else 0.0,
-            "EVENTS_WITH_TICKET_PACE / CANONICAL_PERFORMANCES",
+            "EVENTS_WITH_TICKET_PACE / CANONICAL_PERFORMANCES (eligible denominator: single-show performances)",
             "fraction",
         ),
         "SETTLEMENT_COVERAGE": (
             counts["FULLY_SETTLED_EVENTS"][0] / denominator if denominator else 0.0,
-            "FULLY_SETTLED_EVENTS / CANONICAL_PERFORMANCES",
+            "FULLY_SETTLED_EVENTS / CANONICAL_PERFORMANCES (eligible denominator: single-show performances)",
             "fraction",
         ),
     }
