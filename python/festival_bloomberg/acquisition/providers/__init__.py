@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from ..base import AcquisitionProvider
 from .apify import ApifyProvider
+from .commoncrawl import CommonCrawlProvider
+from .eventbrite import EventbriteProvider
 from .http import HttpProvider
 from .monid import MonidProvider
 from .openstreetmap import OpenStreetMapProvider
@@ -25,6 +27,8 @@ from .youtube import YouTubeProvider
 __all__ = [
     "AcquisitionProvider",
     "ApifyProvider",
+    "CommonCrawlProvider",
+    "EventbriteProvider",
     "HttpProvider",
     "MonidProvider",
     "OpenStreetMapProvider",
@@ -43,6 +47,8 @@ def default_providers(**overrides) -> dict[str, AcquisitionProvider]:
     """Build the canonical provider set (all offline-safe, none paid by default)."""
     providers: dict[str, AcquisitionProvider] = {
         "http": HttpProvider(**overrides.pop("http", {})),
+        "commoncrawl": CommonCrawlProvider(**overrides.pop("commoncrawl", {})),
+        "eventbrite": EventbriteProvider(**overrides.pop("eventbrite", {})),
         "monid": MonidProvider(**overrides.pop("monid", {})),
         "apify": ApifyProvider(**overrides.pop("apify", {})),
         "youtube": YouTubeProvider(**overrides.pop("youtube", {})),
