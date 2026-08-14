@@ -39,6 +39,8 @@ MECHANISM_BY_PROVIDER = {
     "apify": "api",
     "youtube": "api",
     "wikimedia": "api",
+    "ticketmaster": "api",
+    "setlistfm": "api",
     "scrapling": "scraping",
 }
 

@@ -76,6 +76,8 @@ class AcquisitionRequest:
     max_videos: int | None = None
     order: str | None = None
     search_cohort: str | None = None
+    operation: str | None = None
+    external_id: str | None = None
 
     @classmethod
     def new(

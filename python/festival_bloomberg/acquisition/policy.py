@@ -113,11 +113,15 @@ def default_policy_profiles() -> dict[str, RightsProfile]:
             notes="listing content; scraping restrictions; review required",
         ),
         "ticketmaster": profile(
-            "ticketmaster", content=PolicyStatus.COMMERCIAL_AGREEMENT_REQUIRED,
-            api=PolicyStatus.COMMERCIAL_AGREEMENT_REQUIRED, storage=PolicyStatus.PROHIBITED,
-            derivative=PolicyStatus.PROHIBITED, redistribution=PolicyStatus.PROHIBITED,
-            commercial=PolicyStatus.PROHIBITED,
-            notes="Discovery API requires commercial agreement",
+            "ticketmaster", content=review, api=review, storage=review,
+            derivative=review, redistribution=review,
+            commercial=PolicyStatus.COMMERCIAL_AGREEMENT_REQUIRED,
+            notes="Official Discovery API v2; research reads allowed with a configured key; commercial product use still requires agreement",
+        ),
+        "setlistfm": profile(
+            "setlistfm", content=review, api=review, storage=review,
+            derivative=review, redistribution=review, commercial=review,
+            notes="Official setlist.fm API v1; research reads with a configured key; commercial review required",
         ),
         "rss": profile(
             "rss", content=research, api=research, storage=research,
