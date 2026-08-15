@@ -29,7 +29,13 @@ ACTIVITY_TYPES: frozenset[str] = frozenset(
         "EVENT_DISCOVERED",
         "EVENT_ANNOUNCEMENT_OBSERVED",
         "PRESALE_OBSERVED",
+        "PRESALE_DISCOVERED",
+        "PRESALE_CHANGED",
         "ONSALE_OBSERVED",
+        "ONSALE_DISCOVERED",
+        "ONSALE_CHANGED",
+        "PRICE_RANGE_DISCOVERED",
+        "PRICE_RANGE_CHANGED",
         "PRICE_CHANGED",
         "EVENT_STATUS_CHANGED",
         "EVENT_CANCELLED",
@@ -406,6 +412,166 @@ def derive_festival_tape_entries(conn) -> list[dict[str, Any]]:
             software_version="festival_spine_v1",
         ))
 
+    return rows
+
+
+def derive_provider_event_tape_entries(conn) -> list[dict[str, Any]]:
+    """Derive tape entries from provider event snapshots (append-only source).
+
+    Reads ``events.provider_event_snapshots`` ordered by (event, retrieval)
+    and emits one row per genuine discovery or transition:
+
+    - EVENT_DISCOVERED on the first snapshot of an event
+    - ONSALE_DISCOVERED / PRESALE_DISCOVERED on first-seen ticket windows
+    - PRICE_RANGE_DISCOVERED on first-seen price range
+    - PROMOTER_IDENTIFIED on first-seen promoter
+    - EVENT_CANCELLED / EVENT_POSTPONED / EVENT_RESCHEDULED on status
+      transitions
+
+    A snapshot that merely repeats the prior state emits nothing. Idempotency
+    is by ``dedupe_key`` (activity + provider + event + record), so re-running
+    never duplicates and never rewrites history.
+    """
+    rows: list[dict[str, Any]] = []
+    seen_events: set[str] = set()
+    prior: dict[str, dict[str, Any]] = {}
+    for r in conn.execute(
+        "SELECT snapshot_key, provider, platform_object_id, event_name, "
+        "       artist_name, venue_name, city, state_code, country_code, "
+        "       local_date, event_status, onsale_start, presales, "
+        "       price_min, price_max, promoter, canonical_url, retrieved_at, "
+        "       knowledge_time, rights_status, software_version "
+        "FROM events.provider_event_snapshots "
+        "ORDER BY platform_object_id, retrieved_at, snapshot_key"
+    ).fetchall():
+        (skey, provider, pe_id, name, artist, venue, city, state, country,
+         ldate, status, onsale, presales, pmin, pmax, promoter, url, retrieved,
+         kt, rights, sw) = r
+        observed = _as_dt(retrieved) or _as_dt(kt)
+        if observed is None:
+            observed = datetime.now()
+        event_ref = pe_id or skey
+        market = ",".join(x for x in (city, state, country) if x).lower() or None
+
+        if event_ref not in seen_events:
+            seen_events.add(event_ref)
+            rows.append(build_tape_row(
+                activity_type="EVENT_DISCOVERED",
+                entity_type="EVENT",
+                entity_id=event_ref,
+                observed_at=observed,
+                effective_at=_as_dt(ldate),
+                source_provider=provider,
+                source_record_id=skey,
+                knowledge_time=_as_dt(kt) or observed,
+                rights_status=rights or "UNKNOWN",
+                event_id=event_ref,
+                artist_id=artist,
+                venue_id=venue,
+                market_id=market,
+                new_value_json={"name": name, "artist": artist, "venue": venue,
+                                "market": market, "date": ldate},
+                source_url=url,
+                software_version=sw,
+            ))
+
+        p = prior.get(event_ref, {})
+        has_presales = bool(presales)
+        if has_presales and not p.get("has_presales"):
+            rows.append(build_tape_row(
+                activity_type="PRESALE_DISCOVERED",
+                entity_type="EVENT",
+                entity_id=event_ref,
+                observed_at=observed,
+                effective_at=_as_dt(ldate),
+                source_provider=provider,
+                source_record_id=skey,
+                knowledge_time=_as_dt(kt) or observed,
+                rights_status=rights or "UNKNOWN",
+                event_id=event_ref,
+                new_value_json={"presales": presales},
+                source_url=url,
+                software_version=sw,
+            ))
+        if onsale and not p.get("onsale_start"):
+            rows.append(build_tape_row(
+                activity_type="ONSALE_DISCOVERED",
+                entity_type="EVENT",
+                entity_id=event_ref,
+                observed_at=observed,
+                effective_at=_as_dt(onsale),
+                source_provider=provider,
+                source_record_id=skey,
+                knowledge_time=_as_dt(kt) or observed,
+                rights_status=rights or "UNKNOWN",
+                event_id=event_ref,
+                new_value_json={"onsale_start": str(onsale)},
+                source_url=url,
+                software_version=sw,
+            ))
+        if (pmin is not None or pmax is not None) and not p.get("has_price"):
+            rows.append(build_tape_row(
+                activity_type="PRICE_RANGE_DISCOVERED",
+                entity_type="EVENT",
+                entity_id=event_ref,
+                observed_at=observed,
+                effective_at=_as_dt(ldate),
+                source_provider=provider,
+                source_record_id=skey,
+                knowledge_time=_as_dt(kt) or observed,
+                rights_status=rights or "UNKNOWN",
+                event_id=event_ref,
+                new_value_json={"price_min": pmin, "price_max": pmax},
+                source_url=url,
+                software_version=sw,
+            ))
+        if promoter and not p.get("promoter"):
+            rows.append(build_tape_row(
+                activity_type="PROMOTER_IDENTIFIED",
+                entity_type="EVENT",
+                entity_id=event_ref,
+                observed_at=observed,
+                effective_at=_as_dt(ldate),
+                source_provider=provider,
+                source_record_id=skey,
+                knowledge_time=_as_dt(kt) or observed,
+                rights_status=rights or "UNKNOWN",
+                event_id=event_ref,
+                new_value_json={"promoter": promoter},
+                source_url=url,
+                software_version=sw,
+            ))
+        # Status transitions -> cancellations / postponements / reschedules.
+        if status and p.get("event_status") and p.get("event_status") != status:
+            activity = {
+                "cancelled": "EVENT_CANCELLED",
+                "postponed": "EVENT_POSTPONED",
+                "rescheduled": "EVENT_RESCHEDULED",
+            }.get((status or "").lower())
+            if activity:
+                rows.append(build_tape_row(
+                    activity_type=activity,
+                    entity_type="EVENT",
+                    entity_id=event_ref,
+                    observed_at=observed,
+                    effective_at=_as_dt(ldate),
+                    source_provider=provider,
+                    source_record_id=skey,
+                    knowledge_time=_as_dt(kt) or observed,
+                    rights_status=rights or "UNKNOWN",
+                    event_id=event_ref,
+                    old_value_json={"status": p.get("event_status")},
+                    new_value_json={"status": status},
+                    source_url=url,
+                    software_version=sw,
+                ))
+        prior[event_ref] = {
+            "event_status": status,
+            "onsale_start": onsale,
+            "has_presales": has_presales,
+            "has_price": (pmin is not None or pmax is not None),
+            "promoter": promoter,
+        }
     return rows
 
 

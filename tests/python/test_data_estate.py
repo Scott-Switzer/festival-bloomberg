@@ -233,15 +233,15 @@ def test_nim_client_fails_closed_without_key():
 
 
 def test_nim_client_malformed_response_fails_closed():
-    import json
-
     transport = FakeTransport([
-        json.dumps({"not": "the schema"}).encode("utf-8"),
+        (200, {"data": [{"id": "meta/llama-3.3-70b-instruct"}]}),
+        (200, {"not": "the schema"}),
     ])
     client = NimClient(api_key="k", transport=transport)
     assert client.is_configured is True
     resp = client.chat(messages=[{"role": "user", "content": "hi"}])
-    assert resp["ok"] is False  # malformed -> fail closed, never a fake fact
+    assert resp["ok"] is False
+    assert resp["status"] == "MALFORMED_RESPONSE"  # malformed -> fail closed
 
 
 def test_model_router_resolves_from_catalog():
@@ -250,6 +250,64 @@ def test_model_router_resolves_from_catalog():
     # catalog hint matching picks a real available model over the default
     picked = router.resolve("DEEP_REASON", ["meta/llama-3.3-70b-instruct", "deepseek-ai/deepseek-r1"])
     assert "deepseek-r1" in picked
+
+
+def test_model_router_explicit_override_wins():
+    catalog = ["meta/llama-3.3-70b-instruct", "deepseek-ai/deepseek-r1"]
+    router = ModelRouter(catalog=catalog, tasks={"FAST_EXTRACT": "deepseek-ai/deepseek-r1"})
+    assert router.route("FAST_EXTRACT") == "deepseek-ai/deepseek-r1"
+
+
+def test_model_router_override_absent_from_catalog_rejected():
+    catalog = ["meta/llama-3.3-70b-instruct"]
+    router = ModelRouter(catalog=catalog, tasks={"FAST_EXTRACT": "not/in/catalog"})
+    # invalid override is skipped; fallback is used only because it IS in catalog
+    assert router.route("FAST_EXTRACT") == "meta/llama-3.3-70b-instruct"
+
+
+def test_model_router_unavailable_fails_closed():
+    # a catalog with no compatible model must never yield an invented id
+    router = ModelRouter(catalog=["some/other-model"])
+    assert router.route("FAST_EXTRACT") == ModelRouter.UNAVAILABLE
+
+
+def test_nim_client_chat_uses_catalog_valid_model():
+    import json
+
+    catalog = [{"id": "deepseek-ai/deepseek-r1"}]
+    transport = FakeTransport([
+        (200, {"data": catalog}),
+        (200, {"choices": [{"message": {"content": "grounded answer"}}]}),
+    ])
+    client = NimClient(api_key="k", transport=transport)
+    resp = client.chat(messages=[{"role": "user", "content": "hi"}], task="DEEP_REASON")
+    assert resp["ok"] is True
+    assert resp["model"] == "deepseek-ai/deepseek-r1"
+    chat_req = [r for r in transport.requests if r["url"].endswith("/chat/completions")][0]
+    sent = json.loads(chat_req["body"].decode("utf-8"))
+    assert sent["model"] in [m["id"] for m in catalog]  # never an off-catalog id
+
+
+def test_nim_client_model_unavailable_fails_closed():
+    transport = FakeTransport([
+        (200, {"data": [{"id": "some/other-model"}]}),
+    ])
+    client = NimClient(api_key="k", transport=transport)
+    resp = client.chat(messages=[{"role": "user", "content": "hi"}], task="FAST_EXTRACT")
+    assert resp["ok"] is False
+    assert resp["status"] == "MODEL_UNAVAILABLE"
+    # no chat request was ever issued
+    assert all(not r["url"].endswith("/chat/completions") for r in transport.requests)
+
+
+def test_nim_client_embed_fails_closed_on_unavailable():
+    transport = FakeTransport([
+        (200, {"data": [{"id": "some/other-model"}]}),
+    ])
+    client = NimClient(api_key="k", transport=transport)
+    resp = client.embed(inputs=["hello"])
+    assert resp["ok"] is False
+    assert resp["status"] == "MODEL_UNAVAILABLE"
 
 
 # ---------------------------------------------------------------------------

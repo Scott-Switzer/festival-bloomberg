@@ -78,6 +78,7 @@ class AcquisitionRequest:
     search_cohort: str | None = None
     operation: str | None = None
     external_id: str | None = None
+    classification_name: str | None = None
 
     @classmethod
     def new(

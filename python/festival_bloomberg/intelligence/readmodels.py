@@ -20,6 +20,7 @@ from ..festivals.repository import (
     co_occurrence,
     relationship_graph,
 )
+from ..identity.spotify import normalize_name as _normalize_name
 
 
 def entity_key(name: str | None) -> str | None:
@@ -170,10 +171,17 @@ def get_artist(conn, artist_key: str) -> dict[str, Any] | None:
         WHERE lower(artist) = ?
         ORDER BY start_date
     """, [artist_key])
+    identity = _rows(conn, """
+        SELECT DISTINCT spotify_id, spotify_name, spotify_url, resolution_status
+        FROM identity.spotify_artist_resolutions
+        WHERE normalized_local_name = ? AND resolution_status = 'EXACT'
+    """, [_normalize_name(name)])
     return {
         "entity_type": "ARTIST",
         "entity_id": artist_key,
         "name": name,
+        "spotify_id": identity[0]["spotify_id"] if identity else None,
+        "identity": identity,
         "history_count": len(history),
         "upcoming_count": len(upcoming),
         "history": history,
@@ -447,6 +455,48 @@ def get_sources(conn) -> list[dict[str, Any]]:
             "rate_limit_count": None, "freshness_note": None,
         }
     return registry
+
+
+def get_recent_changes(conn, limit: int = 100) -> list[dict[str, Any]]:
+    """Recently changed live events (cancellations, onsales, prices, status)."""
+    change_types = (
+        "EVENT_CANCELLED", "EVENT_POSTPONED", "EVENT_RESCHEDULED",
+        "EVENT_STATUS_CHANGED", "ONSALE_DISCOVERED", "PRESALE_DISCOVERED",
+        "PRICE_RANGE_DISCOVERED", "PROMOTER_IDENTIFIED",
+    )
+    placeholders = ",".join("?" for _ in change_types)
+    return _rows(conn, f"""
+        SELECT activity_id, observed_at, entity_id, activity_type, artist_id,
+               venue_id, market_id, source_provider, source_url, new_value_json
+        FROM terminal.activity_tape
+        WHERE activity_type IN ({placeholders})
+        ORDER BY observed_at DESC LIMIT ?
+    """, [*change_types, limit])
+
+
+def get_live_events(conn, *, market: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    """Latest Ticketmaster event snapshots (distinct events, newest retrieval)."""
+    sql = """
+        SELECT s.platform_object_id, s.event_name, s.artist_name, s.venue_name,
+               s.city, s.state_code, s.local_date, s.event_status, s.onsale_start,
+               s.price_min, s.price_max, s.price_currency, s.promoter, s.canonical_url
+        FROM events.provider_event_snapshots s
+        JOIN (
+            SELECT platform_object_id, MAX(retrieved_at) AS latest
+            FROM events.provider_event_snapshots
+            WHERE provider = 'ticketmaster'
+            GROUP BY platform_object_id
+        ) latest ON latest.platform_object_id = s.platform_object_id
+                  AND latest.latest = s.retrieved_at
+        WHERE 1=1
+    """
+    params: list[Any] = []
+    if market:
+        sql += " AND lower(s.city) = ?"
+        params.append(market.lower())
+    sql += " ORDER BY s.local_date, s.event_name LIMIT ?"
+    params.append(limit)
+    return _rows(conn, sql, params)
 
 
 def get_source_evidence(conn, entity_id: str) -> list[dict[str, Any]]:
