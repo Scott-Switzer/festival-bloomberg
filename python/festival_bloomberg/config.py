@@ -55,7 +55,7 @@ PROVIDER_KEYS: dict[str, tuple[str, ...]] = {
     "apify": ("APIFY_TOKEN",),
     "setlistfm": ("SETLISTFM_API_KEY",),
     "seatgeek": ("SEATGEEK_CLIENT_ID",),
-    "spotify": ("SPOTIFY_CLIENT_ID",),
+    "spotify": ("SPOTIFY_API_KEY", "SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET"),
     "census": ("CENSUS_API_KEY",),
     "bls": ("BLS_API_KEY",),
     "nws": ("NOAA_API_TOKEN",),

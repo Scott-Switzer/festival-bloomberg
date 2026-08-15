@@ -165,11 +165,13 @@ class TicketmasterProvider(ProviderScaffold):
 
 class SpotifyProvider(ProviderScaffold):
     name = "spotify"
-    env_keys = ("SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET")
+    env_keys = ("SPOTIFY_API_KEY", "SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET")
     implemented = False
     rights_status = "TERMS_REVIEW_REQUIRED"
     commercial_use_status = "RESEARCH_ONLY"
-    quota_note = "Dev Mode 2026: no followers/popularity; shared dev-account quota"
+    quota_note = ("Dev Mode 2026: no followers/popularity/top-tracks; shared dev-account "
+                  "quota. spak_ key probed 2026-08-15: HTTP 401 on /v1/search and "
+                  "token endpoint (AUTH_INVALID / unrecognized key surface)")
 
 
 class YouTubeProvider(ProviderScaffold):
