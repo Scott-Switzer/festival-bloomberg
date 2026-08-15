@@ -181,8 +181,17 @@ def test_pageviews_ok_persists_and_reads_back(conn):
 # ---------------------------------------------------------------------------
 def test_partition_manifest_complete_vs_truncated(conn):
     ts = "2026-08-15T10:00:00+00:00"
-    _persist_partition(conn, "Chicago", "IL", "COMPLETE", 120, False, None, ts, received=40)
-    _persist_partition(conn, "Los Angeles", "CA", "PARTIAL", 8000, True, None, ts, received=40)
+    start = datetime(2026, 8, 15)
+    end = datetime(2027, 8, 15)
+    _persist_partition(
+        conn, "chicago:20260815-20270815", "Chicago,IL,US", start, end,
+        "COMPLETE", 120, False, None, None, 0, ts, received=40, persisted=40,
+    )
+    _persist_partition(
+        conn, "losangeles:20260815-20270815", "Los Angeles,CA,US", start, end,
+        "TRUNCATED_BY_CAP", 8000, True, "reported_total_exceeds_ceiling",
+        None, 0, ts, received=1000, persisted=1000,
+    )
     conn.commit()
     rows = conn.execute(
         "SELECT market_id, status, truncated, total_expected, records_received "
@@ -192,7 +201,7 @@ def test_partition_manifest_complete_vs_truncated(conn):
     chicago = [r for r in rows if r[0] == "Chicago,IL,US"][0]
     assert chicago[1] == "COMPLETE" and chicago[2] is False and chicago[3] == 120
     la = [r for r in rows if r[0] == "Los Angeles,CA,US"][0]
-    assert la[1] == "PARTIAL" and la[2] is True and la[3] == 8000
+    assert la[1] == "TRUNCATED_BY_CAP" and la[2] is True and la[3] == 8000
 
 
 # ---------------------------------------------------------------------------
@@ -203,9 +212,10 @@ def test_gdelt_provider_is_operational_public(monkeypatch):
     gdelt = next(s for s in statuses if s["provider"] == "gdelt")
     assert gdelt["auth_status"] == "PUBLIC_NO_AUTH"
     assert gdelt["operational_status"] == OPERATIONAL
-    # ListenBrainz remains an honest scaffold (not yet implemented this turn).
+    # ListenBrainz is now a real no-auth provider (artist stats keyed by MBID).
     lb = next(s for s in statuses if s["provider"] == "listenbrainz")
-    assert lb["operational_status"] == "NOT_IMPLEMENTED"
+    assert lb["auth_status"] == "PUBLIC_NO_AUTH"
+    assert lb["operational_status"] == OPERATIONAL
 
 
 # ---------------------------------------------------------------------------

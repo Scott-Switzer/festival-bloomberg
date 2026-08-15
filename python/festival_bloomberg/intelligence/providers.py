@@ -109,11 +109,12 @@ def _nonempty(name: str) -> bool:
 class ListenBrainzProvider(ProviderScaffold):
     name = "listenbrainz"
     auth_required = False
-    implemented = False
+    implemented = True  # canonical acquisition.providers.listenbrainz.ListenBrainzProvider
     rights_status = "OPEN_COMMERCIAL_OK"  # CC0
     commercial_use_status = "OPEN_COMMERCIAL_OK"
     license = "CC0"
-    quota_note = "public dumps + API; attention/consumption sample, never demand"
+    quota_note = ("artist listeners stats keyed by MBID; LISTENBRAINZ_LISTEN_COUNT / "
+                  "LISTENBRAINZ_LISTENER_COUNT; attention/consumption sample, never demand")
 
 
 class GdeltProvider(ProviderScaffold):
