@@ -452,6 +452,61 @@ class FlywheelRepository:
         sql += " ORDER BY canonical_event_id, evidence_class"
         return _rows(self.conn.execute(sql, params))
 
+    # -- pre-event decision cutoffs (append-only) -----------------------------
+    def insert_pre_event_cutoff(self, row: dict[str, Any]) -> bool:
+        """Insert one decision-cutoff evidence row (append-only, idempotent
+        per (event, cutoff_type, cutoff_kind, source_document_id))."""
+        existing = self.conn.execute(
+            "SELECT cutoff_id FROM flywheel.pre_event_cutoff_evidence "
+            "WHERE canonical_event_id = ? AND cutoff_type = ? AND cutoff_kind = ? "
+            "  AND COALESCE(source_document_id, '') = COALESCE(?, '')",
+            [
+                row["canonical_event_id"], row["cutoff_type"], row["cutoff_kind"],
+                row.get("source_document_id"),
+            ],
+        ).fetchone()
+        if existing:
+            return False
+        self.conn.execute(
+            """
+            INSERT INTO flywheel.pre_event_cutoff_evidence
+                (cutoff_id, canonical_event_id, source_event_id, cutoff_type,
+                 cutoff_kind, evidence_class, granularity, cutoff_timestamp,
+                 lower_bound, upper_bound, bound_semantics, source_provider,
+                 source_url, source_document_id, archive_capture_time,
+                 retrieved_at, knowledge_time, rights_status,
+                 commercial_use_status, confidence, software_version)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                row["cutoff_id"], row["canonical_event_id"], row.get("source_event_id"),
+                row["cutoff_type"], row["cutoff_kind"], row["evidence_class"],
+                row["granularity"], row.get("cutoff_timestamp"), row.get("lower_bound"),
+                row.get("upper_bound"), row.get("bound_semantics"),
+                row.get("source_provider"), row.get("source_url"),
+                row.get("source_document_id"), row.get("archive_capture_time"),
+                row.get("retrieved_at"), row["knowledge_time"], row["rights_status"],
+                row["commercial_use_status"], row.get("confidence"),
+                row.get("software_version"),
+            ],
+        )
+        self.conn.commit()
+        return True
+
+    def query_pre_event_cutoffs(
+        self, *, cutoff_type: str | None = None, canonical_event_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM flywheel.pre_event_cutoff_evidence WHERE 1=1"
+        params: list[Any] = []
+        if cutoff_type:
+            sql += " AND cutoff_type = ?"
+            params.append(cutoff_type)
+        if canonical_event_id:
+            sql += " AND canonical_event_id = ?"
+            params.append(canonical_event_id)
+        sql += " ORDER BY canonical_event_id, cutoff_type, cutoff_kind"
+        return _rows(self.conn.execute(sql, params))
+
     # -- outcome hunt attempts (append-only execution ledger) -----------------
     def insert_hunt_attempt(self, row: dict[str, Any]) -> bool:
         existing = self.conn.execute(

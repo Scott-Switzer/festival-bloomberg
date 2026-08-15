@@ -144,6 +144,25 @@ Live driver:
 PYTHONPATH=python python3 -m festival_bloomberg.oa.activation_v1
 ```
 
-See `docs/data-acquisition-activation-v1.md`. The next research milestone is
-`COMPARABLE_EVENT_ENGINE_V1` — only once the corpus is actively improving
-underneath it.
+See `docs/data-acquisition-activation-v1.md`.
+
+### PRE_EVENT_CUTOFF_ACQUISITION_V1
+
+Answers the binding question: what was actually knowable BEFORE a promoter
+decided to book the show. Adds the decision-time cutoff taxonomy
+(`flywheel.pre_event_cutoff_evidence`, migration 020) — BOOKING_OR_OFFER /
+ANNOUNCEMENT / PRESALE / GENERAL_ONSALE / TICKET_PRICE_OBSERVATION /
+EVENT_DATE / RESULT_PUBLICATION / SETTLEMENT, never collapsed — plus
+warm-start-by-cutoff measurement. A public announcement date is NEVER a
+booking date (at most a BOUND), interval evidence is never collapsed to a
+midpoint, and UNKNOWN is reported, never zeroed.
+
+Live driver:
+
+```bash
+PYTHONPATH=python python3 -m festival_bloomberg.oa.pre_event_cutoffs
+```
+
+See `docs/pre-event-cutoff-acquisition-v1.md`. The next research milestone is
+`COMPARABLE_EVENT_ENGINE_V1` — only once announcement/onsale/booking-bound
+histories exist for a meaningful subset of events.
