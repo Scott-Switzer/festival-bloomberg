@@ -84,6 +84,20 @@ ESTIMATED_CLASSES = frozenset({ESTIMATED_RESEARCH_ONLY})
 #: day-level evidence (the chart/article was published that day).
 DAY_LEVEL_REPORTING_SOURCES = frozenset({"pollstar", "touring_data"})
 
+#: Evidence class -> column carrying its DEFENSIBLE availability timestamp.
+#: Never blindly COALESCE these: OBSERVED_* use source_publication_time,
+#: ARCHIVE_CAPTURE_UPPER_BOUND uses archive_capture_time, SOURCE_PERIOD_BOUND
+#: uses the conservative END of the reported period. ESTIMATED_RESEARCH_ONLY
+#: and UNKNOWN have NO availability timestamp and can never enter a PIT
+#: comparison.
+AVAILABILITY_TIMESTAMP_COLUMN: dict[str, str] = {
+    OBSERVED_EXACT: "source_publication_time",
+    OBSERVED_DAY: "source_publication_time",
+    OBSERVED_MONTH: "source_publication_time",
+    ARCHIVE_CAPTURE_UPPER_BOUND: "archive_capture_time",
+    SOURCE_PERIOD_BOUND: "source_period_end",
+}
+
 
 def validate_evidence_class(evidence_class: str) -> str:
     if evidence_class not in PIT_EVIDENCE_CLASSES:
@@ -190,12 +204,17 @@ def classify_source_document_evidence(
         # We only claim day-level evidence where the source semantics
         # genuinely support it; anything else stays UNKNOWN.
         return []
+    # OBSERVED_DAY availability convention: a day-level publication date
+    # proves the content was available at SOME unknown point during that day.
+    # We therefore store availability at the END of the documented day
+    # (time.max). A same-day publication can never inform a cutoff earlier on
+    # that same day; it becomes knowable only from the next day onward.
     return [
         build_pit_evidence_row(
             canonical_event_id=canonical_event_id,
             evidence_class=OBSERVED_DAY,
             source_publication_time=datetime.combine(
-                publication_date, time.min
+                publication_date, time.max
             ).isoformat(),
             source_url=source_url,
             source_provider=reporting_source,
@@ -234,11 +253,49 @@ def build_archive_upper_bound_evidence(
 # ---------------------------------------------------------------------------
 # Coverage reads (pure, fail closed)
 # ---------------------------------------------------------------------------
-def count_events_reconstructable(conn, *, mode: str) -> int:
+def _canonical_event_key_sql(table_alias: str) -> str:
+    """SQL expression reproducing ``event_key_from_engagement``.
+
+    ``boxoffice_{artist}_{venue}_{start_date}`` with artist/venue lowercased
+    and spaces replaced by dashes — the same convention the PIT evidence rows
+    are written with (empty date suffix when start_date is NULL).
+    """
+    return (
+        f"'boxoffice_' || replace(lower(coalesce({table_alias}.artist, 'unknown')), ' ', '-') "
+        f"|| '_' || replace(lower(coalesce({table_alias}.venue, 'unknown')), ' ', '-') "
+        f"|| '_' || coalesce(cast({table_alias}.start_date as varchar), '')"
+    )
+
+
+def _single_show_event_key_sql() -> str:
+    """Subquery of the eligible single-show canonical-performance universe.
+
+    Mirrors ``coverage.count_single_show_engagements`` preference: when the
+    canonical corpus exists it is the authority; the raw reported single-show
+    corpus is the fallback. Multi-show aggregates NEVER qualify.
+    """
+    return (
+        "SELECT "
+        + _canonical_event_key_sql("c")
+        + " AS event_key FROM research.canonical_boxoffice_engagements c "
+        "WHERE (c.is_multi_show IS NULL OR c.is_multi_show = FALSE) "
+        "UNION "
+        "SELECT "
+        + _canonical_event_key_sql("r")
+        + " AS event_key FROM research.boxoffice_engagements r "
+        "WHERE r.is_reported = TRUE "
+        "  AND (r.is_multi_show IS NULL OR r.is_multi_show = FALSE)"
+    )
+
+
+def count_events_reconstructable(conn, *, mode: str, single_show_only: bool = False) -> int:
     """Distinct canonical events with >= 1 evidence row eligible for ``mode``.
 
     UNKNOWN is never upgraded: an event with only UNKNOWN evidence (i.e. no
-    persisted rows) counts for nothing.
+    persisted rows) counts for nothing. With ``single_show_only`` the count is
+    restricted to the same single-show canonical-performance universe used as
+    the denominator — a multi-show aggregate's evidence can never inflate a
+    metric reported against the single-show denominator.
     """
     validate_pit_mode(mode)
     rows = conn.execute(
@@ -248,22 +305,35 @@ def count_events_reconstructable(conn, *, mode: str) -> int:
     if not eligible:
         return 0
     placeholders = ",".join("?" for _ in eligible)
+    if not single_show_only:
+        row = conn.execute(
+            f"SELECT COUNT(DISTINCT canonical_event_id) "
+            f"FROM flywheel.pit_reconstruction_evidence "
+            f"WHERE evidence_class IN ({placeholders})",
+            eligible,
+        ).fetchone()
+        return int(row[0]) if row else 0
     row = conn.execute(
-        f"SELECT COUNT(DISTINCT canonical_event_id) "
-        f"FROM flywheel.pit_reconstruction_evidence "
-        f"WHERE evidence_class IN ({placeholders})",
+        f"SELECT COUNT(DISTINCT e.canonical_event_id) "
+        f"FROM flywheel.pit_reconstruction_evidence e "
+        f"JOIN ({_single_show_event_key_sql()}) u ON u.event_key = e.canonical_event_id "
+        f"WHERE e.evidence_class IN ({placeholders})",
         eligible,
     ).fetchone()
     return int(row[0]) if row else 0
 
 
 def count_unknown_events(conn) -> int:
-    """Canonical corpus events with NO persisted PIT evidence (honest UNKNOWN)."""
+    """Single-show corpus events with NO persisted PIT evidence (honest UNKNOWN).
+
+    Total and covered are computed from the SAME single-show universe, so an
+    evidence overcount cannot silently hide unknown events.
+    """
     total = int(
         conn.execute(
             "SELECT COUNT(*) FROM research.canonical_boxoffice_engagements "
             "WHERE (is_multi_show IS NULL OR is_multi_show = FALSE)"
         ).fetchone()[0]
     )
-    covered = count_events_reconstructable(conn, mode=RESEARCH_ESTIMATED)
+    covered = count_events_reconstructable(conn, mode=RESEARCH_ESTIMATED, single_show_only=True)
     return max(total - covered, 0)

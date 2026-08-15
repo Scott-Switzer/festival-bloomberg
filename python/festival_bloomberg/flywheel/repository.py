@@ -279,6 +279,36 @@ class FlywheelRepository:
         )
         return rows[0] if rows else None
 
+    def reconcile_forward_event_artist(
+        self, *, provider: str, provider_event_id: str, artist_name: str | None
+    ) -> bool:
+        """Correct performer evidence on an already-enrolled watch row.
+
+        Legacy rows (enrolled before PR #21's artist-semantics fix) could carry
+        an event NAME in ``artist_name`` because the old conversion fell back
+        to ``main_performer or event.name``. Re-deriving the real performer
+        from fresh discovery corrects those rows in place; artist_name becomes
+        NULL when no performer relation exists. Returns True when a change was
+        applied.
+        """
+        # DuckDB does not report UPDATE row counts (rowcount is always -1), so
+        # the change is detected by reading the row before and after, never
+        # from ``rowcount``.
+        existing = self.conn.execute(
+            "SELECT artist_name FROM flywheel.forward_watch_events "
+            "WHERE provider = ? AND provider_event_id = ?",
+            [provider, provider_event_id],
+        ).fetchone()
+        if not existing or (existing[0] or "") == (artist_name or ""):
+            return False
+        self.conn.execute(
+            "UPDATE flywheel.forward_watch_events SET artist_name = ? "
+            "WHERE provider = ? AND provider_event_id = ?",
+            [artist_name, provider, provider_event_id],
+        )
+        self.conn.commit()
+        return True
+
     def query_forward_observations(
         self, *, watch_event_id: str | None = None, cutoff: datetime | str | None = None
     ) -> list[dict[str, Any]]:
@@ -476,20 +506,27 @@ class FlywheelRepository:
             """
             INSERT INTO flywheel.provider_acquisition_runs
                 (run_id, provider, pipeline, started_at, finished_at, requests,
-                 successful_responses, records_parsed, new_claims,
-                 new_unique_events_improved, new_cutoffs, new_warm_start_events,
-                 new_forward_observations, new_ticket_pace_events, duplicates,
-                 conflicts, not_found, rights_blocked, rate_limited,
-                 parser_failed, http_failed, auth_failed, other_failure,
-                 latency_ms_total, quota_consumed, monetary_cost_usd, detail)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 http_requests, request_count_status, successful_responses,
+                 http_successful_responses, http_rate_limited, http_failures,
+                 tasks_attempted, tasks_claim_found, tasks_not_found,
+                 records_parsed, new_claims, new_unique_events_improved,
+                 new_cutoffs, new_warm_start_events, new_forward_observations,
+                 new_ticket_pace_events, duplicates, conflicts, not_found,
+                 rights_blocked, rate_limited, parser_failed, http_failed,
+                 auth_failed, other_failure, latency_ms_total, quota_consumed,
+                 monetary_cost_usd, detail)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 row["run_id"], row["provider"], row["pipeline"], row["started_at"],
-                row.get("finished_at"), row.get("requests", 0),
-                row.get("successful_responses", 0), row.get("records_parsed", 0),
-                row.get("new_claims", 0), row.get("new_unique_events_improved", 0),
-                row.get("new_cutoffs", 0), row.get("new_warm_start_events", 0),
+                row.get("finished_at"), row.get("requests"), row.get("http_requests"),
+                row.get("request_count_status"), row.get("successful_responses", 0),
+                row.get("http_successful_responses", 0), row.get("http_rate_limited", 0),
+                row.get("http_failures", 0), row.get("tasks_attempted", 0),
+                row.get("tasks_claim_found", 0), row.get("tasks_not_found", 0),
+                row.get("records_parsed", 0), row.get("new_claims", 0),
+                row.get("new_unique_events_improved", 0), row.get("new_cutoffs", 0),
+                row.get("new_warm_start_events", 0),
                 row.get("new_forward_observations", 0),
                 row.get("new_ticket_pace_events", 0), row.get("duplicates", 0),
                 row.get("conflicts", 0), row.get("not_found", 0),
@@ -523,15 +560,22 @@ class FlywheelRepository:
             """
             INSERT INTO flywheel.provider_acquisition_metrics
                 (metric_id, run_id, provider, successes_per_1000_requests,
+                 http_success_rate, claims_per_1000_http_requests,
+                 claims_per_1000_tasks_attempted,
+                 new_events_per_1000_http_requests,
                  new_claims_per_1000_requests, new_cutoffs_per_1000_requests,
                  new_usable_events_per_1000_requests,
                  new_warm_starts_per_1000_requests, cost_per_new_claim,
                  cost_per_new_usable_event, cost_per_new_warm_start, knowledge_time)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 row["metric_id"], row["run_id"], row["provider"],
                 row.get("successes_per_1000_requests"),
+                row.get("http_success_rate"),
+                row.get("claims_per_1000_http_requests"),
+                row.get("claims_per_1000_tasks_attempted"),
+                row.get("new_events_per_1000_http_requests"),
                 row.get("new_claims_per_1000_requests"),
                 row.get("new_cutoffs_per_1000_requests"),
                 row.get("new_usable_events_per_1000_requests"),

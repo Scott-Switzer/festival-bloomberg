@@ -118,8 +118,8 @@ See `docs/data-flywheel-and-coverage-v1.md`.
 ## Data Acquisition Activation V1
 
 Turns the flywheel from measurement into an OPERATING acquisition system
-(migration 018). Success is measured by new decision-useful evidence, not
-schema or plan counts:
+(migrations 018 + 019). Success is measured by new decision-useful evidence,
+not schema or plan counts:
 
 - **OUTCOME_HUNTER execution** — real Common Crawl CDX hunts (key-free, $0)
   on the persisted source documents, era-directed across crawl collections;
@@ -133,7 +133,10 @@ schema or plan counts:
   events/snapshots already persisted by the recurring collector, migrated
   into `flywheel.forward_watch_events/_observations`
 - **Acquisition economics** — per-provider runs + derived yield metrics
-  (`flywheel.provider_acquisition_runs/_metrics`)
+  (`flywheel.provider_acquisition_runs/_metrics`) with HTTP-level and
+  task-level units kept strictly separate (migration 019): task counts are
+  never used as HTTP response counts, and request counts are measured
+  telemetry, never row-count estimates
 
 Live driver:
 

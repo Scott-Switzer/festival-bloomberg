@@ -349,16 +349,29 @@ def count_events_with_prior_results_pit(
     min_prior: int = 1,
     evidence_classes: frozenset[str] | None = None,
 ) -> int:
-    """Events with >= min_prior same-dimension results whose publication is
+    """Events with >= min_prior same-dimension results whose availability is
     PROVEN by persisted PIT reconstruction evidence before the target start.
 
     Strict point-in-time using the evidence table (not the raw engagement
     column, which is NULL across the corpus): a prior engagement counts only
     when a PIT evidence row for its canonical event carries a defensible
-    ``source_publication_time`` earlier than the target event's start date.
+    availability timestamp earlier than the target event's start date. The
+    timestamp column is EVIDENCE-CLASS-SPECIFIC — never a blind COALESCE:
+
+        OBSERVED_EXACT / OBSERVED_DAY / OBSERVED_MONTH ->
+            source_publication_time
+        ARCHIVE_CAPTURE_UPPER_BOUND                    ->
+            archive_capture_time (the capture proves existence by then)
+        SOURCE_PERIOD_BOUND                            ->
+            source_period_end (conservative end of the reported period)
+
     ``evidence_classes`` gates the validation mode (STRICT_PIT classes by
-    default; conservative upper bounds may be passed explicitly). UNKNOWN is
-    never upgraded.
+    default; conservative upper bounds may be passed explicitly). Passing
+    STRICT classes alone EXCLUDES archive bounds; adding the conservative
+    classes lets a capture upper bound count when it proves availability
+    before the target. ESTIMATED_RESEARCH_ONLY / UNKNOWN have no availability
+    timestamp and can never enter any PIT comparison. UNKNOWN is never
+    upgraded.
     """
     if dimension not in _PRIOR_DIMENSIONS:
         raise ValueError(f"dimension {dimension!r} not in {sorted(_PRIOR_DIMENSIONS)}")
@@ -369,7 +382,21 @@ def count_events_with_prior_results_pit(
         evidence_classes = STRICT_PIT_CLASSES
     if not evidence_classes:
         return 0
-    placeholders = ",".join("?" for _ in evidence_classes)
+    from .pit import AVAILABILITY_TIMESTAMP_COLUMN
+
+    conditions: list[str] = []
+    params: list[Any] = []
+    for cls in evidence_classes:
+        ts_col = AVAILABILITY_TIMESTAMP_COLUMN.get(cls)
+        if ts_col is None:
+            continue  # ESTIMATED_RESEARCH_ONLY / UNKNOWN: no availability
+        conditions.append(
+            f"(e.evidence_class = ? AND e.{ts_col} IS NOT NULL AND e.{ts_col} < b.start_date)"
+        )
+        params.append(cls)
+    if not conditions:
+        return 0
+    availability_clause = "(" + " OR ".join(conditions) + ")"
     row = conn.execute(
         f"""
         SELECT COUNT(*) FROM (
@@ -389,13 +416,11 @@ def count_events_with_prior_results_pit(
                     AND p.headcount_total IS NOT NULL
                     AND p.start_date IS NOT NULL
                     AND p.start_date < b.start_date
-                    AND e.evidence_class IN ({placeholders})
-                    AND e.source_publication_time IS NOT NULL
-                    AND e.source_publication_time < b.start_date
+                    AND {availability_clause}
               ) >= ?
         )
         """,
-        [*evidence_classes, min_prior],
+        [*params, min_prior],
     ).fetchone()
     return int(row[0]) if row else 0
 
@@ -428,8 +453,12 @@ def measure_coverage(conn, *, as_of: datetime | None = None) -> list[dict[str, A
         count_events_reconstructable,
     )
 
-    strict_pit_events = count_events_reconstructable(conn, mode="STRICT_PIT")
-    conservative_events = count_events_reconstructable(conn, mode="CONSERVATIVE_BOUND_PIT")
+    # Reconstructable coverage is restricted to the single-show
+    # canonical-performance universe — the same universe used as every rate
+    # denominator — so a multi-show aggregate's evidence can never inflate a
+    # metric reported against CANONICAL_PERFORMANCES.
+    strict_pit_events = count_events_reconstructable(conn, mode="STRICT_PIT", single_show_only=True)
+    conservative_events = count_events_reconstructable(conn, mode="CONSERVATIVE_BOUND_PIT", single_show_only=True)
     strict_warm = count_events_with_prior_results_pit(
         conn, dimension="artist", min_prior=3, evidence_classes=STRICT_PIT_CLASSES
     )

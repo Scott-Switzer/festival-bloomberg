@@ -16,6 +16,12 @@ a key is configured.
 Every enrolled event keeps provider id, name, venue/place, begin date, first
 seen, knowledge_time, source URL and rights. Observations are append-only and
 mapped onto the accepted milestone ladder.
+
+ARTIST SEMANTICS (PR #21 closure): ``artist_name`` is REAL performer evidence
+ONLY. A MusicBrainz event name or a Ticketmaster/SETLIST event title is never
+substituted for a main-performer relation; when no performer relation exists
+``artist_name`` stays NULL and the event is reported as partially resolved,
+never counted as high-quality.
 """
 
 from __future__ import annotations
@@ -50,6 +56,25 @@ class MusicBrainzFutureEventsClient:
         self.transport = transport or UrllibTransport(user_agent=user_agent)
         self.rate_limit_seconds = rate_limit_seconds
         self._last_request_at = 0.0
+        #: REAL request telemetry — never inferred from returned row counts.
+        self._telemetry: dict[str, Any] = {
+            "request_count": 0,
+            "successful_responses": 0,
+            "rate_limits": 0,
+            "http_failures": 0,
+            "records_returned": 0,
+            "latency_ms_total": 0,
+        }
+
+    def telemetry(self) -> dict[str, Any]:
+        """Measured request telemetry accumulated across this client's calls.
+
+        ``request_count`` is the number of real HTTP interactions, never a
+        row-count estimate. A client that made no requests reports zeroes;
+        callers store request_count = NULL / request_count_status = UNKNOWN
+        when no live requests happened.
+        """
+        return dict(self._telemetry)
 
     def _throttle(self) -> None:
         elapsed = time.monotonic() - self._last_request_at
@@ -60,7 +85,11 @@ class MusicBrainzFutureEventsClient:
     def search_events(
         self, *, begin_from: str, begin_to: str, offset: int = 0, limit: int = 100
     ) -> dict[str, Any]:
-        """Search future events; returns the raw payload dict."""
+        """Search future events; returns the raw payload dict.
+
+        Telemetry (request count, success/rate-limit/failure counts, latency)
+        is measured per real HTTP interaction and accumulated on the client.
+        """
         self._throttle()
         query = urlencode(
             {
@@ -71,15 +100,28 @@ class MusicBrainzFutureEventsClient:
             }
         )
         url = f"{MUSICBRAINZ_API}/event?{query}"
+        started = time.monotonic()
         try:
             response = self.transport.request("GET", url, timeout_seconds=30.0)
         except TransportError as exc:
+            self._record(1, http_failures=1, started=started)
             raise MusicBrainzError(f"network failure: {exc}") from None
+        self._record(1, started=started)
         if response.status in (503, 429):
+            self._telemetry["rate_limits"] += 1
             raise MusicBrainzRateLimited(f"MusicBrainz rate limit ({response.status})")
         if response.status != 200:
+            self._telemetry["http_failures"] += 1
             raise MusicBrainzError(f"MusicBrainz http {response.status}")
-        return _safe_json(response)
+        self._telemetry["successful_responses"] += 1
+        payload = _safe_json(response)
+        self._telemetry["records_returned"] += len(payload.get("events") or [])
+        return payload
+
+    def _record(self, count: int, *, started: float, http_failures: int = 0) -> None:
+        self._telemetry["request_count"] += count
+        self._telemetry["http_failures"] += http_failures
+        self._telemetry["latency_ms_total"] += int((time.monotonic() - started) * 1000)
 
     def future_events(
         self,
@@ -283,10 +325,18 @@ def migrate_history_watch(
     now = as_of or utc_now()
     today = now.date()
 
+    # REAL performer evidence comes from the event graph's artist relations
+    # (artist_event_relations -> artist_identities.display_name), never from
+    # the Ticketmaster/SETLIST event title. When no performer relation exists
+    # artist_name stays NULL — an event name is never substituted for an
+    # artist (PR #21 semantic closure, fix 1).
     events = history_conn.execute(
-        "SELECT event_id, event_name, venue_name, market_id, local_date, event_status "
-        "FROM events.events "
-        "WHERE local_date >= ? ORDER BY local_date LIMIT ?",
+        "SELECT e.event_id, e.event_name, e.venue_name, e.market_id, e.local_date, "
+        "e.event_status, a.display_name "
+        "FROM events.events e "
+        "LEFT JOIN events.artist_event_relations r ON r.event_id = e.event_id "
+        "LEFT JOIN events.artist_identities a ON a.canonical_artist_id = r.artist_id "
+        "WHERE e.local_date >= ? ORDER BY e.local_date LIMIT ?",
         [today.isoformat(), max_events],
     ).fetchall()
 
@@ -294,11 +344,11 @@ def migrate_history_watch(
     observations = 0
     events_with_2plus = 0
     watch_ids: dict[str, str] = {}
-    for event_id, event_name, venue_name, market, local_date, event_status in events:
+    for event_id, event_name, venue_name, market, local_date, event_status, performer_name in events:
         row = build_forward_event_row(
             provider="event_history",
             provider_event_id=event_id,
-            artist_name=event_name,
+            artist_name=performer_name,
             venue_name=venue_name,
             market=market,
             event_date=date.fromisoformat(str(local_date)),
@@ -318,6 +368,13 @@ def migrate_history_watch(
                 provider="event_history", provider_event_id=event_id
             )
             watch_ids[event_id] = (existing or {}).get("watch_event_id") or row["watch_event_id"]
+            # PR #21 closure (fix 1): legacy rows could carry the Ticketmaster
+            # event TITLE as artist_name; reconcile to the real performer.
+            flywheel.reconcile_forward_event_artist(
+                provider="event_history",
+                provider_event_id=event_id,
+                artist_name=performer_name,
+            )
 
     # Migrate real snapshot rows as observations (append-only, PIT-safe).
     for event_id, watch_id in watch_ids.items():

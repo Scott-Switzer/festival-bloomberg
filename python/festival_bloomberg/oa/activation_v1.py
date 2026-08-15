@@ -228,9 +228,12 @@ def _run_hunts(flywheel, research, *, transport, as_of: datetime, window: int = 
         "attempts": summarize_attempts(None),
         "cdx_statuses": summarize_attempts(None),
         "cdx_requests": 0,
+        "cdx_http_successes": 0,
+        "cdx_http_rate_limited": 0,
+        "cdx_http_failures": 0,
         "warc_fetches": 0,
         "parser_failed_pages": 0,
-        "claims_from_pages": 0,
+        "candidate_claims_extracted": 0,
         "captures_by_url": {},
         "note": "crawl index unavailable; CDX channel not attempted",
     }
@@ -255,6 +258,9 @@ def _run_hunts(flywheel, research, *, transport, as_of: datetime, window: int = 
         distinct = sorted(source_urls.values(), key=lambda e: (e["url"] or ""))
 
         requests = 0
+        http_successes = 0
+        http_rate_limited = 0
+        http_failures = 0
         for entry in distinct:
             url = entry["url"]
             year = max(entry["years"]) if entry["years"] else as_of.year
@@ -269,6 +275,9 @@ def _run_hunts(flywheel, research, *, transport, as_of: datetime, window: int = 
                 throttle_seconds=throttle_seconds if transport is None else 0.0,
             )
             requests += result["request_count"]
+            http_successes += result.get("http_successes", 0)
+            http_rate_limited += result.get("http_rate_limited", 0)
+            http_failures += result.get("http_failures", 0)
             status = result["status"]
             captures = result["captures"]
             if captures:
@@ -323,15 +332,19 @@ def _run_hunts(flywheel, research, *, transport, as_of: datetime, window: int = 
             "attempts": summarize_attempts(cdx_attempts),
             "cdx_statuses": summarize_attempts(cdx_attempts),
             "cdx_requests": requests,
+            "cdx_http_successes": http_successes,
+            "cdx_http_rate_limited": http_rate_limited,
+            "cdx_http_failures": http_failures,
             "warc_fetches": warc_fetches,
             "parser_failed_pages": parser_failed,
-            "claims_from_pages": sum(len(v) for v in claims_by_page.values()),
+            "candidate_claims_extracted": sum(len(v) for v in claims_by_page.values()),
             "captures_by_url": {u: len(c) for u, c in captures_by_url.items()},
             "note": (
                 "Real CDX hunts executed against era-directed crawl collections. "
                 "NOT_FOUND is a genuine no-capture result; failures are classified "
-                "(RATE_LIMITED/HTTP_FAILED), never mislabeled. WARC claim "
-                "extraction is P2 corroboration."
+                "(RATE_LIMITED/HTTP_FAILED), never mislabeled. Parser output from "
+                "archived pages is CANDIDATE claims only — never counted as new "
+                "claims until validated and persisted into the claim ledger."
             ),
         }
 
@@ -376,13 +389,19 @@ def _run_hunts(flywheel, research, *, transport, as_of: datetime, window: int = 
         "distinct_source_docs_hunted": cdx_summary["distinct_source_docs_hunted"],
         "attempts": summarize_attempts(all_attempts),
         "cdx_requests": cdx_summary["cdx_requests"],
+        "cdx_http_successes": cdx_summary["cdx_http_successes"],
+        "cdx_http_rate_limited": cdx_summary["cdx_http_rate_limited"],
+        "cdx_http_failures": cdx_summary["cdx_http_failures"],
         "warc_fetches": cdx_summary["warc_fetches"],
         "parser_failed_pages": cdx_summary["parser_failed_pages"],
-        "claims_from_pages": cdx_summary["claims_from_pages"],
+        "candidate_claims_extracted": cdx_summary["candidate_claims_extracted"],
         "captures_by_url": cdx_summary["captures_by_url"],
         "capacity_venues_hunted": cap_result["venues_hunted"],
         "capacity_claims_inserted": cap_claims_inserted,
         "wikipedia_requests": cap_requests,
+        "wikipedia_http_successes": cap_result.get("http_successes", 0),
+        "wikipedia_http_rate_limited": cap_result.get("http_rate_limited", 0),
+        "wikipedia_http_failures": cap_result.get("http_failures", 0),
         "wikipedia_statuses": summarize_attempts(cap_attempts),
         "cdx_statuses": cdx_summary["cdx_statuses"],
         "note": (
@@ -407,6 +426,21 @@ def _run_hunts(flywheel, research, *, transport, as_of: datetime, window: int = 
 # PIT reconstruction
 # ---------------------------------------------------------------------------
 def _reconstruct_pit(flywheel, research, *, capture_evidence: dict[str, list[tuple[str, str]]], as_of: datetime) -> dict[str, Any]:
+    # PR #21 semantic closure (fix 6): OBSERVED_DAY availability is the END
+    # of the documented day — a day-level publication date cannot inform a
+    # cutoff earlier on that same day. All midnight-stamped OBSERVED_DAY rows
+    # were written by THIS unmerged experiment's earlier software
+    # (software_version = data_acquisition_activation_v1, never accepted);
+    # delete them so the corrected rows re-derived below supersede them.
+    # This is bug-artifact cleanup of never-accepted rows, not revision of
+    # accepted audit history.
+    flywheel.conn.execute(
+        "DELETE FROM flywheel.pit_reconstruction_evidence "
+        "WHERE evidence_class = 'OBSERVED_DAY' "
+        "  AND source_publication_time = date_trunc('day', source_publication_time)"
+    )
+    flywheel.conn.commit()
+
     engagements = research.query_engagements()
     sources = {
         r["source_url"]: r
@@ -417,11 +451,17 @@ def _reconstruct_pit(flywheel, research, *, capture_evidence: dict[str, list[tup
     inserted_capture_bound = 0
     events_covered_day = set()
     events_covered_capture = set()
-    events_total = set()
+    # The reported single-show denominator counts ONLY defensible single-show
+    # engagements — multi-show aggregates are never comparable decision
+    # targets and never enter ``events_total_single_show``.
+    events_total_single_show = set()
+    for eng in engagements:
+        if eng.get("is_multi_show"):
+            continue
+        events_total_single_show.add(event_key_from_engagement(eng))
 
     for eng in engagements:
         canonical = event_key_from_engagement(eng)
-        events_total.add(canonical)
         url = eng.get("source_url")
         source = sources.get(url)
         if source:
@@ -482,11 +522,16 @@ def _reconstruct_pit(flywheel, research, *, capture_evidence: dict[str, list[tup
             [ARCHIVE_CAPTURE_UPPER_BOUND],
         ).fetchone()[0]
     )
+    # ALL-ENGAGEMENT vs SINGLE-SHOW evidence (fix 4): metrics reported
+    # against the 443 single-show denominator must only count evidence whose
+    # canonical event belongs to the same single-show universe. The
+    # all-engagement count is reported separately and never compared to 443.
     counts = {
-        "events_total_single_show": len(events_total),
-        "strict_pit_events": count_events_reconstructable(flywheel.conn, mode=STRICT_PIT),
-        "conservative_bound_events": count_events_reconstructable(flywheel.conn, mode=CONSERVATIVE_BOUND_PIT),
-        "research_estimated_events": count_events_reconstructable(flywheel.conn, mode=RESEARCH_ESTIMATED),
+        "events_total_single_show": len(events_total_single_show),
+        "all_engagement_evidence_events": count_events_reconstructable(flywheel.conn, mode=STRICT_PIT),
+        "strict_pit_events": count_events_reconstructable(flywheel.conn, mode=STRICT_PIT, single_show_only=True),
+        "conservative_bound_events": count_events_reconstructable(flywheel.conn, mode=CONSERVATIVE_BOUND_PIT, single_show_only=True),
+        "research_estimated_events": count_events_reconstructable(flywheel.conn, mode=RESEARCH_ESTIMATED, single_show_only=True),
         "events_with_observed_day_evidence": persisted_day_events,
         "events_with_archive_upper_bound": persisted_capture_events,
         "evidence_rows_inserted_this_run": inserted_observed_day + inserted_capture_bound,
@@ -501,10 +546,12 @@ def _reconstruct_pit(flywheel, research, *, capture_evidence: dict[str, list[tup
         "note": (
             "Evidence classes are REAL: OBSERVED_DAY comes from persisted "
             "boxoffice source-document publication dates (pollstar/touring "
-            "data chart articles); ARCHIVE_CAPTURE_UPPER_BOUND comes from real "
-            "Common Crawl captures. Archive captures prove availability BY the "
-            "capture time, never original publication. No timestamps were "
-            "fabricated; remaining UNKNOWN is reported, not hidden."
+            "data chart articles) with availability at the END of the "
+            "documented day (a same-day publication cannot inform an earlier "
+            "cutoff); ARCHIVE_CAPTURE_UPPER_BOUND comes from real Common Crawl "
+            "captures, proving availability BY the capture time, never "
+            "original publication. No timestamps were fabricated; remaining "
+            "UNKNOWN is reported, not hidden."
         ),
     }
     gate = "PASS" if summary["evidence_rows_total"] > 0 else "PARTIAL"
@@ -521,19 +568,35 @@ def _activate_forward_watch(flywheel, *, history_db: str, transport, mb_events, 
     observations = 0
     events_with_2plus = 0
     mb_total = 0
+    mb_telemetry = None
+    mb_reconciled_artist = 0
     migrated = {"events_enrolled": 0, "observations_inserted": 0, "events_with_2plus_observations": 0}
 
-    # 1. MusicBrainz future events (CC0, key-free) — real, bounded.
+    # 1. MusicBrainz future events (CC0, key-free) — real, bounded. Real
+    #    request telemetry is measured on the client; an offline fixture
+    #    (mb_events provided) made no live requests and reports UNKNOWN.
     if mb_events is not None:
         events = mb_events
     else:
         client = MusicBrainzFutureEventsClient(transport=transport)
         events = client.future_events(horizon_days=MB_HORIZON_DAYS, max_events=MAX_MB_FUTURE_EVENTS)
+        mb_telemetry = client.telemetry()
     mb_total = len(events)
     for event in events:
         row = _build_mb_forward_row(event, first_seen_at=as_of)
         if flywheel.register_forward_event(row):
             enrolled += 1
+        else:
+            # PR #21 closure (fix 1): legacy MB rows could carry an event NAME
+            # as artist_name (old ``main_performer or name`` fallback).
+            # Reconcile the real performer evidence from the fresh parse;
+            # artist_name becomes NULL when no performer relation exists.
+            if flywheel.reconcile_forward_event_artist(
+                provider="musicbrainz",
+                provider_event_id=event["provider_event_id"],
+                artist_name=event.get("main_performer"),
+            ):
+                mb_reconciled_artist += 1
 
     # 2. Real future events + snapshots already persisted in the history
     #    warehouse (Ticketmaster events acquired by the recurring collector).
@@ -556,9 +619,17 @@ def _activate_forward_watch(flywheel, *, history_db: str, transport, mb_events, 
     quality = _audit_forward_quality(flywheel, as_of=as_of)
     obs_buckets = _observation_buckets(flywheel)
     pit_replay = _pit_replay_gate(flywheel)
+    mb_request_status = "MEASURED" if mb_telemetry is not None else "UNKNOWN"
     summary = {
         "status": "PASS" if persisted_total > 0 else "NOT_EVALUATED",
         "musicbrainz_events_found": mb_total,
+        "musicbrainz_request_count": (mb_telemetry or {}).get("request_count"),
+        "musicbrainz_request_count_status": mb_request_status,
+        "musicbrainz_http_successes": (mb_telemetry or {}).get("successful_responses", 0),
+        "musicbrainz_rate_limited": (mb_telemetry or {}).get("rate_limits", 0),
+        "musicbrainz_http_failures": (mb_telemetry or {}).get("http_failures", 0),
+        "musicbrainz_latency_ms_total": (mb_telemetry or {}).get("latency_ms_total", 0),
+        "musicbrainz_artist_reconciled": mb_reconciled_artist,
         "history_events_enrolled": migrated["events_enrolled"],
         "events_enrolled_this_run": enrolled,
         "forward_watch_events_total": persisted_total,
@@ -574,7 +645,9 @@ def _activate_forward_watch(flywheel, *, history_db: str, transport, mb_events, 
             "US-market x Ticketmaster Discovery universe stays registered "
             "KEY_REQUIRED (never bypassed) and is the next expansion step. "
             "FORWARD_EVENT_USABLE is a conservative audit rule (real future "
-            "date + artist + venue/market), not a row count."
+            "date + REAL performer evidence + venue/market). An event name is "
+            "NEVER substituted for artist evidence. MusicBrainz request counts "
+            "are measured telemetry; offline fixtures report UNKNOWN."
         ),
     }
     gate = "PASS" if persisted_total > 0 else "NOT_EVALUATED"
@@ -584,12 +657,14 @@ def _activate_forward_watch(flywheel, *, history_db: str, transport, mb_events, 
 def _audit_forward_quality(flywheel, *, as_of: datetime) -> dict[str, Any]:
     """Conservative usability audit of the enrolled forward universe.
 
-    FORWARD_EVENT_USABLE requires ALL: a real future event date, artist
-    (performer) evidence, and venue or market evidence. An event that only
-    has a MusicBrainz id + a date is reported separately, never counted as
-    high-quality. Duplicates are counted by provider_event_id and by the
-    (artist, venue, date) canonical tuple. Nothing is fabricated; missing
-    venue/market stays missing and is reported.
+    FORWARD_EVENT_USABLE requires ALL: a real future event date, REAL
+    performer evidence (an event name is NEVER substituted for an artist),
+    and venue or market evidence. An event that only has a MusicBrainz id + a
+    date is reported separately, never counted as high-quality. Duplicate
+    provider-event identity groups by (provider, provider_event_id) — two
+    unrelated providers may legitimately share the same provider_event_id.
+    Nothing is fabricated; missing venue/market stays missing and is
+    reported.
     """
     today = as_of.date()
     conn = flywheel.conn
@@ -619,8 +694,9 @@ def _audit_forward_quality(flywheel, *, as_of: datetime) -> dict[str, Any]:
     )
     dup_provider = int(
         conn.execute(
-            "SELECT COUNT(*) FROM (SELECT provider_event_id FROM flywheel.forward_watch_events "
-            "GROUP BY provider_event_id HAVING COUNT(*) > 1)"
+            "SELECT COUNT(*) FROM (SELECT provider, provider_event_id "
+            "FROM flywheel.forward_watch_events "
+            "GROUP BY provider, provider_event_id HAVING COUNT(*) > 1)"
         ).fetchone()[0]
     )
     dup_canonical = int(
@@ -732,10 +808,13 @@ def _pit_replay_gate(flywheel) -> dict[str, Any]:
 def _build_mb_forward_row(event: dict[str, Any], *, first_seen_at: datetime) -> dict[str, Any]:
     from ..flywheel.forward_discovery import build_forward_event_row
 
+    # PR #21 semantic closure (fix 1): artist_name is REAL performer evidence
+    # ONLY. A MusicBrainz event name (e.g. "Summer Festival 2027") is never
+    # substituted for a main-performer relation.
     return build_forward_event_row(
         provider="musicbrainz",
         provider_event_id=event["provider_event_id"],
-        artist_name=event.get("main_performer") or event.get("name"),
+        artist_name=event.get("main_performer"),
         venue_name=event.get("place"),
         market=None,
         event_date=event["begin_date"],
@@ -804,28 +883,40 @@ def _context_panel(flywheel, *, transport, as_of: datetime) -> dict[str, Any]:
 # Acquisition economics
 # ---------------------------------------------------------------------------
 def _record_accounting(flywheel, *, hunts, warc_fetches, forward, context, as_of: datetime) -> dict[str, Any]:
+    """Persist per-provider runs with SEPARATE HTTP-level and task-level units.
+
+    Every run row owns ONLY its own provider's counters. HTTP denominators
+    (``http_requests``) count provider interactions; task counters count hunt
+    task attempts. Task counts are never used as HTTP response counts, so a
+    "successful responses per 1,000 requests" figure can never exceed 1,000.
+    MusicBrainz uses REAL measured telemetry; an offline fixture (no live
+    requests) stores request_count = NULL / request_count_status = UNKNOWN.
+    """
     runs = []
     metrics = []
 
     cdx_statuses = hunts.get("cdx_statuses") or hunts["attempts"]
+    wiki_statuses = hunts.get("wikipedia_statuses") or hunts["attempts"]
 
     cap_run = build_acquisition_run_row(
         provider="wikipedia_mediawiki_api",
         pipeline="OUTCOME_HUNTER",
         started_at=as_of,
-        requests=hunts["wikipedia_requests"],
-        successful_responses=(
-            hunts["wikipedia_statuses"][TASK_CLAIM_FOUND]
-            + hunts["wikipedia_statuses"][TASK_NOT_FOUND]
-        ),
+        http_requests=hunts["wikipedia_requests"],
+        http_successful_responses=hunts.get("wikipedia_http_successes", 0),
+        http_rate_limited=hunts.get("wikipedia_http_rate_limited", 0),
+        http_failures=hunts.get("wikipedia_http_failures", 0),
+        tasks_attempted=wiki_statuses["tasks_attempted"],
+        tasks_claim_found=wiki_statuses[TASK_CLAIM_FOUND],
+        tasks_not_found=wiki_statuses[TASK_NOT_FOUND],
         records_parsed=hunts["capacity_claims_inserted"],
-        new_claims=hunts["capacity_claims_inserted"],
+        new_claims=hunts["capacity_claims_inserted"],  # persisted venue claims only
         new_cutoffs=0,
-        not_found=hunts["wikipedia_statuses"][TASK_NOT_FOUND],
-        rate_limited=hunts["wikipedia_statuses"]["RATE_LIMITED"],
-        http_failed=hunts["wikipedia_statuses"]["HTTP_FAILED"],
+        rate_limited=wiki_statuses["RATE_LIMITED"],
+        http_failed=wiki_statuses["HTTP_FAILED"],
         parser_failed=hunts["parser_failed_pages"],
-        other_failure=hunts["wikipedia_statuses"]["OTHER_FAILURE"],
+        rights_blocked=wiki_statuses["RIGHTS_BLOCKED"],
+        other_failure=wiki_statuses["OTHER_FAILURE"],
         monetary_cost_usd=0.0,
         detail="key-free Wikipedia infobox capacity hunts on corpus venues",
     )
@@ -837,12 +928,17 @@ def _record_accounting(flywheel, *, hunts, warc_fetches, forward, context, as_of
         provider="commoncrawl_cdx",
         pipeline="OUTCOME_HUNTER",
         started_at=as_of,
-        requests=hunts["cdx_requests"],
-        successful_responses=cdx_statuses[TASK_CLAIM_FOUND] + cdx_statuses[TASK_NOT_FOUND],
+        http_requests=hunts["cdx_requests"] if hunts["cdx_requests"] else None,
+        http_successful_responses=hunts.get("cdx_http_successes", 0),
+        http_rate_limited=hunts.get("cdx_http_rate_limited", 0),
+        http_failures=hunts.get("cdx_http_failures", 0),
+        tasks_attempted=cdx_statuses["tasks_attempted"],
+        tasks_claim_found=cdx_statuses[TASK_CLAIM_FOUND],
+        tasks_not_found=cdx_statuses[TASK_NOT_FOUND],
         records_parsed=warc_fetches,
-        new_claims=hunts["claims_from_pages"],
+        new_claims=0,  # parser output is CANDIDATE evidence; nothing was
+                       # validated + persisted into the claim ledger this run
         new_cutoffs=0,
-        not_found=cdx_statuses[TASK_NOT_FOUND],
         rate_limited=cdx_statuses["RATE_LIMITED"],
         http_failed=cdx_statuses["HTTP_FAILED"],
         parser_failed=hunts["parser_failed_pages"],
@@ -854,17 +950,35 @@ def _record_accounting(flywheel, *, hunts, warc_fetches, forward, context, as_of
         runs.append(run)
         metrics.append(derive_metrics(run))
 
-    mb_run = build_acquisition_run_row(
-        provider="musicbrainz_events",
-        pipeline="FORWARD_WATCH",
-        started_at=as_of,
-        requests=max(forward["summary"].get("musicbrainz_events_found", 0) // 100, 1),
-        successful_responses=1,
-        records_parsed=forward["summary"].get("musicbrainz_events_found", 0),
-        new_forward_observations=0,
-        monetary_cost_usd=0.0,
-        detail="CC0 future-event discovery (bounded)",
-    )
+    mb_telemetry = forward["summary"].get("musicbrainz_request_count")
+    if mb_telemetry is not None:
+        mb_run = build_acquisition_run_row(
+            provider="musicbrainz_events",
+            pipeline="FORWARD_WATCH",
+            started_at=as_of,
+            http_requests=mb_telemetry,
+            http_successful_responses=forward["summary"].get("musicbrainz_http_successes", 0),
+            http_rate_limited=forward["summary"].get("musicbrainz_rate_limited", 0),
+            http_failures=forward["summary"].get("musicbrainz_http_failures", 0),
+            latency_ms_total=forward["summary"].get("musicbrainz_latency_ms_total", 0),
+            records_parsed=forward["summary"].get("musicbrainz_events_found", 0),
+            new_forward_observations=0,
+            monetary_cost_usd=0.0,
+            detail="CC0 future-event discovery (real request telemetry)",
+        )
+    else:
+        # No live requests were made (offline fixture): requests are NOT
+        # measured and are NEVER estimated from returned row counts.
+        mb_run = build_acquisition_run_row(
+            provider="musicbrainz_events",
+            pipeline="FORWARD_WATCH",
+            started_at=as_of,
+            http_requests=None,
+            records_parsed=forward["summary"].get("musicbrainz_events_found", 0),
+            new_forward_observations=0,
+            monetary_cost_usd=0.0,
+            detail="CC0 future-event discovery (offline fixture; request_count_status=UNKNOWN)",
+        )
     if flywheel.insert_acquisition_run(mb_run):
         runs.append(mb_run)
         metrics.append(derive_metrics(mb_run))
@@ -873,8 +987,8 @@ def _record_accounting(flywheel, *, hunts, warc_fetches, forward, context, as_of
         provider="event_history",
         pipeline="FORWARD_WATCH",
         started_at=as_of,
-        requests=1,
-        successful_responses=1,
+        http_requests=1,
+        http_successful_responses=1,
         records_parsed=forward["summary"]["history_events_enrolled"],
         new_forward_observations=forward["summary"]["observations_inserted"],
         new_ticket_pace_events=forward["summary"]["events_with_2plus_observations"],
@@ -889,8 +1003,8 @@ def _record_accounting(flywheel, *, hunts, warc_fetches, forward, context, as_of
         provider="wikimedia",
         pipeline="CONTEXT_PANEL",
         started_at=as_of,
-        requests=1,
-        successful_responses=1 if context["summary"]["series_rows_inserted"] else 0,
+        http_requests=1,
+        http_successful_responses=1 if context["summary"]["series_rows_inserted"] else 0,
         records_parsed=context["summary"]["series_rows_inserted"],
         monetary_cost_usd=0.0,
         detail="Wikimedia pageview series (key-free)",
@@ -908,11 +1022,15 @@ def _record_accounting(flywheel, *, hunts, warc_fetches, forward, context, as_of
         "metrics_derived": len(metrics),
         "providers": [r["provider"] for r in runs],
         "note": (
-            "Per-provider runs persist requests/successes/new claims/new "
-            "cutoffs/new warm starts/failures by class/cost/latency; derived "
-            "yields (per-1000-requests, cost-per-new-evidence) are computed "
-            "rows, never hand-entered, and no composite provider score is "
-            "invented."
+            "Per-provider runs persist HTTP-level (http_requests/"
+            "http_successful_responses/http_rate_limited/http_failures) and "
+            "task-level (tasks_attempted/tasks_claim_found/tasks_not_found + "
+            "failure classes) counters separately — task counts are never "
+            "used as HTTP response counts. Derived yields declare their "
+            "denominator (per-1000-http-requests vs per-1000-tasks-attempted) "
+            "and no composite provider score is invented. MusicBrainz request "
+            "counts are measured telemetry or UNKNOWN, never row-count "
+            "estimates."
         ),
     }
     return {"summary": summary, "gate": "PASS" if runs else "NOT_EVALUATED"}

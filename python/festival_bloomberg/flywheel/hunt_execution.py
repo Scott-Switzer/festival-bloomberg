@@ -247,12 +247,17 @@ def run_cdx_hunt(
 ) -> dict[str, Any]:
     """Execute a CDX lookup across era-directed crawls for one source URL.
 
-    Returns an honest attempt summary:
+    Returns an honest attempt summary with SEPARATE units:
 
-        status        CLAIM_FOUND (>=1 capture) | NOT_FOUND (queried, none) |
-                      RATE_LIMITED | HTTP_FAILED | OTHER_FAILURE
-        captures      [(crawl_id, capture_timestamp)]
-        request_count number of CDX requests made
+        status             CLAIM_FOUND (>=1 capture) | NOT_FOUND (queried,
+                           none) | RATE_LIMITED | HTTP_FAILED | OTHER_FAILURE
+        captures           [(crawl_id, capture_timestamp)]
+        request_count      HTTP interactions attempted
+        http_successes     HTTP interactions that returned a valid response
+        http_rate_limited  HTTP interactions rate limited
+        http_failures      HTTP interactions that errored (5xx/network/timeout)
+
+    HTTP counters never describe task outcomes; task outcome is ``status``.
     """
     provider = CommonCrawlProvider(transport=transport)
     selected = era_directed_crawl_ids(target_year=target_year, crawls=crawls, window=window)
@@ -261,6 +266,9 @@ def run_cdx_hunt(
             "status": TASK_NOT_FOUND,
             "captures": [],
             "request_count": 0,
+            "http_successes": 0,
+            "http_rate_limited": 0,
+            "http_failures": 0,
             "detail": "no era-directed crawl collections selected",
         }
     # Bounded operational budget: query at most ``max_crawls`` era-directed
@@ -270,6 +278,9 @@ def run_cdx_hunt(
     selected = selected[:max_crawls]
     captures: list[tuple[str, str]] = []
     request_count = 0
+    http_successes = 0
+    http_rate_limited = 0
+    http_failures = 0
     errored_crawls = 0
     rate_limited = False
     for crawl in selected:
@@ -287,14 +298,20 @@ def run_cdx_hunt(
         try:
             result = provider.acquire(req)
         except Exception as exc:  # noqa: BLE001
+            http_failures += 1
             errored_crawls += 1
             continue
         if result.status.name == "RATE_LIMITED":
+            http_rate_limited += 1
             rate_limited = True
             break  # never hammer a rate-limited index; stop querying
         if result.status.name in ("PROVIDER_ERROR", "TIMEOUT"):
+            http_failures += 1
             errored_crawls += 1
             continue  # an erroring crawl does not erase captures from others
+        # SUCCESS / NO_RESULTS: the HTTP interaction completed with a valid
+        # response (a 404 index response is still a successful exchange).
+        http_successes += 1
         for record in result.records or ():
             ts = record.get("capture_timestamp")
             if ts:
@@ -314,6 +331,9 @@ def run_cdx_hunt(
             "status": TASK_CLAIM_FOUND,
             "captures": captures,
             "request_count": request_count,
+            "http_successes": http_successes,
+            "http_rate_limited": http_rate_limited,
+            "http_failures": http_failures,
             "detail": detail,
         }
     if rate_limited:
@@ -321,6 +341,9 @@ def run_cdx_hunt(
             "status": TASK_RATE_LIMITED,
             "captures": [],
             "request_count": request_count,
+            "http_successes": http_successes,
+            "http_rate_limited": http_rate_limited,
+            "http_failures": http_failures,
             "detail": f"rate limited before any capture was found",
         }
     if errored_crawls:
@@ -328,12 +351,18 @@ def run_cdx_hunt(
             "status": TASK_HTTP_FAILED,
             "captures": [],
             "request_count": request_count,
+            "http_successes": http_successes,
+            "http_rate_limited": http_rate_limited,
+            "http_failures": http_failures,
             "detail": f"{errored_crawls} of {request_count} era-directed crawl index(es) errored; no capture found",
         }
     return {
         "status": TASK_NOT_FOUND,
         "captures": [],
         "request_count": request_count,
+        "http_successes": http_successes,
+        "http_rate_limited": http_rate_limited,
+        "http_failures": http_failures,
         "detail": f"no captures across {request_count} era-directed crawl index(es)",
     }
 
@@ -386,6 +415,9 @@ def run_wikipedia_capacity_hunt(
     venue_results: list[dict[str, Any]] = []
     attempts: list[dict[str, Any]] = []
     total_requests = 0
+    http_successes = 0
+    http_rate_limited = 0
+    http_failures = 0
 
     for entry in venues[:max_venues]:
         venue_name = entry.get("venue") or entry.get("venue_name")
@@ -406,6 +438,17 @@ def run_wikipedia_capacity_hunt(
         records = list(result.records or ())
         metadata = result.provider_metadata or {}
 
+        # HTTP-level accounting (never a task outcome): SUCCESS/NO_RESULTS are
+        # completed exchanges; 429s are rate limits; everything else (5xx,
+        # network, timeout, auth-failure responses) is an http failure.
+        error_text = str(metadata.get("error") or metadata.get("rationale") or "")
+        if status == "RATE_LIMITED" or "429" in error_text or "rate" in error_text.lower():
+            http_rate_limited += 1
+        elif status in ("SUCCESS", "NO_RESULTS"):
+            http_successes += 1
+        else:
+            http_failures += 1
+
         if status == "SUCCESS" and records:
             claims = []
             for rec in records:
@@ -421,7 +464,7 @@ def run_wikipedia_capacity_hunt(
             claims = []
             detail = "page retrieved; no capacity evidence in infobox"
         else:
-            error = str(metadata.get("error") or metadata.get("rationale") or "")
+            error = error_text
             claims = []
             if "429" in error or "rate" in error.lower():
                 attempt_status = TASK_RATE_LIMITED
@@ -466,6 +509,9 @@ def run_wikipedia_capacity_hunt(
         "venue_results": venue_results,
         "attempts": attempts,
         "requests": total_requests,
+        "http_successes": http_successes,
+        "http_rate_limited": http_rate_limited,
+        "http_failures": http_failures,
         "venues_hunted": len(venue_results),
     }
 
