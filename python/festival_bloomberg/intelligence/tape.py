@@ -575,6 +575,44 @@ def derive_provider_event_tape_entries(conn) -> list[dict[str, Any]]:
     return rows
 
 
+def derive_news_tape_entries(conn) -> list[dict[str, Any]]:
+    """Derive NEWS_MENTION tape entries from persisted news mentions.
+
+    Reads ``terminal.news_mentions`` (metadata-only news discovery) and emits
+    one NEWS_MENTION row per mention, idempotent by dedupe_key. The article's
+    publication time is the effective_at; retrieved_at/knowledge_time stay
+    distinct and are never collapsed into publication time.
+    """
+    rows: list[dict[str, Any]] = []
+    for r in conn.execute(
+        "SELECT mention_id, entity_type, entity_name, entity_id, article_url, "
+        "       title, publication_time, provider, retrieved_at, knowledge_time, "
+        "       rights_status "
+        "FROM terminal.news_mentions ORDER BY retrieved_at"
+    ).fetchall():
+        (mid, etype, ename, eid, url, title, pub, provider, retrieved, kt, rights) = r
+        observed = _as_dt(kt) or _as_dt(retrieved) or _as_dt(pub)
+        if observed is None:
+            continue
+        entity_type = etype if etype in ENTITY_TYPES else "ARTIST"
+        rows.append(build_tape_row(
+            activity_type="NEWS_MENTION",
+            entity_type=entity_type,
+            entity_id=eid,
+            observed_at=observed,
+            effective_at=_as_dt(pub),
+            source_provider=provider or "gdelt",
+            source_record_id=mid,
+            knowledge_time=_as_dt(kt) or observed,
+            rights_status=rights or "UNKNOWN",
+            evidence_class="OBSERVED_PUBLIC",
+            new_value_json={"title": title, "url": url, "entity_name": ename},
+            source_url=url,
+            software_version="live_entertainment_data_fabric_v1",
+        ))
+    return rows
+
+
 def insert_tape_entries(conn, rows: list[dict[str, Any]]) -> int:
     """Insert tape rows that are not already present (idempotent, append-only).
 

@@ -32,6 +32,7 @@ milestones:
   HISTORICAL_DECISION_EVIDENCE_ENGINE_V1: "PARTIAL (VOI priority + claim graph; acquisition gated on discovery source)"
   FESTIVAL_INTELLIGENCE_TERMINAL_MVP_V1: "PARTIAL (product PASS; live data expansion gated on keys)"
   INTELLIGENCE_DATA_ESTATE_AND_FESTIVAL_SPINE_V1: "PARTIAL (festival spine + provider repair + agent memory PASS; Spotify Web API operational; keyed live ingestion remains)"
+  LIVE_ENTERTAINMENT_DATA_FABRIC_V1: "PARTIAL (Wikimedia attention + 17-market Ticketmaster sweep + partition manifest real; GDELT rate-limited; date-window subdivision remains)"
 
 providers:
   # status taxonomy: PUBLIC_NO_AUTH | AUTH_CONFIGURED | AUTH_MISSING |
@@ -40,7 +41,7 @@ providers:
   wikimedia: "PUBLIC_NO_AUTH / OPERATIONAL (pageviews)"
   commoncrawl: "PUBLIC_NO_AUTH / OPERATIONAL (URL index + CDX)"
   listenbrainz: "PUBLIC_NO_AUTH / NOT_IMPLEMENTED (CC0 attention sample)"
-  gdelt: "PUBLIC_NO_AUTH / NOT_IMPLEMENTED (metadata-only news)"
+  gdelt: "PUBLIC_NO_AUTH / OPERATIONAL (DOC artlist metadata-only news; >=1 req/5s; no article text)"
   ticketmaster: "AUTH (discovery API, DMA-partitioned US music)"
   youtube: "AUTH (video stats + comments)"
   setlistfm: "AUTH (noncommercial unless arranged)"
@@ -59,6 +60,7 @@ docs:
   - pre-event-cutoff-acquisition-v1.md
   - historical-decision-evidence-engine-v1.md
   - intelligence-terminal-mvp-v1.md
+  - live-entertainment-data-fabric-v1.md
 
 key_commands:
   context: "PYTHONPATH=python .venv/bin/python -m festival_bloomberg.ops.context_snapshot"

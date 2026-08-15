@@ -85,6 +85,52 @@
     });
   }
 
+  function viewNews() {
+    setNav("news");
+    api("/api/news?limit=100").then(function (items) {
+      var html = "<h1>News</h1><p class='sub'>Metadata-only news mentions (GDELT) — headlines, domains, publication times. No article text is stored.</p>";
+      if (!items || !items.length) {
+        content.innerHTML = html + '<div class="none">No news mentions. Run the data-fabric OA (GDELT) to acquire metadata.</div>';
+        return;
+      }
+      html += "<table><thead><tr><th>Published</th><th>Entity</th><th>Type</th><th>Title</th><th>Domain</th></tr></thead><tbody>";
+      items.forEach(function (n) {
+        html += row([
+          fmt(n.publication_time ? String(n.publication_time).slice(0, 16) : null),
+          esc(n.entity_name),
+          '<span class="pill ok">' + esc(n.entity_type) + "</span>",
+          '<a href="' + esc(n.article_url || "#") + '" target="_blank" rel="noopener">' + esc(n.title) + "</a>",
+          esc(n.domain),
+        ]);
+      });
+      content.innerHTML = html + "</tbody></table>";
+    });
+  }
+
+  function viewAttention() {
+    setNav("attention");
+    api("/api/attention?limit=100").then(function (items) {
+      var html = "<h1>Attention</h1><p class='sub'>Wikimedia pageviews per artist — an attention channel, never a demand score. Missing articles are excluded, not shown as zero.</p>";
+      if (!items || !items.length) {
+        content.innerHTML = html + '<div class="none">No attention series. Run the data-fabric OA (Wikimedia) to acquire pageviews.</div>';
+        return;
+      }
+      html += "<table><thead><tr><th>Artist</th><th>Article</th><th>Metric</th><th>Obs.</th><th>Latest window</th><th>Total</th></tr></thead><tbody>";
+      items.forEach(function (a) {
+        var key = String(a.artist_key).replace(/^name::/, "");
+        html += row([
+          linkTo("artists", key, key),
+          esc(a.article_title),
+          esc(a.metric_kind),
+          fmt(a.observations),
+          fmt(a.latest_window),
+          fmt(a.total_value) + " " + esc(a.value_unit || ""),
+        ]);
+      });
+      content.innerHTML = html + "</tbody></table>";
+    });
+  }
+
   function viewSearch(q) {
     setNav("");
     api("/api/search?q=" + encodeURIComponent(q)).then(function (items) {
@@ -320,7 +366,7 @@
 
   /* ---- routing --------------------------------------------------------- */
 
-  var VIEWS = { tape: viewTape, status: viewStatus, artists: null, events: null, venues: null, markets: null, festivals: viewFestivals, data: viewData, ask: viewAsk };
+  var VIEWS = { tape: viewTape, status: viewStatus, news: viewNews, attention: viewAttention, artists: null, events: null, venues: null, markets: null, festivals: viewFestivals, data: viewData, ask: viewAsk };
 
   function route() {
     var hash = location.hash.replace(/^#\/?/, "");

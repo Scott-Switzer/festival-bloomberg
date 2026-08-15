@@ -416,20 +416,58 @@ def get_artist_relationship_graph(conn, artist_name: str) -> dict[str, Any]:
 # Attention / news / sources
 # ---------------------------------------------------------------------------
 def get_attention_series(conn, entity_name: str) -> list[dict[str, Any]]:
+    # ``artist_key`` is either ``name::<normalized>`` (fallback) or a bare
+    # normalized name; match both. UNKNOWN/error rows are excluded here and
+    # surfaced separately so a missing article never reads as zero.
+    key = _normalize_name(entity_name)
     return _rows(conn, """
-        SELECT observed_date, value, unit, metric_name, provider, vintage
+        SELECT period_start AS observed_date, value, value_sum, value_unit AS unit,
+               metric_kind AS metric_name, source_system AS provider, article_title,
+               granularity, status, source_url, retrieved_at
         FROM metrics.artist_attention_observations
-        WHERE lower(entity_name) = ? ORDER BY observed_date
-    """, [entity_name.lower()])
+        WHERE lower(artist_key) IN (?, ?) AND status = 'ok'
+        ORDER BY period_start, retrieved_at
+    """, [key, f"name::{key}"])
 
 
 def get_news(conn, entity_name: str) -> list[dict[str, Any]]:
-    # GDELT/YouTube/news providers not yet activated: honest empty list.
+    # GDELT news mentions (metadata only); full article text is never stored.
+    key = _normalize_name(entity_name)
     return _rows(conn, """
-        SELECT article_url, title, publication_time, domain, provider
+        SELECT mention_id, entity_type, entity_name, article_url, title,
+               publication_time, domain, provider, query_or_match, retrieved_at
         FROM terminal.news_mentions
-        WHERE lower(entity_name) = ? ORDER BY publication_time DESC LIMIT 25
-    """, [entity_name.lower()])
+        WHERE lower(entity_name) = ? OR lower(entity_id) IN (?, ?)
+        ORDER BY publication_time DESC LIMIT 25
+    """, [entity_name.lower(), key, f"name::{key}"])
+
+
+def get_recent_news(conn, limit: int = 100) -> list[dict[str, Any]]:
+    """Most recent news mentions across all entities (the NEWS view)."""
+    return _rows(conn, """
+        SELECT mention_id, entity_type, entity_name, entity_id, article_url,
+               title, publication_time, domain, provider, retrieved_at
+        FROM terminal.news_mentions
+        ORDER BY publication_time DESC, retrieved_at DESC LIMIT ?
+    """, [limit])
+
+
+def get_attention_coverage(conn, limit: int = 100) -> list[dict[str, Any]]:
+    """Attention-series coverage across entities (the ATTN view).
+
+    Returns one row per (artist, metric) with total views and the latest
+    observation window. Only 'ok' observations are counted; missing/error
+    articles are surfaced separately, never as zero.
+    """
+    return _rows(conn, """
+        SELECT artist_key, article_title, metric_kind, source_system, project,
+               COUNT(*) AS observations, MAX(period_end) AS latest_window,
+               SUM(value_sum) AS total_value, value_unit
+        FROM metrics.artist_attention_observations
+        WHERE status = 'ok'
+        GROUP BY artist_key, article_title, metric_kind, source_system, project, value_unit
+        ORDER BY total_value DESC LIMIT ?
+    """, [limit])
 
 
 def get_sources(conn) -> list[dict[str, Any]]:
