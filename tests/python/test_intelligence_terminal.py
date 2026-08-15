@@ -17,7 +17,10 @@ import pytest
 from festival_bloomberg.intelligence.ask import answer, run_tool
 from festival_bloomberg.intelligence.providers import (
     ALL_PROVIDERS,
-    NOT_CONFIGURED,
+    AUTH_MISSING,
+    NOT_IMPLEMENTED,
+    OPERATIONAL,
+    PUBLIC_NO_AUTH,
     provider_statuses,
 )
 from festival_bloomberg.intelligence.readmodels import (
@@ -333,22 +336,29 @@ def test_providers_fail_closed_without_keys(monkeypatch):
     monkeypatch.delenv("JAMBASE_API_KEY", raising=False)
     monkeypatch.delenv("CENSUS_API_KEY", raising=False)
     monkeypatch.delenv("TICKETMASTER_API_KEY", raising=False)
+    monkeypatch.delenv("NOAA_API_TOKEN", raising=False)
     statuses = provider_statuses()
-    for s in statuses:
-        assert s["operational_status"] == NOT_CONFIGURED
+    by_name = {s["provider"]: s for s in statuses}
+    # Keyed providers without keys are AUTH_MISSING, never fabricated OPERATIONAL.
+    for name in ("jambase", "census", "ticketmaster-discovery", "spotify", "nvidia"):
+        assert by_name[name]["operational_status"] == AUTH_MISSING
+    # Public no-key providers can NEVER be AUTH_MISSING / NOT_CONFIGURED.
+    for name in ("listenbrainz", "gdelt", "nws", "wikimedia", "commoncrawl"):
+        assert by_name[name]["auth_status"] == PUBLIC_NO_AUTH
+    assert by_name["nws"]["operational_status"] == OPERATIONAL
+    assert by_name["listenbrainz"]["operational_status"] == NOT_IMPLEMENTED
     # JamBase absence never breaks the terminal: it is OPTIONAL.
-    names = {s["provider"] for s in statuses}
-    assert "jambase" in names
-    assert len(ALL_PROVIDERS) == 6
+    assert "jambase" in by_name
+    assert len(ALL_PROVIDERS) == 17
 
 
 def test_provider_failure_does_not_break_read_path(conn):
-    # A provider scaffold with no transport returns NOT_CONFIGURED without
+    # A provider scaffold with no transport reports AUTH_MISSING without
     # touching the warehouse; read models still answer.
     from festival_bloomberg.intelligence.providers import JamBaseProvider
 
     p = JamBaseProvider(transport=None)
-    assert p.run_bounded(conn)["status"] == NOT_CONFIGURED
+    assert p.run_bounded(conn)["status"] == AUTH_MISSING
     _seed_forward_event(conn, "w1", "A", "V", "M", date(2099, 1, 1),
                         datetime(2026, 8, 15, 10, 0, 0))
     conn.commit()
@@ -416,7 +426,10 @@ def test_intelligence_terminal_oa_end_to_end(tmp_path):
     assert manifest["software_version"] == "intelligence_terminal_mvp_v1"
     assert manifest["activity_tape"]["new_rows_written"] >= 1
     assert manifest["entity_coverage"]["forward_events"] == 1
-    # Provider health is fail-closed: no keys -> NOT_CONFIGURED.
-    for h in manifest["provider_health"]:
-        assert h["operational_status"] == "NOT_CONFIGURED"
+    # Provider health is fail-closed: keyed providers without keys are
+    # AUTH_MISSING; public providers are never NOT_CONFIGURED.
+    by_name = {h["provider"]: h for h in manifest["provider_health"]}
+    assert by_name["jambase"]["operational_status"] == "AUTH_MISSING"
+    assert by_name["nws"]["operational_status"] == "OPERATIONAL"
+    assert by_name["listenbrainz"]["operational_status"] == "NOT_IMPLEMENTED"
     assert (tmp_path / "manifest.json").is_file()

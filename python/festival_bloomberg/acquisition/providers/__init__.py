@@ -15,6 +15,7 @@ from .commoncrawl import CommonCrawlProvider
 from .eventbrite import EventbriteProvider
 from .http import HttpProvider
 from .monid import MonidProvider
+from .nws import NwsProvider
 from .openstreetmap import OpenStreetMapProvider
 from .scrapling import ScraplingProvider
 from .seatgeek import SeatGeekProvider
@@ -31,6 +32,7 @@ __all__ = [
     "EventbriteProvider",
     "HttpProvider",
     "MonidProvider",
+    "NwsProvider",
     "OpenStreetMapProvider",
     "ScraplingProvider",
     "SeatGeekProvider",
@@ -50,6 +52,7 @@ def default_providers(**overrides) -> dict[str, AcquisitionProvider]:
         "commoncrawl": CommonCrawlProvider(**overrides.pop("commoncrawl", {})),
         "eventbrite": EventbriteProvider(**overrides.pop("eventbrite", {})),
         "monid": MonidProvider(**overrides.pop("monid", {})),
+        "nws": NwsProvider(**overrides.pop("nws", {})),
         "apify": ApifyProvider(**overrides.pop("apify", {})),
         "youtube": YouTubeProvider(**overrides.pop("youtube", {})),
         "scrapling": ScraplingProvider(**overrides.pop("scrapling", {})),

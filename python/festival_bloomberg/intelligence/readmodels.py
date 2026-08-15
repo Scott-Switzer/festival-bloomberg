@@ -14,6 +14,13 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from ..festivals.repository import (
+    FestivalSpineRepository,
+    billing_trajectory,
+    co_occurrence,
+    relationship_graph,
+)
+
 
 def entity_key(name: str | None) -> str | None:
     """Stable, lowercase, trimmed entity key (never used for identity claims)."""
@@ -83,7 +90,18 @@ def search_entities(conn, query: str, limit: int = 25) -> list[dict[str, Any]]:
         results.append({"entity_type": "MARKET", "entity_id": entity_key(mkt),
                         "name": mkt})
 
-    # Festivals: no canonical festival corpus yet; returned empty (honest).
+    festivals = _rows(conn, """
+        SELECT festival_key AS id, name, location_city, location_country
+        FROM core.festivals
+        WHERE lower(name) LIKE ? AND name IS NOT NULL
+        ORDER BY first_edition_year, name
+        LIMIT ?
+    """, [q, limit])
+    for r in festivals:
+        results.append({"entity_type": "FESTIVAL", "entity_id": r["id"],
+                        "name": r["name"],
+                        "location": ", ".join(x for x in (r["location_city"], r["location_country"]) if x)})
+
     return results[:limit]
 
 
@@ -358,9 +376,32 @@ def get_market(conn, market_key: str) -> dict[str, Any] | None:
 # Festival
 # ---------------------------------------------------------------------------
 def get_festival(conn, festival_key: str) -> dict[str, Any] | None:
-    # No canonical festival corpus yet. Return None so the terminal can render
-    # an honest "no data" page rather than fabricate a festival.
-    return None
+    repo = FestivalSpineRepository(conn)
+    fest = repo.get_festival(festival_key)
+    if not fest:
+        return None
+    fest["entity_type"] = "FESTIVAL"
+    fest["entity_id"] = festival_key
+    for ed in fest["editions"]:
+        ed["lineup"] = repo.get_lineup(ed["edition_key"])
+        ed["billing"] = repo.get_billing(ed["edition_key"])
+    return fest
+
+
+def get_festival_edition(conn, edition_key: str) -> dict[str, Any] | None:
+    return FestivalSpineRepository(conn).get_edition(edition_key)
+
+
+def get_artist_billing_trajectory(conn, artist_name: str) -> list[dict[str, Any]]:
+    return billing_trajectory(conn, artist_name)
+
+
+def get_artist_co_occurrence(conn, artist_name: str) -> list[dict[str, Any]]:
+    return co_occurrence(conn, artist_name)
+
+
+def get_artist_relationship_graph(conn, artist_name: str) -> dict[str, Any]:
+    return relationship_graph(conn, artist_name)
 
 
 # ---------------------------------------------------------------------------

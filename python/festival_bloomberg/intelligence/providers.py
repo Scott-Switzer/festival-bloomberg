@@ -1,43 +1,57 @@
-"""Provider scaffolds for the intelligence terminal's data expansion.
+"""Provider registry for the intelligence terminal.
 
-Each provider is fail-closed: without an authorized key/transport it reports
-NOT_CONFIGURED and makes ZERO network calls. Rights/commercial status is kept
-in ``flywheel.source_registry``; these classes only add the operational
-status + a bounded acquisition entry point that a keyed run can use.
+This is a UNIFIED registry: it reconciles the terminal's provider scaffolds
+with the canonical acquisition layer (``festival_bloomberg.acquisition``).
+Both read the SAME local ``.env`` through ``localenv.load_local_env``, and both
+report the same rights/commercial status from ``flywheel.source_registry``.
 
-Provider semantics are honored literally:
+Provider state taxonomy (the bug fix from the data-estate milestone):
 
-- ListenBrainz is an ATTENTION/CONSUMPTION SAMPLE (CC0), NEVER local demand.
-- GDELT stores metadata (URL/domain/title/timestamp), never full article text.
-- NWS forecasts are snapshotted at their forecast-observation time; realized
-  weather never leaks into an earlier forecast state.
-- Census ACS retains vintage + estimate + margin of error; missing values are
-  NULL, never zero.
-- JamBase is OPTIONAL and strictly bounded (trial); it is not ground truth and
-  is never a hard dependency of the terminal.
-- SeatGeek remains DISABLED for automated ingestion (terms review).
+- ``PUBLIC_NO_AUTH``   — key-free public provider that is operational.
+- ``AUTH_CONFIGURED``  — required key present (value never shown).
+- ``AUTH_MISSING``     — required key absent.
+- ``OPERATIONAL``      — implemented AND (public OR auth configured).
+- ``NOT_IMPLEMENTED``  — scaffold only; no real acquisition wired.
+- ``DISABLED_RIGHTS``  — terms/rights block automated ingestion.
+- ``BLOCKED`` / ``RATE_LIMITED`` / ``DEGRADED`` — runtime states.
+
+A no-key provider (e.g. ListenBrainz, GDELT, NWS) can NEVER be classified
+``NOT_CONFIGURED``/``AUTH_MISSING``: that status is reserved for providers
+whose required credential is absent. This was previously broken by an
+``env_keys = ()`` provider whose ``any(())`` test always returned False.
+
+Provider semantics are honored literally: ListenBrainz is an ATTENTION/
+CONSUMPTION SAMPLE (CC0), never local demand; GDELT stores metadata only;
+NWS forecasts are snapshotted at forecast-generation time; SeatGeek stays
+DISABLED for automated ingestion (terms review).
 """
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
-NOT_CONFIGURED = "NOT_CONFIGURED"
+from ..localenv import load_local_env
+
+# -- status constants ---------------------------------------------------------
+PUBLIC_NO_AUTH = "PUBLIC_NO_AUTH"
+AUTH_CONFIGURED = "AUTH_CONFIGURED"
+AUTH_MISSING = "AUTH_MISSING"
 OPERATIONAL = "OPERATIONAL"
+NOT_IMPLEMENTED = "NOT_IMPLEMENTED"
+DISABLED_RIGHTS = "DISABLED_RIGHTS"
 BLOCKED = "BLOCKED"
-PARTIAL = "PARTIAL"
-
-
-def _has_env(*names: str) -> bool:
-    return any(os.environ.get(n) for n in names)
+RATE_LIMITED = "RATE_LIMITED"
+DEGRADED = "DEGRADED"
+NOT_CONFIGURED = "NOT_CONFIGURED"  # legacy alias for AUTH_MISSING
 
 
 class ProviderScaffold:
-    """Base class: name, env key, rights, and a fail-closed status."""
+    """Base scaffold: name, auth requirement, rights, and fail-closed status."""
 
     name = "scaffold"
     env_keys: tuple[str, ...] = ()
+    auth_required: bool = True       # False for key-free public providers
+    implemented: bool = False        # True once a real _acquire exists
     rights_status = "TERMS_REVIEW_REQUIRED"
     commercial_use_status = "TERMS_REVIEW_REQUIRED"
     license = None
@@ -48,14 +62,28 @@ class ProviderScaffold:
 
     @property
     def is_configured(self) -> bool:
-        return _has_env(*self.env_keys)
+        # Public providers never need a credential.
+        if not self.auth_required:
+            return True
+        load_local_env()
+        return any(_nonempty(k) for k in self.env_keys)
+
+    def auth_status(self) -> str:
+        if not self.auth_required:
+            return PUBLIC_NO_AUTH
+        return AUTH_CONFIGURED if self.is_configured else AUTH_MISSING
 
     def status(self) -> str:
-        return OPERATIONAL if self.is_configured else NOT_CONFIGURED
+        if self.rights_status in ("DISABLED", "RIGHTS_BLOCKED", "TERMS_BLOCKED"):
+            return DISABLED_RIGHTS
+        if not self.is_configured:
+            return AUTH_MISSING
+        return OPERATIONAL if self.implemented else NOT_IMPLEMENTED
 
     def describe(self) -> dict[str, Any]:
         return {
             "provider": self.name,
+            "auth_status": self.auth_status(),
             "operational_status": self.status(),
             "rights_status": self.rights_status,
             "commercial_use_status": self.commercial_use_status,
@@ -64,32 +92,34 @@ class ProviderScaffold:
         }
 
     def run_bounded(self, conn, **kwargs: Any) -> dict[str, Any]:
-        """Bounded acquisition entry point. NOT_CONFIGURED without a key/transport."""
         if not self.is_configured or self.transport is None:
-            return {"provider": self.name, "status": NOT_CONFIGURED, "records": 0}
+            return {"provider": self.name, "status": self.status(), "records": 0}
         return self._acquire(conn, **kwargs)
 
     def _acquire(self, conn, **kwargs: Any) -> dict[str, Any]:
         raise NotImplementedError
 
 
+def _nonempty(name: str) -> bool:
+    import os
+    value = os.environ.get(name)
+    return bool(value and value.strip())
+
+
 class ListenBrainzProvider(ProviderScaffold):
     name = "listenbrainz"
-    env_keys: tuple[str, ...] = ()
+    auth_required = False
+    implemented = False
     rights_status = "OPEN_COMMERCIAL_OK"  # CC0
     commercial_use_status = "OPEN_COMMERCIAL_OK"
     license = "CC0"
     quota_note = "public dumps + API; attention/consumption sample, never demand"
 
-    def _acquire(self, conn, **kwargs: Any) -> dict[str, Any]:
-        # Keyed/full implementation lands when a transport is wired; this
-        # milestone keeps the scaffold honest rather than half-ingesting.
-        return {"provider": self.name, "status": PARTIAL, "records": 0}
-
 
 class GdeltProvider(ProviderScaffold):
     name = "gdelt"
-    env_keys: tuple[str, ...] = ()
+    auth_required = False
+    implemented = False
     rights_status = "OPEN_COMMERCIAL_OK"
     commercial_use_status = "OPEN_COMMERCIAL_OK"
     license = None
@@ -98,38 +128,138 @@ class GdeltProvider(ProviderScaffold):
 
 class NwsProvider(ProviderScaffold):
     name = "nws"
-    env_keys: tuple[str, ...] = ()
+    auth_required = False
+    implemented = True  # canonical acquisition.providers.nws.NwsProvider
     rights_status = "OPEN_COMMERCIAL_OK"
     commercial_use_status = "OPEN_COMMERCIAL_OK"
     license = None
-    quota_note = "api.weather.gov; forecasts snapshot at observation time"
+    quota_note = "api.weather.gov; forecasts snapshot at generation time"
 
 
 class CensusProvider(ProviderScaffold):
     name = "census"
-    env_keys: tuple[str, ...] = ("CENSUS_API_KEY",)
+    env_keys = ("CENSUS_API_KEY",)
+    implemented = False
     rights_status = "OPEN_COMMERCIAL_OK"
     commercial_use_status = "OPEN_COMMERCIAL_OK"
-    license = None
     quota_note = "ACS vintage + estimate + margin of error retained"
 
 
 class JamBaseProvider(ProviderScaffold):
     name = "jambase"
-    env_keys: tuple[str, ...] = ("JAMBASE_API_KEY",)
+    env_keys = ("JAMBASE_API_KEY",)
+    implemented = False
     rights_status = "TERMS_REVIEW_REQUIRED"
     commercial_use_status = "TERMS_REVIEW_REQUIRED"
-    license = None
     quota_note = "OPTIONAL; strictly bounded benchmark (trial); not ground truth"
 
 
 class TicketmasterProvider(ProviderScaffold):
     name = "ticketmaster-discovery"
-    env_keys: tuple[str, ...] = ("TICKETMASTER_API_KEY",)
+    env_keys = ("TICKETMASTER_API_KEY", "TICKETMASTER_CONSUMER_KEY")
+    implemented = False
     rights_status = "TERMS_REVIEW_REQUIRED"
     commercial_use_status = "TERMS_REVIEW_REQUIRED"
-    license = None
     quota_note = "5,000/day; treat 2 req/s as safe default; DMA-partitioned US music"
+
+
+class SpotifyProvider(ProviderScaffold):
+    name = "spotify"
+    env_keys = ("SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET")
+    implemented = False
+    rights_status = "TERMS_REVIEW_REQUIRED"
+    commercial_use_status = "RESEARCH_ONLY"
+    quota_note = "Dev Mode 2026: no followers/popularity; shared dev-account quota"
+
+
+class YouTubeProvider(ProviderScaffold):
+    name = "youtube"
+    env_keys = ("YOUTUBE_API_KEY",)
+    implemented = False
+    rights_status = "TERMS_REVIEW_REQUIRED"
+    commercial_use_status = "TERMS_REVIEW_REQUIRED"
+    quota_note = "video stats + comment collection; batchGetStats quota bucket"
+
+
+class SetlistFmProvider(ProviderScaffold):
+    name = "setlistfm"
+    env_keys = ("SETLISTFM_API_KEY",)
+    implemented = False
+    rights_status = "TERMS_REVIEW_REQUIRED"
+    commercial_use_status = "RESEARCH_ONLY"
+    quota_note = "noncommercial unless separately arranged"
+
+
+class ApifyProvider(ProviderScaffold):
+    name = "apify"
+    env_keys = ("APIFY_TOKEN",)
+    implemented = False
+    rights_status = "TERMS_REVIEW_REQUIRED"
+    commercial_use_status = "TERMS_REVIEW_REQUIRED"
+    quota_note = "last-resort high-value fallback; spend credits only on P0 gaps"
+
+
+class MonidProvider(ProviderScaffold):
+    name = "monid"
+    env_keys = ("MONID_API_KEY",)
+    implemented = False
+    rights_status = "TERMS_REVIEW_REQUIRED"
+    commercial_use_status = "TERMS_REVIEW_REQUIRED"
+    quota_note = "configurable approved endpoint"
+
+
+class MusicBrainzProvider(ProviderScaffold):
+    name = "musicbrainz"
+    env_keys = ("MUSICBRAINZ_USER_AGENT", "MUSICBRAINZ_API_KEY")
+    implemented = False
+    rights_status = "OPEN_COMMERCIAL_OK"  # core data CC0
+    commercial_use_status = "RESEARCH_ONLY"  # public web service is noncommercial
+    quota_note = "~1 req/sec; prefer local core dump for identity spine"
+
+
+class WikimediaProvider(ProviderScaffold):
+    name = "wikimedia"
+    auth_required = False
+    implemented = True  # canonical acquisition.providers.wikimedia.WikimediaProvider
+    rights_status = "OPEN_COMMERCIAL_OK"
+    commercial_use_status = "OPEN_COMMERCIAL_OK"
+    quota_note = "pageviews/edits attention series"
+
+
+class CommonCrawlProvider(ProviderScaffold):
+    name = "commoncrawl"
+    auth_required = False
+    implemented = True  # canonical acquisition.providers.commoncrawl.CommonCrawlProvider
+    rights_status = "OPEN_COMMERCIAL_OK"
+    commercial_use_status = "OPEN_COMMERCIAL_OK"
+    quota_note = "URL Index (Parquet) for bulk discovery; CDX only for known URLs"
+
+
+class NvidiaProvider(ProviderScaffold):
+    name = "nvidia"
+    env_keys = ("NVIDIA_API_KEY",)
+    implemented = False
+    rights_status = "TERMS_REVIEW_REQUIRED"
+    commercial_use_status = "RESEARCH_ONLY"  # dev program is prototyping/research
+    quota_note = "OpenAI-compatible NIM; production licensing separate"
+
+
+class DeepSeekProvider(ProviderScaffold):
+    name = "deepseek"
+    env_keys = ("DEEPSEEK_API_KEY",)
+    implemented = False
+    rights_status = "TERMS_REVIEW_REQUIRED"
+    commercial_use_status = "RESEARCH_ONLY"
+    quota_note = "public/sanitized material only; no private settlement data"
+
+
+class SeatGeekProvider(ProviderScaffold):
+    name = "seatgeek"
+    env_keys = ("SEATGEEK_CLIENT_ID",)
+    implemented = False
+    rights_status = "DISABLED"  # terms prohibit AI/ML ingestion without authorization
+    commercial_use_status = "TERMS_REVIEW_REQUIRED"
+    quota_note = "DISABLED for automated corpus/LLM ingestion (terms)"
 
 
 ALL_PROVIDERS: list[type[ProviderScaffold]] = [
@@ -139,9 +269,31 @@ ALL_PROVIDERS: list[type[ProviderScaffold]] = [
     CensusProvider,
     JamBaseProvider,
     TicketmasterProvider,
+    SpotifyProvider,
+    YouTubeProvider,
+    SetlistFmProvider,
+    ApifyProvider,
+    MonidProvider,
+    MusicBrainzProvider,
+    WikimediaProvider,
+    CommonCrawlProvider,
+    NvidiaProvider,
+    DeepSeekProvider,
+    SeatGeekProvider,
 ]
 
 
 def provider_statuses(transport: Any = None) -> list[dict[str, Any]]:
-    """Operational status for every new provider (fail-closed)."""
-    return [cls(transport=transport).describe() for cls in ALL_PROVIDERS]
+    """Unified, fail-closed operational status for every registered provider."""
+    load_local_env()
+    out: list[dict[str, Any]] = []
+    for cls in ALL_PROVIDERS:
+        inst = cls(transport=transport)
+        desc = inst.describe()
+        # Surface credential presence WITHOUT the value (names only).
+        desc["credentials"] = {
+            "configured": inst.is_configured,
+            "keys": list(inst.env_keys),
+        }
+        out.append(desc)
+    return out

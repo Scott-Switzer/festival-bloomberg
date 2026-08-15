@@ -22,10 +22,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
+from ..festivals.repository import FestivalSpineRepository
 from ..flywheel.repository import FlywheelRepository
 from ..intelligence import readmodels
 from ..intelligence.ask import answer as ask_answer
 from ..intelligence.ask import DeepSeekAskClient
+from ..intelligence.llm import NimClient
 from ..localenv import load_local_env
 from ..research.repository import ResearchRepository
 from ..warehouse.repository import FestivalRepository
@@ -46,9 +48,10 @@ def _json(payload: Any) -> bytes:
 class TerminalApp:
     """WSGI-style dispatcher over the read models (no sockets, testable)."""
 
-    def __init__(self, conn, *, deepseek: Any = None) -> None:
+    def __init__(self, conn, *, deepseek: Any = None, llm: Any = None) -> None:
         self.conn = conn
         self.deepseek = deepseek
+        self.llm = llm
 
     def dispatch(self, method: str, path: str, query: str = "", body: bytes = b"") -> dict[str, Any]:
         parts = [unquote(p) for p in path.split("/") if p]
@@ -74,13 +77,15 @@ class TerminalApp:
             ))
         if path == "/api/sources":
             return self._ok(readmodels.get_sources(self.conn))
+        if path == "/api/festivals":
+            return self._ok(FestivalSpineRepository(self.conn).list_festivals())
 
         if path == "/api/ask" and method == "POST":
             try:
                 q = json.loads(body.decode("utf-8")).get("question", "")
             except Exception:
                 q = ""
-            return self._ok(ask_answer(self.conn, q, deepseek=self.deepseek))
+            return self._ok(ask_answer(self.conn, q, deepseek=self.deepseek, llm=self.llm))
 
         # ---- entity routes ---------------------------------------------
         if len(parts) >= 2 and parts[0] == "api":
@@ -99,6 +104,8 @@ class TerminalApp:
             if entity_type == "markets":
                 return self._entity_market(entity_id, sub)
             if entity_type == "festivals":
+                if sub == "editions" and len(parts) >= 5:
+                    return self._ok(readmodels.get_festival_edition(self.conn, parts[4]))
                 return self._ok(readmodels.get_festival(self.conn, entity_id))
 
         return self._not_found()
@@ -116,6 +123,10 @@ class TerminalApp:
             return self._ok(artist["attention"])
         if sub == "news":
             return self._ok(artist["news"])
+        if sub == "billing":
+            return self._ok(readmodels.get_artist_billing_trajectory(self.conn, artist["name"]))
+        if sub == "co-occurrence":
+            return self._ok(readmodels.get_artist_co_occurrence(self.conn, artist["name"]))
         return self._ok(artist)
 
     def _entity_event(self, entity_id: str, sub: str | None) -> dict[str, Any]:
@@ -208,7 +219,8 @@ def make_app(db_path: str = DEFAULT_DB) -> TerminalApp:
     FlywheelRepository(conn)   # apply pending migrations (intelligence schema)
     ResearchRepository(conn)
     deepseek = DeepSeekAskClient(api_key=os.environ.get("DEEPSEEK_API_KEY"))
-    app = TerminalApp(conn, deepseek=deepseek)
+    llm = NimClient()          # NVIDIA NIM (fail-closed without a key)
+    app = TerminalApp(conn, deepseek=deepseek, llm=llm)
     app._repo = repo  # keep alive; close on shutdown
     return app
 

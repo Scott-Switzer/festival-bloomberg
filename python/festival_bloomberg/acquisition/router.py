@@ -44,6 +44,7 @@ MECHANISM_BY_PROVIDER = {
     "seatgeek": "api",
     "wikidata": "api",
     "openstreetmap": "api",
+    "nws": "api",
     "commoncrawl": "api",
     "scrapling": "scraping",
 }

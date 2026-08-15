@@ -203,3 +203,23 @@ PYTHONPATH=python python3 -m festival_bloomberg.terminal.server --port 8931
 ```
 
 See `docs/intelligence-terminal-mvp-v1.md`.
+
+## Intelligence Data Estate & Festival Spine V1
+
+Activates the dormant festival spine (migration 023) and fixes the
+provider/config architecture. Seeds 6 real festivals — Newport Jazz 1954,
+Monterey Pop 1967, Woodstock 1969, Glastonbury 1971, Lollapalooza 1991,
+Coachella 1999 — as 96 source-backed lineup slots + 96 billing observations
+(each `RESEARCH_DISCOVERY_SEED` with source URL, confidence, rationale;
+identities stay unresolved and conflicting billing claims coexist). Also fixes
+the public no-key provider bug (ListenBrainz/GDELT/NWS can never report
+`NOT_CONFIGURED`), adds a presence-only credential status module, a
+provider-neutral NVIDIA NIM model router + grounded ASK, a real key-free NWS
+forecast provider, and agent memory (`AGENTS.md` + `context_snapshot`).
+
+```bash
+PYTHONPATH=python python3 -m festival_bloomberg.oa.data_estate
+PYTHONPATH=python python3 -m festival_bloomberg.ops.context_snapshot
+```
+
+See `docs/intelligence-data-estate-festival-spine-v1.md`.

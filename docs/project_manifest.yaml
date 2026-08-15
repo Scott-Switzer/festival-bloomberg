@@ -1,0 +1,66 @@
+# Festival Intelligence — project capability manifest (machine-readable).
+# This is an orientation map for coding/research agents, NOT a source of truth
+# for data. Counts are approximate; run `context_snapshot` for live values.
+# No secret values belong in this file.
+
+project:
+  mission: "Quantitative information infrastructure for live entertainment."
+  product: "Read-only information terminal (search, tape, entity pages, ASK)."
+
+architecture:
+  warehouse: "DuckDB (schema/duckdb.sql + schema/migrations/*.sql)"
+  research_db: "data/warehouse/boxoffice_research_v2.duckdb"
+  acquisition: "python/festival_bloomberg/acquisition/"
+  flywheel: "python/festival_bloomberg/flywheel/"
+  festival_spine: "python/festival_bloomberg/festivals/ (core.festival_*)"
+  terminal: "python/festival_bloomberg/terminal/ + apps/terminal/static/"
+  config: "python/festival_bloomberg/localenv.py + config.py"
+
+semantics:
+  - "UNKNOWN != 0"
+  - "announcement != booking != onsale"
+  - "capacity != attendance"
+  - "archive capture time != publication time"
+  - "conflicting claims coexist"
+  - "models propose evidence; deterministic code decides admissibility"
+
+milestones:
+  BASELINE_RESEARCH_V1: "COMPS_SIGNAL_ONLY (negative result preserved)"
+  DATA_FLYWHEEL_AND_COVERAGE_V1: "PASS"
+  DATA_ACQUISITION_ACTIVATION_V1: "PARTIAL (forward watch + hunt execution real; strict PIT warm-start = 0)"
+  PRE_EVENT_CUTOFF_ACQUISITION_V1: "PARTIAL (cutoff taxonomy; historical decision cutoffs = 0)"
+  HISTORICAL_DECISION_EVIDENCE_ENGINE_V1: "PARTIAL (VOI priority + claim graph; acquisition gated on discovery source)"
+  FESTIVAL_INTELLIGENCE_TERMINAL_MVP_V1: "PARTIAL (product PASS; live data expansion gated on keys)"
+  INTELLIGENCE_DATA_ESTATE_AND_FESTIVAL_SPINE_V1: "in progress"
+
+providers:
+  # status taxonomy: PUBLIC_NO_AUTH | AUTH_CONFIGURED | AUTH_MISSING |
+  #                  OPERATIONAL | NOT_IMPLEMENTED | DISABLED_RIGHTS
+  nws: "PUBLIC_NO_AUTH / OPERATIONAL (api.weather.gov forecasts)"
+  wikimedia: "PUBLIC_NO_AUTH / OPERATIONAL (pageviews)"
+  commoncrawl: "PUBLIC_NO_AUTH / OPERATIONAL (URL index + CDX)"
+  listenbrainz: "PUBLIC_NO_AUTH / NOT_IMPLEMENTED (CC0 attention sample)"
+  gdelt: "PUBLIC_NO_AUTH / NOT_IMPLEMENTED (metadata-only news)"
+  ticketmaster: "AUTH (discovery API, DMA-partitioned US music)"
+  youtube: "AUTH (video stats + comments)"
+  setlistfm: "AUTH (noncommercial unless arranged)"
+  spotify: "AUTH (Dev Mode 2026 restrictions)"
+  nvidia: "AUTH (OpenAI-compatible NIM; prototyping/research)"
+  seatgeek: "DISABLED_RIGHTS (automated ingestion terms)"
+
+docs:
+  - historical_festival_artist_database_spec.md
+  - historical_lineups_and_billing_analysis.md
+  - quantitative_research_specs.md
+  - baseline-research-v1.md
+  - data-flywheel-and-coverage-v1.md
+  - data-acquisition-activation-v1.md
+  - pre-event-cutoff-acquisition-v1.md
+  - historical-decision-evidence-engine-v1.md
+  - intelligence-terminal-mvp-v1.md
+
+key_commands:
+  context: "PYTHONPATH=python .venv/bin/python -m festival_bloomberg.ops.context_snapshot"
+  python_tests: ".venv/bin/python -m pytest tests/python -q"
+  oa: "PYTHONPATH=python .venv/bin/python -m festival_bloomberg.oa.data_estate"
+  terminal: "PYTHONPATH=python .venv/bin/python -m festival_bloomberg.terminal.server --port 8931"
