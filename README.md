@@ -186,3 +186,20 @@ PYTHONPATH=python python3 -m festival_bloomberg.oa.historical_decision_evidence
 See `docs/historical-decision-evidence-engine-v1.md`. The next research
 milestone is `COMPARABLE_EVENT_ENGINE_V1` — only once announcement/onsale/
 booking-bound histories exist for a meaningful subset of events.
+
+## Intelligence Terminal MVP V1
+
+The first information product. A read-only, source-backed terminal over the
+canonical warehouse (migration 022): search across artists/events/venues/
+markets/festivals, an append-only activity tape of "what changed", entity
+pages with boxoffice history and forward events, a DATA page that shows
+provider rights/commercial status rather than hiding them, and a grounded
+read-only ASK layer whose answers cite underlying evidence.
+
+```bash
+PYTHONPATH=python python3 -m festival_bloomberg.oa.intelligence_terminal
+PYTHONPATH=python python3 -m festival_bloomberg.terminal.server --port 8931
+# open http://127.0.0.1:8931
+```
+
+See `docs/intelligence-terminal-mvp-v1.md`.

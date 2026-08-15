@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Festival Intelligence Terminal</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="shell">
+    <nav class="nav">
+      <div class="brand">FESTIVAL<br />INTELLIGENCE</div>
+      <button class="nav-btn" data-view="tape">TAPE</button>
+      <button class="nav-btn" data-view="artists">ARTISTS</button>
+      <button class="nav-btn" data-view="events">EVENTS</button>
+      <button class="nav-btn" data-view="venues">VENUES</button>
+      <button class="nav-btn" data-view="markets">MARKETS</button>
+      <button class="nav-btn" data-view="festivals">FESTIVALS</button>
+      <button class="nav-btn" data-view="data">DATA</button>
+      <button class="nav-btn" data-view="ask">ASK</button>
+    </nav>
+    <main class="main">
+      <header class="topbar">
+        <input id="search" class="search" type="text" placeholder="Search artist, event, venue, market…" autocomplete="off" />
+        <div id="search-results" class="search-results hidden"></div>
+      </header>
+      <div id="content" class="content">Loading…</div>
+    </main>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
