@@ -269,6 +269,16 @@ class FlywheelRepository:
         sql += " ORDER BY event_date NULLS LAST, watch_event_id"
         return _rows(self.conn.execute(sql, params))
 
+    def find_forward_event(self, *, provider: str, provider_event_id: str) -> dict[str, Any] | None:
+        rows = _rows(
+            self.conn.execute(
+                "SELECT * FROM flywheel.forward_watch_events "
+                "WHERE provider = ? AND provider_event_id = ?",
+                [provider, provider_event_id],
+            )
+        )
+        return rows[0] if rows else None
+
     def query_forward_observations(
         self, *, watch_event_id: str | None = None, cutoff: datetime | str | None = None
     ) -> list[dict[str, Any]]:
@@ -366,6 +376,181 @@ class FlywheelRepository:
             sql += " AND plan_id = ?"
             params.append(plan_id)
         sql += " ORDER BY plan_id, target_field"
+        return _rows(self.conn.execute(sql, params))
+
+    # -- PIT reconstruction evidence ------------------------------------------
+    def insert_pit_evidence(self, row: dict[str, Any]) -> bool:
+        """Insert one PIT reconstruction evidence row (idempotent per
+        (event, evidence_class, source_document_id))."""
+        existing = self.conn.execute(
+            "SELECT evidence_id FROM flywheel.pit_reconstruction_evidence "
+            "WHERE canonical_event_id = ? AND evidence_class = ? "
+            "  AND COALESCE(source_document_id, '') = COALESCE(?, '')",
+            [row["canonical_event_id"], row["evidence_class"], row.get("source_document_id")],
+        ).fetchone()
+        if existing:
+            return False
+        self.conn.execute(
+            """
+            INSERT INTO flywheel.pit_reconstruction_evidence
+                (evidence_id, canonical_event_id, evidence_class,
+                 source_publication_time, archive_capture_time,
+                 source_period_start, source_period_end, source_url,
+                 source_provider, source_document_id, rights_status,
+                 commercial_use_status, knowledge_time, software_version)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                row["evidence_id"], row["canonical_event_id"], row["evidence_class"],
+                row.get("source_publication_time"), row.get("archive_capture_time"),
+                row.get("source_period_start"), row.get("source_period_end"),
+                row.get("source_url"), row.get("source_provider"),
+                row.get("source_document_id"), row["rights_status"],
+                row["commercial_use_status"], row["knowledge_time"],
+                row.get("software_version"),
+            ],
+        )
+        self.conn.commit()
+        return True
+
+    def query_pit_evidence(self, *, canonical_event_id: str | None = None) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM flywheel.pit_reconstruction_evidence WHERE 1=1"
+        params: list[Any] = []
+        if canonical_event_id:
+            sql += " AND canonical_event_id = ?"
+            params.append(canonical_event_id)
+        sql += " ORDER BY canonical_event_id, evidence_class"
+        return _rows(self.conn.execute(sql, params))
+
+    # -- outcome hunt attempts (append-only execution ledger) -----------------
+    def insert_hunt_attempt(self, row: dict[str, Any]) -> bool:
+        existing = self.conn.execute(
+            "SELECT attempt_id FROM flywheel.outcome_hunt_attempts WHERE attempt_id = ?",
+            [row["attempt_id"]],
+        ).fetchone()
+        if existing:
+            return False
+        self.conn.execute(
+            """
+            INSERT INTO flywheel.outcome_hunt_attempts
+                (attempt_id, plan_id, task_id, target_field, provider, status,
+                 started_at, finished_at, request_count, source_url,
+                 capture_count, claim_id, detail, raw_payload_hash, software_version)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                row["attempt_id"], row["plan_id"], row["task_id"],
+                row["target_field"], row["provider"], row["status"],
+                row["started_at"], row.get("finished_at"), row.get("request_count", 0),
+                row.get("source_url"), row.get("capture_count"), row.get("claim_id"),
+                row.get("detail"), row.get("raw_payload_hash"),
+                row.get("software_version"),
+            ],
+        )
+        self.conn.commit()
+        return True
+
+    def query_hunt_attempts(
+        self, *, status: str | None = None, provider: str | None = None
+    ) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM flywheel.outcome_hunt_attempts WHERE 1=1"
+        params: list[Any] = []
+        if status:
+            sql += " AND status = ?"
+            params.append(status)
+        if provider:
+            sql += " AND provider = ?"
+            params.append(provider)
+        sql += " ORDER BY started_at, attempt_id"
+        return _rows(self.conn.execute(sql, params))
+
+    # -- provider acquisition runs + derived metrics --------------------------
+    def insert_acquisition_run(self, row: dict[str, Any]) -> bool:
+        existing = self.conn.execute(
+            "SELECT run_id FROM flywheel.provider_acquisition_runs WHERE run_id = ?",
+            [row["run_id"]],
+        ).fetchone()
+        if existing:
+            return False
+        self.conn.execute(
+            """
+            INSERT INTO flywheel.provider_acquisition_runs
+                (run_id, provider, pipeline, started_at, finished_at, requests,
+                 successful_responses, records_parsed, new_claims,
+                 new_unique_events_improved, new_cutoffs, new_warm_start_events,
+                 new_forward_observations, new_ticket_pace_events, duplicates,
+                 conflicts, not_found, rights_blocked, rate_limited,
+                 parser_failed, http_failed, auth_failed, other_failure,
+                 latency_ms_total, quota_consumed, monetary_cost_usd, detail)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                row["run_id"], row["provider"], row["pipeline"], row["started_at"],
+                row.get("finished_at"), row.get("requests", 0),
+                row.get("successful_responses", 0), row.get("records_parsed", 0),
+                row.get("new_claims", 0), row.get("new_unique_events_improved", 0),
+                row.get("new_cutoffs", 0), row.get("new_warm_start_events", 0),
+                row.get("new_forward_observations", 0),
+                row.get("new_ticket_pace_events", 0), row.get("duplicates", 0),
+                row.get("conflicts", 0), row.get("not_found", 0),
+                row.get("rights_blocked", 0), row.get("rate_limited", 0),
+                row.get("parser_failed", 0), row.get("http_failed", 0),
+                row.get("auth_failed", 0), row.get("other_failure", 0),
+                row.get("latency_ms_total", 0), row.get("quota_consumed", 0),
+                row.get("monetary_cost_usd", 0.0), row.get("detail"),
+            ],
+        )
+        self.conn.commit()
+        return True
+
+    def query_acquisition_runs(self, *, provider: str | None = None) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM flywheel.provider_acquisition_runs WHERE 1=1"
+        params: list[Any] = []
+        if provider:
+            sql += " AND provider = ?"
+            params.append(provider)
+        sql += " ORDER BY started_at, run_id"
+        return _rows(self.conn.execute(sql, params))
+
+    def insert_acquisition_metrics(self, row: dict[str, Any]) -> bool:
+        existing = self.conn.execute(
+            "SELECT metric_id FROM flywheel.provider_acquisition_metrics WHERE metric_id = ?",
+            [row["metric_id"]],
+        ).fetchone()
+        if existing:
+            return False
+        self.conn.execute(
+            """
+            INSERT INTO flywheel.provider_acquisition_metrics
+                (metric_id, run_id, provider, successes_per_1000_requests,
+                 new_claims_per_1000_requests, new_cutoffs_per_1000_requests,
+                 new_usable_events_per_1000_requests,
+                 new_warm_starts_per_1000_requests, cost_per_new_claim,
+                 cost_per_new_usable_event, cost_per_new_warm_start, knowledge_time)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                row["metric_id"], row["run_id"], row["provider"],
+                row.get("successes_per_1000_requests"),
+                row.get("new_claims_per_1000_requests"),
+                row.get("new_cutoffs_per_1000_requests"),
+                row.get("new_usable_events_per_1000_requests"),
+                row.get("new_warm_starts_per_1000_requests"),
+                row.get("cost_per_new_claim"),
+                row.get("cost_per_new_usable_event"),
+                row.get("cost_per_new_warm_start"), row["knowledge_time"],
+            ],
+        )
+        self.conn.commit()
+        return True
+
+    def query_acquisition_metrics(self, *, run_id: str | None = None) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM flywheel.provider_acquisition_metrics WHERE 1=1"
+        params: list[Any] = []
+        if run_id:
+            sql += " AND run_id = ?"
+            params.append(run_id)
+        sql += " ORDER BY run_id"
         return _rows(self.conn.execute(sql, params))
 
     # -- context panel --------------------------------------------------------

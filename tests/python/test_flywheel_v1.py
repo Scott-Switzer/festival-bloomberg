@@ -119,7 +119,7 @@ def test_objectives_match_memo_targets():
     assert targets["TICKET_PACE_COVERAGE"] == 0.6
     assert targets["SETTLEMENT_COVERAGE"] == 0.5
     rows = objective_rows()
-    assert len(rows) == len(MEDIUM_TERM_OBJECTIVES_V1) == 28
+    assert len(rows) == len(MEDIUM_TERM_OBJECTIVES_V1) == 32
     assert all(row["objective_version"] == "data_flywheel_and_coverage_v1" for row in rows)
 
 
@@ -463,7 +463,7 @@ def test_canonical_performances_exclude_multi_show(seeded_db):
 def test_coverage_measurement_on_seeded_warehouse(seeded_db):
     rows = measure_coverage(seeded_db, as_of=datetime(2026, 8, 1))
     by_key = {row["objective_key"]: row for row in rows}
-    assert len(rows) == 28
+    assert len(rows) == 32
 
     # Core scale: engagements (incl. aggregates) vs performances (single-show).
     assert by_key["CANONICAL_BOXSCORE_ENGAGEMENTS"]["actual_value"] == 7.0
@@ -581,19 +581,19 @@ def test_coverage_snapshot_persistence_and_pit(seeded_db):
         flywheel.insert_coverage_snapshot(row)
 
     stored = flywheel.query_coverage_snapshots()
-    assert len(stored) == 28
-    assert len(flywheel.latest_coverage()) == 28
+    assert len(stored) == 32
+    assert len(flywheel.latest_coverage()) == 32
 
     # Second run at a later time appends, never overwrites.
     rows2 = measure_coverage(seeded_db, as_of=datetime(2026, 9, 1))
     for row in rows2:
         row["snapshot_id"] = snapshot_id(datetime(2026, 9, 1), row["objective_key"])
         flywheel.insert_coverage_snapshot(row)
-    assert len(flywheel.query_coverage_snapshots()) == 56
+    assert len(flywheel.query_coverage_snapshots()) == 64
 
     # PIT: a cutoff before the September run sees only the August snapshot.
     august_only = flywheel.query_coverage_snapshots(cutoff=datetime(2026, 8, 15))
-    assert len(august_only) == 28
+    assert len(august_only) == 32
     assert all("20260801" in row["snapshot_id"] for row in august_only)
 
 
@@ -772,9 +772,9 @@ def test_flywheel_oa_end_to_end(tmp_path):
 
     assert manifest["software_version"] == "data_flywheel_and_coverage_v1"
     assert manifest["sources"]["total"] == 21
-    assert manifest["objectives_registered"] == 28
-    assert len(manifest["coverage"]["rows"]) == 28
-    assert manifest["coverage"]["objectives_total"] == 28
+    assert manifest["objectives_registered"] == 32
+    assert len(manifest["coverage"]["rows"]) == 32
+    assert manifest["coverage"]["objectives_total"] == 32
 
     event_graph = manifest["pipelines"]["EVENT_GRAPH"]
     assert event_graph["status"] == "PASS"

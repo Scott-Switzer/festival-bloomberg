@@ -20,7 +20,7 @@ DATA_FLYWHEEL_AND_COVERAGE_V1   <- this milestone
   -> UNDERWRITING_RESEARCH_V2   <- economics-centered underwriting
 ```
 
-Status: **remote PR #20 (draft) — operational closure in progress.** The
+Status: **MERGED — PR #20 (`1fdbe98` on `main`), exact-head CI green.** The
 warehouse layer is live and tested; keyed/terms-review sources (Census, BLS,
 Ticketmaster, JamBase, ...) are registered with their real access status and
 never bypassed. Three review fixes landed before merge: engagement vs
