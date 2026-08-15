@@ -40,6 +40,7 @@ MECHANISM_BY_PROVIDER = {
     "youtube": "api",
     "wikimedia": "api",
     "ticketmaster": "api",
+    "spotify": "api",
     "setlistfm": "api",
     "seatgeek": "api",
     "wikidata": "api",

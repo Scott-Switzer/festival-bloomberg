@@ -20,6 +20,7 @@ from .openstreetmap import OpenStreetMapProvider
 from .scrapling import ScraplingProvider
 from .seatgeek import SeatGeekProvider
 from .setlistfm import SetlistFmProvider
+from .spotify import SpotifyProvider
 from .ticketmaster import TicketmasterProvider
 from .wikidata import WikidataProvider
 from .wikimedia import WikimediaProvider
@@ -37,6 +38,7 @@ __all__ = [
     "ScraplingProvider",
     "SeatGeekProvider",
     "SetlistFmProvider",
+    "SpotifyProvider",
     "TicketmasterProvider",
     "WikidataProvider",
     "WikimediaProvider",
@@ -60,6 +62,7 @@ def default_providers(**overrides) -> dict[str, AcquisitionProvider]:
         "wikidata": WikidataProvider(**overrides.pop("wikidata", {})),
         "openstreetmap": OpenStreetMapProvider(**overrides.pop("openstreetmap", {})),
         "ticketmaster": TicketmasterProvider(**overrides.pop("ticketmaster", {})),
+        "spotify": SpotifyProvider(**overrides.pop("spotify", {})),
         "setlistfm": SetlistFmProvider(**overrides.pop("setlistfm", {})),
         "seatgeek": SeatGeekProvider(**overrides.pop("seatgeek", {})),
     }

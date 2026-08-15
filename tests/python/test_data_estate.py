@@ -253,6 +253,62 @@ def test_model_router_resolves_from_catalog():
 
 
 # ---------------------------------------------------------------------------
+# Spotify (classic client-credentials, 2026 catalog-only) acquisition
+# ---------------------------------------------------------------------------
+def test_spotify_provider_catalog_fields_only():
+    from festival_bloomberg.acquisition.providers.spotify import SpotifyProvider
+
+    transport = FakeTransport([
+        (200, {"access_token": "tok", "expires_in": 3600}),
+        (200, {"artists": {"items": [{
+            "id": "id1", "name": "Taylor Swift",
+            "external_urls": {"spotify": "https://open.spotify.com/artist/id1"},
+            "images": [], "type": "artist", "uri": "spotify:artist:id1",
+        }], "total": 1}}),
+    ])
+    provider = SpotifyProvider(
+        transport=transport,
+        env={"SPOTIFY_CLIENT_ID": "cid", "SPOTIFY_CLIENT_SECRET": "csec"},
+    )
+    result = provider.acquire(make_request(query="Taylor Swift", platform="spotify"))
+    assert result.status.value == "SUCCESS"
+    assert result.record_count == 1
+    rec = result.records[0]
+    assert rec["spotify_id"] == "id1"
+    # 2026 Dev Mode removals are never persisted or assumed.
+    assert "popularity" not in rec
+    assert "followers" not in rec
+    assert "genres" not in rec
+    assert rec["fields_present"] == ["external_urls", "id", "images", "name", "type", "uri"]
+
+
+def test_spotify_provider_401_refreshes_token_and_retries():
+    from festival_bloomberg.acquisition.providers.spotify import SpotifyProvider
+
+    transport = FakeTransport([
+        (200, {"access_token": "tok1", "expires_in": 3600}),
+        (401, {"error": "invalid token"}),
+        (200, {"access_token": "tok2", "expires_in": 3600}),
+        (200, {"artists": {"items": [{"id": "id2", "name": "A", "type": "artist"}], "total": 1}}),
+    ])
+    provider = SpotifyProvider(
+        transport=transport,
+        env={"SPOTIFY_CLIENT_ID": "cid", "SPOTIFY_CLIENT_SECRET": "csec"},
+    )
+    result = provider.acquire(make_request(query="A", platform="spotify"))
+    assert result.status.value == "SUCCESS"
+    assert len(transport.requests) == 4  # token, search(401), token, search(200)
+
+
+def test_spotify_provider_missing_credentials_is_not_configured():
+    from festival_bloomberg.acquisition.providers.spotify import SpotifyProvider
+
+    provider = SpotifyProvider(transport=FakeTransport(), env={})
+    result = provider.acquire(make_request(query="A", platform="spotify"))
+    assert result.status.value == "NOT_CONFIGURED"
+
+
+# ---------------------------------------------------------------------------
 # NWS (public, no key) acquisition semantics
 # ---------------------------------------------------------------------------
 def test_nws_provider_forecast_snapshot():
