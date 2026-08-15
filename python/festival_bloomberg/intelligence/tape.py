@@ -47,6 +47,19 @@ ACTIVITY_TYPES: frozenset[str] = frozenset(
         "NEWS_MENTION",
         "TOUR_ANNOUNCEMENT",
         "FESTIVAL_LINEUP_ANNOUNCEMENT",
+        "FESTIVAL_EDITION_DISCOVERED",
+        "LINEUP_ANNOUNCED",
+        "ARTIST_ADDED",
+        "ARTIST_REMOVED",
+        "ARTIST_CANCELLED",
+        "ARTIST_SUBSTITUTED",
+        "STAGE_ASSIGNMENT_CHANGED",
+        "SET_TIME_CHANGED",
+        "DAY_ASSIGNMENT_CHANGED",
+        "HEADLINER_CHANGED",
+        "FESTIVAL_DATE_CHANGED",
+        "FESTIVAL_CANCELLED",
+        "FESTIVAL_RESCHEDULED",
         "WEATHER_ALERT",
         "FORECAST_RISK_CHANGED",
         "OUTCOME_PUBLISHED",
@@ -313,6 +326,85 @@ def derive_tape_entries(conn) -> list[dict[str, Any]]:
             "price_min": pmin,
             "price_max": pmax,
         }
+
+    return rows
+
+
+def derive_festival_tape_entries(conn) -> list[dict[str, Any]]:
+    """Derive festival spine entries for the tape (idempotent, source-backed).
+
+    Reads the canonical festival spine and emits:
+
+    - FESTIVAL_EDITION_DISCOVERED per edition (our knowledge changed: the
+      edition now exists).
+    - LINEUP_ANNOUNCED per lineup slot whose performance_status is a roster
+      claim (announced/scheduled/unverified), with the research-doc source.
+
+    Cancelled / substituted slots (performance_status=cancelled) emit
+    ARTIST_CANCELLED instead. Conflicting billing observations are NOT tape
+    rows — they are evidence rows that coexist in the billing table.
+    """
+    rows: list[dict[str, Any]] = []
+
+    for r in conn.execute(
+        "SELECT edition_key, festival_key, year, source_system, source_url, "
+        "       ingested_at "
+        "FROM core.festival_editions ORDER BY year"
+    ).fetchall():
+        edition_key, festival_key, year, provider, url, ingested = r
+        observed = _as_dt(ingested)
+        if observed is None:
+            observed = datetime.now()
+        rows.append(build_tape_row(
+            activity_type="FESTIVAL_EDITION_DISCOVERED",
+            entity_type="FESTIVAL",
+            entity_id=festival_key,
+            observed_at=observed,
+            effective_at=None,
+            source_provider=provider or "research_doc",
+            source_record_id=edition_key,
+            knowledge_time=observed,
+            rights_status="RESEARCH_REFERENCE",
+            evidence_class="RESEARCH_DISCOVERY_SEED",
+            festival_id=festival_key,
+            new_value_json={"edition_key": edition_key, "year": year},
+            source_url=url,
+            software_version="festival_spine_v1",
+        ))
+
+    for r in conn.execute(
+        "SELECT slot_key, festival_key, edition_key, artist_name, "
+        "       performance_status, source_system, source_url, ingested_at "
+        "FROM core.lineup_slots ORDER BY edition_key, artist_name"
+    ).fetchall():
+        slot_key, festival_key, edition_key, artist, status, provider, url, ingested = r
+        observed = _as_dt(ingested)
+        if observed is None:
+            observed = datetime.now()
+        if status == "cancelled":
+            activity = "ARTIST_CANCELLED"
+        elif status == "substituted":
+            activity = "ARTIST_SUBSTITUTED"
+        else:
+            activity = "LINEUP_ANNOUNCED"
+        rows.append(build_tape_row(
+            activity_type=activity,
+            entity_type="FESTIVAL",
+            entity_id=festival_key,
+            observed_at=observed,
+            effective_at=None,
+            source_provider=provider or "research_doc",
+            source_record_id=slot_key,
+            knowledge_time=observed,
+            rights_status="RESEARCH_REFERENCE",
+            evidence_class="RESEARCH_DISCOVERY_SEED",
+            festival_id=festival_key,
+            artist_id=artist,
+            new_value_json={"edition_key": edition_key, "artist": artist,
+                            "performance_status": status},
+            source_url=url,
+            software_version="festival_spine_v1",
+        ))
 
     return rows
 

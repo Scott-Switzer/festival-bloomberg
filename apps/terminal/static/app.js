@@ -93,9 +93,17 @@
       html += "<h2>Historical performances</h2>" + tableOrNone(a.history, ["Date", "Venue", "Market", "Shows"], function (e) {
         return row([fmt(e.start_date), esc(e.venue), fmt(e.city), fmt(e.number_of_shows)]);
       });
-      html += "<h2>Box-office outcomes</h2>" + tableOrNone(a.outcomes, ["Outcome", "Value", "Unit", "Source"], function (o) {
-        return row([esc(o.outcome_type), fmt(o.value), fmt(o.unit), esc(o.source_provider)]);
+      html += "<h2>Box-office outcomes</h2>" + tableOrNone(a.outcomes, ["Date", "Venue", "Headcount", "Gross", "Source"], function (o) {
+        return row([fmt(o.start_date), esc(o.venue), fmt(o.headcount_total), fmt(o.ticket_gross_total), esc(o.reporting_source)]);
       });
+      api("/api/artists/" + encodeURIComponent(id) + "/billing").then(function (bill) {
+        var el = document.getElementById("artist-billing");
+        if (!el) return;
+        el.innerHTML = "<h2>Festival billing trajectory</h2>" + tableOrNone(bill, ["Year", "Festival", "Tier", "Context", "Evidence"], function (b) {
+          return row([fmt(b.year), esc(b.festival_name), fmt(b.printed_tier), esc(b.billing_context), esc(b.evidence_class)]);
+        });
+      });
+      html += "<div id='artist-billing'></div>";
       html += "<h2>Attention</h2>" + tableOrNone(a.attention, ["Date", "Value", "Unit", "Provider"], function (x) {
         return row([fmt(x.observed_date), fmt(x.value), fmt(x.unit), esc(x.provider)]);
       });
@@ -178,7 +186,57 @@
 
   function viewFestivals() {
     setNav("festivals");
-    content.innerHTML = "<h1>Festivals</h1><div class='none'>No canonical festival corpus yet. Festival editions, lineups, and announcement history are the next data milestone.</div>";
+    api("/api/festivals").then(function (items) {
+      var html = "<h1>Festivals</h1><p class='sub'>Canonical festival spine — editions, lineups, billing observations.</p>";
+      if (!items || !items.length) {
+        content.innerHTML = html + '<div class="none">No festival corpus. Run the data-estate OA to seed the spine.</div>';
+        return;
+      }
+      html += "<table><thead><tr><th>Festival</th><th>Location</th><th>First year</th><th>Source</th></tr></thead><tbody>";
+      items.forEach(function (f) {
+        html += row([
+          linkTo("festivals", f.festival_key, f.name),
+          esc(f.location_city || f.location_country || ""),
+          fmt(f.first_edition_year),
+          esc(f.source_system),
+        ]);
+      });
+      content.innerHTML = html + "</tbody></table>";
+    });
+  }
+
+  function viewFestival(id) {
+    setNav("festivals");
+    api("/api/festivals/" + encodeURIComponent(id)).then(function (f) {
+      if (!f) { content.innerHTML = "<h1>Festival</h1><div class='none'>Not found.</div>"; return; }
+      var html = "<h1>" + esc(f.name) + "</h1><p class='sub'>FESTIVAL · " +
+        esc(f.location_city || "") + ", " + esc(f.location_country || "") +
+        " · first known year " + fmt(f.first_edition_year) + "</p>";
+      (f.editions || []).forEach(function (ed) {
+        html += "<h2>" + esc(ed.edition_key) + "</h2>" +
+          "<p class='sub'>" + fmt(ed.start_date || ed.year) + " · " + esc(ed.venue_name || "") +
+          " · precision " + esc(ed.date_precision) + "</p>";
+        var lineup = ed.lineup || [];
+        var billing = ed.billing || [];
+        html += "<h3>Lineup (" + lineup.length + " acts) — " +
+          esc((billing[0] && billing[0].evidence_class) || "") + "</h3>";
+        var tierMap = {};
+        billing.forEach(function (b) {
+          (tierMap[b.printed_tier] = tierMap[b.printed_tier] || []).push(b);
+        });
+        var tierOrder = Object.keys(tierMap).sort();
+        tierOrder.forEach(function (tier) {
+          html += "<h4>Tier " + esc(tier) + "</h4><ul>";
+          tierMap[tier].forEach(function (b) {
+            html += "<li>" + esc(b.raw_artist_name) +
+              " <span class='muted'>" + esc(b.billing_group || "") + "</span>" +
+              " <a class='muted' href='" + esc(b.source_url || "#") + "' target='_blank' rel='noopener'>src</a></li>";
+          });
+          html += "</ul>";
+        });
+      });
+      content.innerHTML = html;
+    });
   }
 
   function viewData() {
@@ -248,6 +306,7 @@
     if (view === "events" && id) return viewEvent(decodeURIComponent(id));
     if (view === "venues" && id) return viewVenue(decodeURIComponent(id));
     if (view === "markets" && id) return viewMarket(decodeURIComponent(id));
+    if (view === "festivals" && id) return viewFestival(decodeURIComponent(id));
     if (VIEWS[view]) return VIEWS[view]();
     return viewTape();
   }

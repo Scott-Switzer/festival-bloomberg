@@ -17,15 +17,19 @@ Enforced by construction (and tested):
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Callable
 
 from .readmodels import (
     get_artist,
+    get_artist_billing_trajectory,
+    get_artist_co_occurrence,
     get_attention_series,
     get_competing_events,
     get_event,
     get_festival,
+    get_festival_edition,
     get_market,
     get_news,
     get_source_evidence,
@@ -70,8 +74,20 @@ def _tool_table() -> dict[str, tuple[str, Callable[..., Any]]]:
             lambda conn, a: get_market(conn, a["entity_id"]),
         ),
         "get_festival": (
-            "Festival identity and editions (no corpus yet).",
+            "Festival identity, editions, lineups, billing.",
             lambda conn, a: get_festival(conn, a["entity_id"]),
+        ),
+        "get_festival_lineup": (
+            "One festival edition: lineup + source-specific billing.",
+            lambda conn, a: get_festival_edition(conn, a["edition_key"]),
+        ),
+        "get_artist_billing_trajectory": (
+            "An artist's observed billing tier across festival editions.",
+            lambda conn, a: get_artist_billing_trajectory(conn, a["artist_name"]),
+        ),
+        "get_artist_co_occurrence": (
+            "Artists who co-appear with an artist across festival editions.",
+            lambda conn, a: get_artist_co_occurrence(conn, a["artist_name"]),
         ),
         "get_activity_tape": (
             "Recent tape activity with optional entity_type/market/activity filters.",
@@ -118,7 +134,7 @@ def run_tool(conn, name: str, args: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
-def _intent(question: str) -> tuple[str, dict[str, Any]] | None:
+def _intent(conn, question: str) -> tuple[str, dict[str, Any]] | None:
     """Tiny deterministic router so ASK works without an LLM."""
     q = question.lower()
     tape_m = re.search(r"what changed in (\w+(?: \w+)*)", q)
@@ -128,9 +144,38 @@ def _intent(question: str) -> tuple[str, dict[str, Any]] | None:
             "market_id": market.strip() if market else None,
             "limit": 30,
         }
+    if "billing" in q and "changed" in q:
+        return "get_artist_billing_trajectory", {"artist_name": _strip_prefixes(q)}
+    if "lineup" in q or "festival" in q or "billing" in q:
+        # Match a known festival NAME against the question (deterministic).
+        try:
+            known = conn.execute(
+                "SELECT festival_key, name FROM core.festivals"
+            ).fetchall()
+        except Exception:  # noqa: BLE001 — table may not exist yet
+            known = []
+        for key, name in known:
+            if name and name.lower() in q:
+                return "get_festival", {"entity_id": key}
+        for r in search_entities(conn, question, limit=10):
+            if r["entity_type"] == "FESTIVAL":
+                return "get_festival", {"entity_id": r["entity_id"]}
+        return "get_festival", {"entity_id": _extract_id(q)}
     if "evidence" in q or "onsale" in q or "source" in q:
         return "get_source_evidence", {"entity_id": _extract_id(q)}
     return None
+
+
+def _strip_prefixes(question: str) -> str:
+    """Best-effort artist-name extraction for trajectory questions."""
+    for prefix in ("how has ", "how did ", "show ", "what is "):
+        if question.lower().startswith(prefix):
+            question = question[len(prefix):]
+    for suffix in ("'s festival billing changed", " festival billing changed",
+                   " billing changed", " festival billing"):
+        if question.lower().endswith(suffix):
+            question = question[: -len(suffix)]
+    return question.strip()
 
 
 def _extract_id(question: str) -> str:
@@ -142,6 +187,7 @@ def answer(
     question: str,
     *,
     deepseek: Any = None,
+    llm: Any = None,
 ) -> dict[str, Any]:
     """Answer a natural-language question using only read-only tools.
 
@@ -149,7 +195,7 @@ def answer(
     (the read-model rows that back the answer). No answer invents a fact.
     """
     # 1. Deterministic routing (no LLM required).
-    routed = _intent(question)
+    routed = _intent(conn, question)
     if routed:
         tool, args = routed
         res = run_tool(conn, tool, args)
@@ -191,7 +237,11 @@ def answer(
             "mode": "deterministic",
         }
 
-    # 3. Optional DeepSeek composition (public/sanitized tool results only).
+    # 3. Optional grounded LLM composition over read-only tool results.
+    if llm is not None and getattr(llm, "is_configured", False):
+        result = _llm_answer(conn, question, llm)
+        if result is not None:
+            return result
     if deepseek is not None and getattr(deepseek, "is_configured", False):
         return deepseek.compose_answer(conn, question, run_tool)
 
@@ -208,6 +258,55 @@ def answer(
         "tool": None,
         "evidence": [],
         "mode": "deterministic",
+    }
+
+
+def _llm_answer(conn, question: str, llm: Any) -> dict[str, Any] | None:
+    """Grounded LLM composition: the model summarizes read-only tool results.
+
+    The model NEVER receives SQL, never writes, and its prose is returned
+    BESIDE the authoritative ``evidence`` (the tool-result rows). A model
+    failure (network, malformed response) returns None so the caller falls
+    back to the deterministic answer.
+    """
+    evidence = {
+        "search": search_entities(conn, question, limit=10),
+        "tape": query_tape(conn, limit=25),
+    }
+    if not evidence["search"] and not evidence["tape"]:
+        return None
+
+    system = (
+        "You are a grounded live-entertainment analyst. Answer ONLY from the "
+        "evidence JSON provided. Cite evidence by index. Never invent attendance, "
+        "prices, capacity, booking dates, or financial results. If the evidence "
+        "is insufficient, say exactly what is missing. Do not mention your "
+        "training data."
+    )
+    user = (
+        f"QUESTION: {question}\n\n"
+        f"EVIDENCE (search results then recent activity tape):\n"
+        f"{json.dumps(evidence, default=str)[:12000]}"
+    )
+    try:
+        resp = llm.chat(
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            task="DEEP_REASON",
+            max_tokens=800,
+        )
+    except Exception:  # noqa: BLE001 — any model failure degrades gracefully
+        return None
+    if not resp.get("ok"):
+        return None
+    return {
+        "text": resp.get("content") or "The model returned no text.",
+        "tool": None,
+        "evidence": evidence,
+        "mode": "llm",
+        "model": resp.get("model"),
     }
 
 

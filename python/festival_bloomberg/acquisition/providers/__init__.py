@@ -15,10 +15,12 @@ from .commoncrawl import CommonCrawlProvider
 from .eventbrite import EventbriteProvider
 from .http import HttpProvider
 from .monid import MonidProvider
+from .nws import NwsProvider
 from .openstreetmap import OpenStreetMapProvider
 from .scrapling import ScraplingProvider
 from .seatgeek import SeatGeekProvider
 from .setlistfm import SetlistFmProvider
+from .spotify import SpotifyProvider
 from .ticketmaster import TicketmasterProvider
 from .wikidata import WikidataProvider
 from .wikimedia import WikimediaProvider
@@ -31,10 +33,12 @@ __all__ = [
     "EventbriteProvider",
     "HttpProvider",
     "MonidProvider",
+    "NwsProvider",
     "OpenStreetMapProvider",
     "ScraplingProvider",
     "SeatGeekProvider",
     "SetlistFmProvider",
+    "SpotifyProvider",
     "TicketmasterProvider",
     "WikidataProvider",
     "WikimediaProvider",
@@ -50,6 +54,7 @@ def default_providers(**overrides) -> dict[str, AcquisitionProvider]:
         "commoncrawl": CommonCrawlProvider(**overrides.pop("commoncrawl", {})),
         "eventbrite": EventbriteProvider(**overrides.pop("eventbrite", {})),
         "monid": MonidProvider(**overrides.pop("monid", {})),
+        "nws": NwsProvider(**overrides.pop("nws", {})),
         "apify": ApifyProvider(**overrides.pop("apify", {})),
         "youtube": YouTubeProvider(**overrides.pop("youtube", {})),
         "scrapling": ScraplingProvider(**overrides.pop("scrapling", {})),
@@ -57,6 +62,7 @@ def default_providers(**overrides) -> dict[str, AcquisitionProvider]:
         "wikidata": WikidataProvider(**overrides.pop("wikidata", {})),
         "openstreetmap": OpenStreetMapProvider(**overrides.pop("openstreetmap", {})),
         "ticketmaster": TicketmasterProvider(**overrides.pop("ticketmaster", {})),
+        "spotify": SpotifyProvider(**overrides.pop("spotify", {})),
         "setlistfm": SetlistFmProvider(**overrides.pop("setlistfm", {})),
         "seatgeek": SeatGeekProvider(**overrides.pop("seatgeek", {})),
     }
