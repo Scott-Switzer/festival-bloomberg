@@ -209,9 +209,11 @@ See `docs/intelligence-terminal-mvp-v1.md`.
 Activates the dormant festival spine (migration 023) and fixes the
 provider/config architecture. Seeds 6 real festivals — Newport Jazz 1954,
 Monterey Pop 1967, Woodstock 1969, Glastonbury 1971, Lollapalooza 1991,
-Coachella 1999 — as 96 source-backed lineup slots + 96 billing observations
-(each `RESEARCH_DISCOVERY_SEED` with source URL, confidence, rationale;
-identities stay unresolved and conflicting billing claims coexist). Also fixes
+Coachella 1999 — as 96 research-seed lineup candidates + 96 retrospective
+billing observations derived from prior research (each
+`RESEARCH_DISCOVERY_SEED` with source URL, confidence, rationale; identities
+stay unresolved and conflicting billing claims coexist — these are discovery
+leads to corroborate, NOT independently fetched source observations). Also fixes
 the public no-key provider bug (ListenBrainz/GDELT/NWS can never report
 `NOT_CONFIGURED`), adds a presence-only credential status module, a
 provider-neutral NVIDIA NIM model router + grounded ASK, a real key-free NWS

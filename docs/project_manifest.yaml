@@ -31,7 +31,7 @@ milestones:
   PRE_EVENT_CUTOFF_ACQUISITION_V1: "PARTIAL (cutoff taxonomy; historical decision cutoffs = 0)"
   HISTORICAL_DECISION_EVIDENCE_ENGINE_V1: "PARTIAL (VOI priority + claim graph; acquisition gated on discovery source)"
   FESTIVAL_INTELLIGENCE_TERMINAL_MVP_V1: "PARTIAL (product PASS; live data expansion gated on keys)"
-  INTELLIGENCE_DATA_ESTATE_AND_FESTIVAL_SPINE_V1: "in progress"
+  INTELLIGENCE_DATA_ESTATE_AND_FESTIVAL_SPINE_V1: "PARTIAL (festival spine + provider repair + agent memory PASS; Spotify Web API operational; keyed live ingestion remains)"
 
 providers:
   # status taxonomy: PUBLIC_NO_AUTH | AUTH_CONFIGURED | AUTH_MISSING |
@@ -44,7 +44,8 @@ providers:
   ticketmaster: "AUTH (discovery API, DMA-partitioned US music)"
   youtube: "AUTH (video stats + comments)"
   setlistfm: "AUTH (noncommercial unless arranged)"
-  spotify: "AUTH (Dev Mode 2026 restrictions)"
+  spotify: "AUTH_CONFIGURED / OPERATIONAL (client-credentials Web API; 2026 catalog-only fields id/name/external_urls/images/type/uri — no popularity/followers/genres)"
+  soloist: "IDENTIFIED_CREDENTIAL / NOT_WIRED (spak_ key; separate Spotify product surface, endpoint contract unresolved — never sent to Web API)"
   nvidia: "AUTH (OpenAI-compatible NIM; prototyping/research)"
   seatgeek: "DISABLED_RIGHTS (automated ingestion terms)"
 

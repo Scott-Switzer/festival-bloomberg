@@ -22,9 +22,11 @@ Migration **023** adds the two missing pieces the billing doctrine requires:
   cancelled|substituted|surprise|unverified) and `identity_confidence`.
 
 The research in `docs/historical_lineups_and_billing_analysis.md` is now
-transcribed as **96 lineup slots + 96 billing observations across 6 real
-festivals** (Newport Jazz 1954, Monterey Pop 1967, Woodstock 1969, Glastonbury
-1971, Lollapalooza 1991, Coachella 1999). Every row is
+transcribed as **96 research-seed lineup candidates + 96 retrospective
+billing observations derived from prior research, across 6 real festival
+identities** (Newport Jazz 1954, Monterey Pop 1967, Woodstock 1969,
+Glastonbury 1971, Lollapalooza 1991, Coachella 1999). These are NOT yet
+independently fetched source observations — every row is
 `RESEARCH_DISCOVERY_SEED` / `RESEARCH_ONLY` with the cited source URL, per-act
 confidence, and rationale — a discovery lead to corroborate, never an observed
 fact. Artist identities stay UNRESOLVED (never forced); date precision is
@@ -50,6 +52,16 @@ year/month only where the research supports it (no invented days).
 
 ### 3. Real providers validated (bounded)
 
+- **Spotify Web API**: `acquisition/providers/spotify.py` — a real
+  client-credentials provider (token caching + expiry, 401 → one refresh +
+  retry, 429 → `RATE_LIMITED`, missing credentials → `NOT_CONFIGURED`).
+  Live-validated (token exchange 200, `/v1/search` 200). It persists ONLY
+  fields the 2026 response actually returns (`id`, `name`, `external_urls`,
+  `images`, `type`, `uri`) and records `fields_present` so nothing can be built
+  around the removed `popularity` / `followers` / `genres`. The separate
+  `spak_` credential is a **Spotify Soloist API key** — a distinct product
+  surface with no public endpoint contract; it stays isolated and is never
+  sent to the Web API.
 - **NVIDIA NIM**: `NVIDIA_API_KEY` validated via `list_models()` → 102 models
   in the live catalog. `intelligence/llm.py` adds a provider-neutral
   `ModelRouter` (FAST_EXTRACT / DEEP_REASON / CODE_REASON / EMBED / RERANK)
@@ -79,32 +91,38 @@ year/month only where the research supports it (no invented days).
 | --- | ---: | ---: |
 | canonical festivals | 0 | **6** |
 | festival editions | 0 | **6** |
-| lineup slots | 0 | **96** |
-| billing observations | 0 | **96** |
+| research-seed lineup candidates | 0 | **96** |
+| retrospective billing observations | 0 | **96** |
 | activity-tape rows | 2,162 | **2,264** (+102 festival) |
 | distinct festival artists | 0 | **90** |
 | artists with 2+ festival appearances | 0 | **6** |
 
 Provider validation: **NVIDIA = AUTH_VALID** (102 models), **NWS = SUCCESS**
-(14 records). Credential presence (names only): Ticketmaster, YouTube, Monid,
-Setlist.fm, BLS, NVIDIA, MusicBrainz present; Spotify, Census, APIFY,
-SeatGeek, DeepSeek, JamBase absent. No secret value was printed or committed.
+(14 records), **Spotify Web API = AUTH_VALID** (client-credentials flow).
+Credential presence (names only): Ticketmaster, YouTube, Monid, Setlist.fm,
+BLS, NVIDIA, MusicBrainz, Spotify present; Census, APIFY, SeatGeek, DeepSeek,
+JamBase absent. No secret value was printed or committed.
 
 ## Verdict
 
 `INTELLIGENCE_DATA_ESTATE_AND_FESTIVAL_SPINE_V1 = PARTIAL` (toward PASS)
 
-- Festival spine: **PASS** (real, source-backed, honest evidence classes).
+- Festival spine: **PASS** (real identities; honest seed-vs-observed
+  evidence classes; no fabricated billing facts).
 - Provider/config architecture: **PASS** (bug fixed, taxonomy correct).
 - Agent memory: **PASS** (AGENTS.md + manifest + context snapshot).
 - NVIDIA + NWS: **PASS** (validated live, bounded).
-- Ticketmaster / ListenBrainz / GDELT / Census / Spotify live ingestion:
+- Spotify Web API: **PASS** (validated + implemented; identity/catalog
+  prototype source).
+- Ticketmaster / ListenBrainz / GDELT / Census live ingestion:
   **NOT_IMPLEMENTED** — the remaining gap. Keyed providers (Ticketmaster,
-  Spotify, Census) need real ingestion wired to the scaffolds; the next
-  milestone is keyed live ingestion into the same read models.
+  Census) and public sources (ListenBrainz, GDELT) need real ingestion wired to
+  the scaffolds; the next milestone is live data activation into the same read
+  models.
 
 ## Recommended next milestone
 
 Wire Ticketmaster US DMA-partitioned music ingestion + ListenBrainz/GDELT
-public acquisition into the existing scaffolds and populate the same terminal
-read models and activity tape.
+public acquisition into the existing scaffolds, run Spotify identity
+resolution over the festival-seed and box-office artists, and populate the
+same terminal read models and activity tape.

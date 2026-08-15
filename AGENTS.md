@@ -93,5 +93,9 @@ PYTHONPATH=python .venv/bin/python -m festival_bloomberg.terminal.server --port 
 SeatGeek: DISABLED for automated corpus/LLM ingestion (terms). Setlist.fm:
 noncommercial unless arranged. JamBase: bounded trial benchmark only, not a
 permanent dependency. Spotify Dev Mode (2026): no followers/popularity, no
-top-track endpoint. NVIDIA NIM: prototyping/research via developer program.
+top-track endpoint; the Web API client-credentials provider is operational
+(identity/catalog only — `id/name/external_urls/images/type/uri`). The `spak_`
+credential is a separate **Spotify Soloist** key with no public contract —
+keep it isolated, never send it to the Web API. NVIDIA NIM:
+prototyping/research via developer program.
 Never send private promoter/customer settlement data to hosted LLMs.
