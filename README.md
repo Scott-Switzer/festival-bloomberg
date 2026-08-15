@@ -163,6 +163,26 @@ Live driver:
 PYTHONPATH=python python3 -m festival_bloomberg.oa.pre_event_cutoffs
 ```
 
-See `docs/pre-event-cutoff-acquisition-v1.md`. The next research milestone is
-`COMPARABLE_EVENT_ENGINE_V1` — only once announcement/onsale/booking-bound
-histories exist for a meaningful subset of events.
+See `docs/pre-event-cutoff-acquisition-v1.md`.
+
+### HISTORICAL_DECISION_EVIDENCE_ENGINE_V1
+
+An autonomous evidence-research engine: a warm-start dependency graph that
+ranks which missing historical cutoff unlocks the most downstream
+PIT-comparable targets (value-of-information acquisition), an immutable
+content-addressed document store, a claim support graph with evidence spans,
+deterministic JSON-LD/OpenGraph/date-language extractors, a deterministic
+admissibility verifier, and a strict DeepSeek V4 Pro candidate-claim contract.
+
+> An LLM never decides truth — it proposes candidate claims; deterministic
+> code decides admissibility.
+
+Live driver:
+
+```bash
+PYTHONPATH=python python3 -m festival_bloomberg.oa.historical_decision_evidence
+```
+
+See `docs/historical-decision-evidence-engine-v1.md`. The next research
+milestone is `COMPARABLE_EVENT_ENGINE_V1` — only once announcement/onsale/
+booking-bound histories exist for a meaningful subset of events.
