@@ -26,6 +26,8 @@ gitleaks-report.json
 
 # Runtime databases and cache
 *.duckdb
+# Runtime acquisition caches (crawl index cache, venue-lookup caches)
+data/cache/
 *.db
 *.sqlite
 *.sqlite3

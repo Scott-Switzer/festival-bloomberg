@@ -113,5 +113,37 @@ acquisition metric is decision coverage, not row counts. Live driver:
 PYTHONPATH=python python3 -m festival_bloomberg.oa.flywheel_v1
 ```
 
-See `docs/data-flywheel-and-coverage-v1.md`. Next milestone:
-`COMPARABLE_EVENT_ENGINE_V1` over the expanded graph.
+See `docs/data-flywheel-and-coverage-v1.md`.
+
+## Data Acquisition Activation V1
+
+Turns the flywheel from measurement into an OPERATING acquisition system
+(migrations 018 + 019). Success is measured by new decision-useful evidence,
+not schema or plan counts:
+
+- **OUTCOME_HUNTER execution** — real Common Crawl CDX hunts (key-free, $0)
+  on the persisted source documents, era-directed across crawl collections;
+  append-only attempt ledger with classified failures
+  (`flywheel.outcome_hunt_attempts`); explicit P0/P1/P2 priority queue
+- **PIT reconstruction** — `flywheel.pit_reconstruction_evidence` with
+  OBSERVED_EXACT/DAY/MONTH, ARCHIVE_CAPTURE_UPPER_BOUND, SOURCE_PERIOD_BOUND,
+  ESTIMATED_RESEARCH_ONLY, UNKNOWN; STRICT_PIT / CONSERVATIVE_BOUND_PIT /
+  RESEARCH_ESTIMATED modes; unknown is never zero
+- **FORWARD_WATCH activation** — MusicBrainz CC0 future events + real future
+  events/snapshots already persisted by the recurring collector, migrated
+  into `flywheel.forward_watch_events/_observations`
+- **Acquisition economics** — per-provider runs + derived yield metrics
+  (`flywheel.provider_acquisition_runs/_metrics`) with HTTP-level and
+  task-level units kept strictly separate (migration 019): task counts are
+  never used as HTTP response counts, and request counts are measured
+  telemetry, never row-count estimates
+
+Live driver:
+
+```bash
+PYTHONPATH=python python3 -m festival_bloomberg.oa.activation_v1
+```
+
+See `docs/data-acquisition-activation-v1.md`. The next research milestone is
+`COMPARABLE_EVENT_ENGINE_V1` — only once the corpus is actively improving
+underneath it.

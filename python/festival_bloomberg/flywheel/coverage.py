@@ -322,6 +322,109 @@ def count_events_with_prior_results(
     return int(row[0]) if row else 0
 
 
+def _canonical_event_key_sql(table_alias: str, *, include_date: bool) -> str:
+    """SQL expression reproducing ``pit.event_key_from_engagement``.
+
+    The canonical event key is ``boxoffice_{artist}_{venue}_{start_date}``
+    with artist/venue lowercased and spaces replaced by dashes (the same
+    convention the PIT evidence rows are written with). The date suffix is
+    part of the key; without it, distinct events at the same venue collapse.
+    """
+    date_part = (
+        f"coalesce(cast({table_alias}.start_date as varchar), '')"
+        if include_date
+        else "''"
+    )
+    return (
+        f"'boxoffice_' || replace(lower(coalesce({table_alias}.artist, 'unknown')), ' ', '-') "
+        f"|| '_' || replace(lower(coalesce({table_alias}.venue, 'unknown')), ' ', '-') "
+        f"|| '_' || {date_part}"
+    )
+
+
+def count_events_with_prior_results_pit(
+    conn,
+    *,
+    dimension: str,
+    min_prior: int = 1,
+    evidence_classes: frozenset[str] | None = None,
+) -> int:
+    """Events with >= min_prior same-dimension results whose availability is
+    PROVEN by persisted PIT reconstruction evidence before the target start.
+
+    Strict point-in-time using the evidence table (not the raw engagement
+    column, which is NULL across the corpus): a prior engagement counts only
+    when a PIT evidence row for its canonical event carries a defensible
+    availability timestamp earlier than the target event's start date. The
+    timestamp column is EVIDENCE-CLASS-SPECIFIC — never a blind COALESCE:
+
+        OBSERVED_EXACT / OBSERVED_DAY / OBSERVED_MONTH ->
+            source_publication_time
+        ARCHIVE_CAPTURE_UPPER_BOUND                    ->
+            archive_capture_time (the capture proves existence by then)
+        SOURCE_PERIOD_BOUND                            ->
+            source_period_end (conservative end of the reported period)
+
+    ``evidence_classes`` gates the validation mode (STRICT_PIT classes by
+    default; conservative upper bounds may be passed explicitly). Passing
+    STRICT classes alone EXCLUDES archive bounds; adding the conservative
+    classes lets a capture upper bound count when it proves availability
+    before the target. ESTIMATED_RESEARCH_ONLY / UNKNOWN have no availability
+    timestamp and can never enter any PIT comparison. UNKNOWN is never
+    upgraded.
+    """
+    if dimension not in _PRIOR_DIMENSIONS:
+        raise ValueError(f"dimension {dimension!r} not in {sorted(_PRIOR_DIMENSIONS)}")
+    col = _PRIOR_DIMENSIONS[dimension]
+    if evidence_classes is None:
+        from .pit import STRICT_PIT_CLASSES
+
+        evidence_classes = STRICT_PIT_CLASSES
+    if not evidence_classes:
+        return 0
+    from .pit import AVAILABILITY_TIMESTAMP_COLUMN
+
+    conditions: list[str] = []
+    params: list[Any] = []
+    for cls in evidence_classes:
+        ts_col = AVAILABILITY_TIMESTAMP_COLUMN.get(cls)
+        if ts_col is None:
+            continue  # ESTIMATED_RESEARCH_ONLY / UNKNOWN: no availability
+        conditions.append(
+            f"(e.evidence_class = ? AND e.{ts_col} IS NOT NULL AND e.{ts_col} < b.start_date)"
+        )
+        params.append(cls)
+    if not conditions:
+        return 0
+    availability_clause = "(" + " OR ".join(conditions) + ")"
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*) FROM (
+            SELECT b.engagement_id
+            FROM research.boxoffice_engagements b
+            WHERE b.is_reported = TRUE
+              AND (b.is_multi_show IS NULL OR b.is_multi_show = FALSE)
+              AND b.headcount_total IS NOT NULL
+              AND b.start_date IS NOT NULL
+              AND (
+                  SELECT COUNT(*) FROM research.boxoffice_engagements p
+                  JOIN flywheel.pit_reconstruction_evidence e
+                    ON e.canonical_event_id = {_canonical_event_key_sql('p', include_date=True)}
+                  WHERE p.{col} = b.{col}
+                    AND p.is_reported = TRUE
+                    AND (p.is_multi_show IS NULL OR p.is_multi_show = FALSE)
+                    AND p.headcount_total IS NOT NULL
+                    AND p.start_date IS NOT NULL
+                    AND p.start_date < b.start_date
+                    AND {availability_clause}
+              ) >= ?
+        )
+        """,
+        [*params, min_prior],
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
 # ---------------------------------------------------------------------------
 # Measurement orchestration
 # ---------------------------------------------------------------------------
@@ -337,6 +440,32 @@ def measure_coverage(conn, *, as_of: datetime | None = None) -> list[dict[str, A
     today = measured_at.date()
 
     canonical = count_canonical_performances(conn)
+
+    # PIT reconstruction metrics — from the EVIDENCE table, never the raw
+    # (NULL) engagement column. UNKNOWN is never upgraded; conservative
+    # bounds join only under CONSERVATIVE_BOUND_PIT.
+    from .pit import (
+        ARCHIVE_CAPTURE_UPPER_BOUND,
+        CONSERVATIVE_BOUND_CLASSES,
+        OBSERVED_MONTH,
+        SOURCE_PERIOD_BOUND,
+        STRICT_PIT_CLASSES,
+        count_events_reconstructable,
+    )
+
+    # Reconstructable coverage is restricted to the single-show
+    # canonical-performance universe — the same universe used as every rate
+    # denominator — so a multi-show aggregate's evidence can never inflate a
+    # metric reported against CANONICAL_PERFORMANCES.
+    strict_pit_events = count_events_reconstructable(conn, mode="STRICT_PIT", single_show_only=True)
+    conservative_events = count_events_reconstructable(conn, mode="CONSERVATIVE_BOUND_PIT", single_show_only=True)
+    strict_warm = count_events_with_prior_results_pit(
+        conn, dimension="artist", min_prior=3, evidence_classes=STRICT_PIT_CLASSES
+    )
+    conservative_warm = count_events_with_prior_results_pit(
+        conn, dimension="artist", min_prior=3,
+        evidence_classes=frozenset(STRICT_PIT_CLASSES) | CONSERVATIVE_BOUND_CLASSES,
+    )
 
     counts: dict[str, tuple[float, str]] = {
         "CANONICAL_BOXSCORE_ENGAGEMENTS": (float(count_canonical_engagements(conn)), "research.canonical_boxoffice_engagements / research.boxoffice_engagements (engagements incl. multi-show aggregates)"),
@@ -363,6 +492,10 @@ def measure_coverage(conn, *, as_of: datetime | None = None) -> list[dict[str, A
         "EVENTS_WITH_PRIOR_VENUE_RESULT": (float(count_events_with_prior_results(conn, dimension="venue", min_prior=1)), "research.boxoffice_engagements PIT self-join (venue, >=1 prior)"),
         "EVENTS_WITH_TICKET_PACE": (float(count_events_with_ticket_pace(conn)), "economics.primary_ticket_snapshots (>=2 per event)"),
         "EVENTS_WITH_OFFER_OR_BOOKING_CUTOFF": (float(count_events_with_cutoff(conn, "booking_cutoff")), "economics.event_decision_cutoffs.booking_cutoff"),
+        "STRICT_PIT_RECONSTRUCTABLE": (float(strict_pit_events), "flywheel.pit_reconstruction_evidence (STRICT_PIT-eligible classes)"),
+        "CONSERVATIVE_BOUND_PIT_RECONSTRUCTABLE": (float(conservative_events), "flywheel.pit_reconstruction_evidence (CONSERVATIVE_BOUND_PIT-eligible classes)"),
+        "STRICT_PIT_WARM_START_EVENTS": (float(strict_warm), "research.boxoffice_engagements JOIN flywheel.pit_reconstruction_evidence (artist, >=3 STRICT_PIT-valid priors)"),
+        "CONSERVATIVE_BOUND_WARM_START_EVENTS": (float(conservative_warm), "research.boxoffice_engagements JOIN flywheel.pit_reconstruction_evidence (artist, >=3 priors incl. conservative bounds)"),
     }
 
     # Derived rates. The eligible denominator is ALWAYS CANONICAL_PERFORMANCES

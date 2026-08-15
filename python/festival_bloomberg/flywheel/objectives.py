@@ -224,6 +224,35 @@ MEDIUM_TERM_OBJECTIVES_V1: tuple[Objective, ...] = (
         target=2_000.0,
         unit="events",
     ),
+    # ---- PIT reconstruction (from flywheel.pit_reconstruction_evidence) --
+    Objective(
+        objective_id="STRICT_PIT_RECONSTRUCTABLE",
+        metric_name="strict_pit_reconstructable",
+        definition="Distinct canonical events with >= 1 STRICT_PIT-eligible evidence row (OBSERVED_EXACT/DAY/MONTH) in the PIT evidence table. UNKNOWN is never upgraded.",
+        target=2_500.0,
+        unit="events",
+    ),
+    Objective(
+        objective_id="CONSERVATIVE_BOUND_PIT_RECONSTRUCTABLE",
+        metric_name="conservative_bound_pit_reconstructable",
+        definition="Distinct canonical events with >= 1 CONSERVATIVE_BOUND_PIT-eligible evidence row (archive capture upper bound / period bound) in the PIT evidence table.",
+        target=2_500.0,
+        unit="events",
+    ),
+    Objective(
+        objective_id="STRICT_PIT_WARM_START_EVENTS",
+        metric_name="strict_pit_warm_start_events",
+        definition="Target events with >= 3 same-artist results whose publication is PROVEN by STRICT_PIT evidence before the target start. Numerator for the warm-start question under strict PIT.",
+        target=1_500.0,
+        unit="events",
+    ),
+    Objective(
+        objective_id="CONSERVATIVE_BOUND_WARM_START_EVENTS",
+        metric_name="conservative_bound_warm_start_events",
+        definition="Target events with >= 3 same-artist results proven by STRICT_PIT or conservative upper-bound evidence before the target start.",
+        target=1_500.0,
+        unit="events",
+    ),
     # ---- rates (fraction of canonical performances) ----------------------
     Objective(
         objective_id="WARM_START_RATE",
