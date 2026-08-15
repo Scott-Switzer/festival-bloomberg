@@ -160,6 +160,20 @@ def answer(
                 "evidence": res["result"],
                 "mode": "deterministic",
             }
+        # A market-scoped tape query with no rows falls back to the recent
+        # tape (still real evidence) rather than silently returning nothing.
+        if tool == "get_activity_tape" and args.get("market_id"):
+            fallback = run_tool(conn, tool, {**args, "market_id": None})
+            if fallback["ok"] and fallback["result"]:
+                return {
+                    "text": (
+                        f"No tape rows for market '{args['market_id']}'; showing "
+                        f"{len(fallback['result'])} most recent activity rows instead."
+                    ),
+                    "tool": tool,
+                    "evidence": fallback["result"],
+                    "mode": "deterministic",
+                }
         return {
             "text": f"Tool {tool} returned no data. Nothing is invented; the corpus has no rows for this query.",
             "tool": tool,

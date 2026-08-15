@@ -255,6 +255,12 @@
   /* ---- events ---------------------------------------------------------- */
 
   document.addEventListener("click", function (ev) {
+    var nav = ev.target.closest("[data-view]");
+    if (nav) {
+      location.hash = "#/" + nav.getAttribute("data-view");
+      searchResults.classList.add("hidden");
+      return;
+    }
     var el = ev.target.closest("[data-nav]");
     if (el) {
       var type = el.getAttribute("data-nav");
