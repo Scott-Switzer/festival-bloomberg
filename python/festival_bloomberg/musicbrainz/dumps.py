@@ -309,6 +309,213 @@ def ingest_series_dump(
     )
 
 
+def _pair_key(a: str, b: str) -> str:
+    return hashlib.sha256(f"{a}|{b}".encode("utf-8")).hexdigest()[:32]
+
+
+def _relationship_key(subject_type: str, subject_key: str, predicate: str,
+                      object_type: str, object_key: str, source: str) -> str:
+    material = "|".join([subject_type, subject_key, predicate, object_type, object_key, source])
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
+
+
+def _insert_relationship(conn, *, subject_type: str, subject_key: str, predicate: str,
+                          object_type: str, object_key: str, source_system: str,
+                          source_url: str | None, knowledge_time: str) -> None:
+    key = _relationship_key(subject_type, subject_key, predicate, object_type, object_key, source_system)
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO core.entity_relationships
+            (relationship_key, subject_entity_type, subject_key, predicate,
+             object_entity_type, object_key, source_system, source_url,
+             evidence_class, knowledge_time, ingested_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'CROWD_CURATED_REFERENCE', ?, CURRENT_TIMESTAMP)
+        """,
+        [key, subject_type, subject_key, predicate, object_type, object_key,
+         source_system, source_url, knowledge_time],
+    )
+
+
+def normalize_event(obj: dict[str, Any]) -> dict[str, Any]:
+    mbid = obj.get("id")
+    if not mbid:
+        raise ValueError("event object missing id")
+    lifespan = obj.get("life-span") or {}
+    return {
+        "mbid": mbid,
+        "name": obj.get("name"),
+        "event_type": obj.get("type"),
+        "begin_date": lifespan.get("begin") if isinstance(lifespan, dict) else None,
+        "end_date": lifespan.get("end") if isinstance(lifespan, dict) else None,
+        "event_time": obj.get("time"),
+        "cancelled": obj.get("cancelled"),
+        "disambiguation": obj.get("disambiguation"),
+        "relations": obj.get("relations") or [],
+        "payload": obj,
+    }
+
+
+def relation_target(rel: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
+    """Return (target-type, target-id, target-value) for one MB relation."""
+    tt = rel.get("target-type")
+    nested = rel.get(tt) if tt else None
+    nested = nested if isinstance(nested, dict) else {}
+    if tt == "url":
+        return tt, nested.get("id"), nested.get("resource")
+    return tt, nested.get("id"), nested.get("name")
+
+
+def persist_event(conn, rec: dict[str, Any], *, dump_source_id_value: str,
+                  knowledge_time: str) -> dict[str, int]:
+    """Persist one event + its typed edges. Returns new-row counts."""
+    out = {"new": 0, "series_events": 0, "performers": 0, "places": 0, "urls": 0, "subevents": 0}
+    exists = conn.execute(
+        "SELECT 1 FROM raw.musicbrainz_event WHERE mbid = ?", [rec["mbid"]]
+    ).fetchone()
+    if exists:
+        return out
+    conn.execute(
+        """
+        INSERT INTO raw.musicbrainz_event
+            (mbid, name, event_type, begin_date, end_date, event_time, cancelled,
+             disambiguation, payload, dump_source_id, knowledge_time, ingested_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """,
+        [
+            rec["mbid"], rec["name"], rec["event_type"], rec["begin_date"],
+            rec["end_date"], rec["event_time"], rec["cancelled"],
+            rec["disambiguation"], json.dumps(rec["payload"], default=str),
+            dump_source_id_value, knowledge_time,
+        ],
+    )
+    out["new"] = 1
+    for rel in rec["relations"]:
+        if not isinstance(rel, dict):
+            continue
+        tt, tid, tval = relation_target(rel)
+        rtype = rel.get("type")
+        direction = rel.get("direction")
+        if tt == "series" and rtype == "part of" and tid:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO core.series_events
+                    (series_event_key, series_key, series_mbid, event_mbid, event_name,
+                     event_type, event_begin_date, event_end_date, relationship_type,
+                     source_system, knowledge_time, ingested_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'part of', 'musicbrainz', ?, CURRENT_TIMESTAMP)
+                """,
+                [_pair_key(tid, rec["mbid"]), series_key_for(tid), tid, rec["mbid"],
+                 rec["name"], rec["event_type"], rec["begin_date"], rec["end_date"],
+                 knowledge_time],
+            )
+            out["series_events"] += 1
+        elif tt == "artist" and tid:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO core.event_performers
+                    (performer_key, event_mbid, artist_mbid, artist_name, performer_role,
+                     direction, source_system, knowledge_time, ingested_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'musicbrainz', ?, CURRENT_TIMESTAMP)
+                """,
+                [_pair_key(f"{rec['mbid']}|{tid}", rtype or "performer"), rec["mbid"], tid,
+                 tval, rtype or "performer", direction, knowledge_time],
+            )
+            out["performers"] += 1
+        elif tt == "place" and rtype == "held at" and tid:
+            _insert_relationship(
+                conn, subject_type="EVENT", subject_key=f"mbid::{rec['mbid']}",
+                predicate="EVENT_AT_PLACE", object_type="PLACE", object_key=f"mbid::{tid}",
+                source_system="musicbrainz", source_url=None, knowledge_time=knowledge_time,
+            )
+            out["places"] += 1
+        elif tt == "event" and rtype == "part of" and tid:
+            _insert_relationship(
+                conn, subject_type="EVENT", subject_key=f"mbid::{rec['mbid']}",
+                predicate="EVENT_PART_OF_EVENT", object_type="EVENT", object_key=f"mbid::{tid}",
+                source_system="musicbrainz", source_url=None, knowledge_time=knowledge_time,
+            )
+            out["subevents"] += 1
+        elif tt == "url" and rtype in ("official homepage", "ticketing") and tval:
+            _insert_relationship(
+                conn, subject_type="EVENT", subject_key=f"mbid::{rec['mbid']}",
+                predicate="EVENT_HAS_URL", object_type="URL", object_key=tval,
+                source_system="musicbrainz", source_url=tval, knowledge_time=knowledge_time,
+            )
+            out["urls"] += 1
+    return out
+
+
+def _commit_batch(conn, *, batching: bool) -> None:
+    """Commit the current batch and open the next (DuckDB batched ingest)."""
+    if not batching:
+        return
+    conn.execute("COMMIT")
+    conn.execute("BEGIN TRANSACTION")
+
+
+def ingest_events_file(
+    conn,
+    path: str | Path,
+    *,
+    dump_source_id_value: str,
+    knowledge_time: str | None = None,
+    limit: int | None = None,
+    commit_every: int | None = None,
+) -> dict[str, Any]:
+    """Stream and persist an event dump, materializing series/performer edges.
+
+    ``commit_every`` wraps the ingest in periodic transactions (fast for large
+    dumps without buffering the whole file in memory).
+    """
+    knowledge_time = knowledge_time or datetime.now(timezone.utc).isoformat()
+    batching = commit_every and commit_every > 0
+    if batching:
+        conn.execute("BEGIN TRANSACTION")
+    summary = {
+        "status": "RUNNING", "parsed": 0, "new_events": 0, "skipped_existing": 0,
+        "invalid": 0, "series_events": 0, "performers": 0, "places": 0,
+        "urls": 0, "subevents": 0, "by_type": {},
+    }
+    count = 0
+    try:
+        with open(Path(path), encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                count += 1
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    summary["invalid"] += 1
+                    continue
+                try:
+                    rec = normalize_event(obj)
+                except (ValueError, KeyError):
+                    summary["invalid"] += 1
+                    continue
+                summary["parsed"] += 1
+                summary["by_type"][rec["event_type"] or "?" ] = summary["by_type"].get(rec["event_type"] or "?", 0) + 1
+                out = persist_event(conn, rec, dump_source_id_value=dump_source_id_value,
+                                    knowledge_time=knowledge_time)
+                if out["new"]:
+                    summary["new_events"] += 1
+                    for k in ("series_events", "performers", "places", "urls", "subevents"):
+                        summary[k] += out[k]
+                    if batching and summary["new_events"] % commit_every == 0:
+                        _commit_batch(conn, batching=True)
+                else:
+                    summary["skipped_existing"] += 1
+                if limit is not None and summary["new_events"] >= limit:
+                    break
+    finally:
+        if batching:
+            conn.execute("COMMIT")
+    summary["status"] = "COMPLETE"
+    summary["objects_seen"] = count
+    return summary
+
+
 def ingest_series_file(
     conn,
     path: str | Path,
@@ -345,3 +552,149 @@ def ingest_series_file(
         dump_source_id_value=dump_source_id_value,
         knowledge_time=knowledge_time, limit=limit,
     )
+
+
+def _clean_coord(value, lo: float, hi: float):
+    """Validate a coordinate; return None for out-of-range/garbage values.
+
+    MusicBrainz crowdsourced coordinates occasionally contain invalid values
+    (e.g. longitude -73991593.99). We never persist garbage as a coordinate
+    and never clamp it into something plausible-looking — invalid -> NULL.
+    """
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not (lo <= v <= hi):
+        return None
+    return round(v, 6)
+
+
+def normalize_place(obj: dict[str, Any]) -> dict[str, Any]:
+    mbid = obj.get("id")
+    if not mbid:
+        raise ValueError("place object missing id")
+    coords = obj.get("coordinates") or {}
+    area = obj.get("area") or {}
+    return {
+        "mbid": mbid,
+        "name": obj.get("name"),
+        "place_type": obj.get("type"),
+        "address": obj.get("address"),
+        "latitude": _clean_coord(coords.get("latitude"), -90.0, 90.0) if isinstance(coords, dict) else None,
+        "longitude": _clean_coord(coords.get("longitude"), -180.0, 180.0) if isinstance(coords, dict) else None,
+        "area_name": area.get("name") if isinstance(area, dict) else None,
+        "area_mbid": area.get("id") if isinstance(area, dict) else None,
+        "disambiguation": obj.get("disambiguation"),
+        "relations": obj.get("relations") or [],
+        "payload": obj,
+    }
+
+
+def venue_key_for(mbid: str) -> str:
+    return f"mbid::{mbid}"
+
+
+def persist_place(conn, rec: dict[str, Any], *, dump_source_id_value: str,
+                  knowledge_time: str) -> int:
+    """Persist one MB place into raw + a canonical core.venues row (by MBID).
+
+    Returns 1 if the raw place was new. Canonical venue rows are keyed by
+    ``mbid::<id>`` so re-ingest is idempotent and never duplicates a venue.
+    """
+    exists = conn.execute(
+        "SELECT 1 FROM raw.musicbrainz_place WHERE mbid = ?", [rec["mbid"]]
+    ).fetchone()
+    if exists:
+        return 0
+    conn.execute(
+        """
+        INSERT INTO raw.musicbrainz_place
+            (mbid, name, place_type, address, latitude, longitude, area,
+             disambiguation, payload, dump_source_id, knowledge_time, ingested_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """,
+        [
+            rec["mbid"], rec["name"], rec["place_type"], rec["address"],
+            rec["latitude"], rec["longitude"], rec["area_name"],
+            rec["disambiguation"], json.dumps(rec["payload"], default=str),
+            dump_source_id_value, knowledge_time,
+        ],
+    )
+    # Canonical venue (basic resolution): MBID-keyed, no fabricated capacity or
+    # country (area name alone is not country evidence).
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO core.venues
+            (venue_key, name, normalized_name, venue_type, address, latitude,
+             longitude, musicbrainz_id, source_system, ingested_at)
+        VALUES (?, ?, LOWER(TRIM(?)), ?, ?, ?, ?, ?, 'musicbrainz', CURRENT_TIMESTAMP)
+        """,
+        [
+            venue_key_for(rec["mbid"]), rec["name"], rec["name"], rec["place_type"],
+            rec["address"], rec["latitude"], rec["longitude"], rec["mbid"],
+        ],
+    )
+    if rec["area_mbid"]:
+        _insert_relationship(
+            conn, subject_type="PLACE", subject_key=venue_key_for(rec["mbid"]),
+            predicate="PLACE_IN_AREA", object_type="AREA",
+            object_key=f"mbid::{rec['area_mbid']}",
+            source_system="musicbrainz", source_url=None, knowledge_time=knowledge_time,
+        )
+    return 1
+
+
+def ingest_place_file(
+    conn,
+    path: str | Path,
+    *,
+    dump_source_id_value: str,
+    knowledge_time: str | None = None,
+    limit: int | None = None,
+    commit_every: int | None = None,
+) -> dict[str, Any]:
+    """Stream and persist a place dump (raw places + canonical venues)."""
+    knowledge_time = knowledge_time or datetime.now(timezone.utc).isoformat()
+    batching = commit_every and commit_every > 0
+    if batching:
+        conn.execute("BEGIN TRANSACTION")
+    summary = {
+        "status": "RUNNING", "parsed": 0, "new_places": 0, "skipped_existing": 0,
+        "invalid": 0, "by_type": {},
+    }
+    count = 0
+    try:
+        with open(Path(path), encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                count += 1
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    summary["invalid"] += 1
+                    continue
+                try:
+                    rec = normalize_place(obj)
+                except (ValueError, KeyError):
+                    summary["invalid"] += 1
+                    continue
+                summary["parsed"] += 1
+                summary["by_type"][rec["place_type"] or "?"] = summary["by_type"].get(rec["place_type"] or "?", 0) + 1
+                if persist_place(conn, rec, dump_source_id_value=dump_source_id_value,
+                                 knowledge_time=knowledge_time):
+                    summary["new_places"] += 1
+                    if batching and summary["new_places"] % commit_every == 0:
+                        _commit_batch(conn, batching=True)
+                else:
+                    summary["skipped_existing"] += 1
+                if limit is not None and summary["new_places"] >= limit:
+                    break
+    finally:
+        if batching:
+            conn.execute("COMMIT")
+    summary["status"] = "COMPLETE"
+    summary["objects_seen"] = count
+    return summary

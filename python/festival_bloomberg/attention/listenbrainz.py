@@ -130,6 +130,94 @@ def persist_observation(conn, row: dict[str, Any]) -> int:
     return 1
 
 
+POPULARITY_URL = "https://api.listenbrainz.org/1/popularity/artist"
+BATCH_SIZE = 1000
+
+
+def fetch_artist_popularity(transport, mbids: list[str]) -> dict[str, Any]:
+    """POST a batch of MBIDs to the bulk popularity endpoint.
+
+    Returns a summary with ``rows`` = list of
+    ``{artist_mbid, total_listen_count, total_user_count}`` (missing -> None,
+    never zero-filled).
+    """
+    from ..acquisition.transport import TransportError
+
+    mbids = [m for m in mbids if m and m.strip()]
+    if not mbids:
+        return {"status": "ok", "rows": [], "requests": 0}
+    rows: list[dict[str, Any]] = []
+    requests = 0
+    for i in range(0, len(mbids), BATCH_SIZE):
+        chunk = mbids[i:i + BATCH_SIZE]
+        requests += 1
+        try:
+            response = transport.request(
+                "POST", POPULARITY_URL,
+                headers={"Accept": "application/json"},
+                body={"artist_mbids": chunk},
+                timeout_seconds=30.0,
+            )
+        except TransportError as exc:
+            return {"status": "error", "rows": rows, "requests": requests, "detail": str(exc)}
+        if response.status == 429:
+            return {"status": "rate_limited", "rows": rows, "requests": requests}
+        if response.status != 200:
+            return {"status": "error", "rows": rows, "requests": requests,
+                    "detail": f"http {response.status}"}
+        payload = json.loads(response.body.decode("utf-8"))
+        for item in payload if isinstance(payload, list) else []:
+            if isinstance(item, dict) and item.get("artist_mbid"):
+                rows.append({
+                    "artist_mbid": item.get("artist_mbid"),
+                    "total_listen_count": item.get("total_listen_count"),
+                    "total_user_count": item.get("total_user_count"),
+                })
+    return {"status": "ok", "rows": rows, "requests": requests}
+
+
+def collect_artist_popularity(
+    conn,
+    transport,
+    *,
+    artists: list[tuple[str, str]],
+) -> dict[str, Any]:
+    """Bulk ListenBrainz popularity -> attention observations (2 metrics).
+
+    ``artists`` are ``(artist_name, artist_mbid)`` pairs. Missing counts stay
+    NULL (never zero-filled). Labels: LISTENBRAINZ_TOTAL_LISTEN_COUNT /
+    LISTENBRAINZ_TOTAL_USER_COUNT, ATTENTION_CONSUMPTION_SAMPLE.
+    """
+    mbids = [mbid for _name, mbid in artists if mbid and mbid.strip()]
+    name_by_mbid = {mbid: name for name, mbid in artists if mbid}
+    result = fetch_artist_popularity(transport, mbids)
+    summary = {
+        "status": result["status"], "artists_eligible": len(mbids),
+        "artists_returned": 0, "rows_persisted": 0, "requests": result["requests"],
+        "error": 0,
+    }
+    retrieved_at = datetime.now(timezone.utc).isoformat()
+    for row in result["rows"]:
+        mbid = row["artist_mbid"]
+        name = name_by_mbid.get(mbid, mbid)
+        summary["artists_returned"] += 1
+        for metric_kind, value, unit in (
+            ("LISTENBRAINZ_TOTAL_LISTEN_COUNT", row["total_listen_count"], "listens"),
+            ("LISTENBRAINZ_TOTAL_USER_COUNT", row["total_user_count"], "listeners"),
+        ):
+            obs = build_listenbrainz_observation(
+                artist_name=name, artist_mbid=mbid, metric_kind=metric_kind,
+                value=value, value_unit=unit, stats_range="all_time",
+                period_start=None, period_end=None, status="ok" if value is not None else "missing",
+                source_url=POPULARITY_URL, retrieved_at=retrieved_at,
+                extra_provenance={"endpoint": "bulk_popularity"},
+            )
+            summary["rows_persisted"] += persist_observation(conn, obs)
+    if result["status"] != "ok":
+        summary["error"] = 1
+    return summary
+
+
 def collect_artist_listen_counts(
     conn,
     transport,
