@@ -39,3 +39,6 @@ generated/
 
 # Freebuff desktop tool state (not project data)
 .freebuff/
+
+# macOS
+.DS_Store
