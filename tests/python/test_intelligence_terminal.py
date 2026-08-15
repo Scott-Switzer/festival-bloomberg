@@ -346,7 +346,7 @@ def test_providers_fail_closed_without_keys(monkeypatch):
     for name in ("listenbrainz", "gdelt", "nws", "wikimedia", "commoncrawl"):
         assert by_name[name]["auth_status"] == PUBLIC_NO_AUTH
     assert by_name["nws"]["operational_status"] == OPERATIONAL
-    assert by_name["listenbrainz"]["operational_status"] == NOT_IMPLEMENTED
+    assert by_name["listenbrainz"]["operational_status"] == OPERATIONAL
     # JamBase absence never breaks the terminal: it is OPTIONAL.
     assert "jambase" in by_name
     assert len(ALL_PROVIDERS) == 17
@@ -431,5 +431,5 @@ def test_intelligence_terminal_oa_end_to_end(tmp_path):
     by_name = {h["provider"]: h for h in manifest["provider_health"]}
     assert by_name["jambase"]["operational_status"] == "AUTH_MISSING"
     assert by_name["nws"]["operational_status"] == "OPERATIONAL"
-    assert by_name["listenbrainz"]["operational_status"] == "NOT_IMPLEMENTED"
+    assert by_name["listenbrainz"]["operational_status"] == "OPERATIONAL"
     assert (tmp_path / "manifest.json").is_file()

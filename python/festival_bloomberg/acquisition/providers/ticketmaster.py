@@ -35,8 +35,12 @@ GET_EVENT = "GET_EVENT"
 SEARCH_VENUES = "SEARCH_VENUES"
 GET_VENUE = "GET_VENUE"
 
-DEFAULT_PAGE_SIZE = 20
-MAX_PAGES = 5
+DEFAULT_PAGE_SIZE = 50
+#: Ticketmaster's official deep-paging ceiling: results stop being served at
+#: the 1000th item. A partition whose reported total exceeds this must be
+#: SPLIT (by date window) rather than silently truncated. This is a provider
+#: constraint, not our own cap.
+RETRIEVAL_CEILING = 1000
 
 
 class TicketmasterProvider(BaseProvider):
@@ -281,7 +285,12 @@ class TicketmasterProvider(BaseProvider):
         complete = False
         truncated = False
         page_number = 0
-        while len(records) < max_records and pages < MAX_PAGES:
+        # Honor the caller's cap, but never page beyond the provider's own
+        # deep-paging ceiling. A caller wanting full coverage passes
+        # max_records >= RETRIEVAL_CEILING and the driver SPLITS any partition
+        # whose reported total exceeds the ceiling.
+        ceiling = max(1, int(max_records or RETRIEVAL_CEILING))
+        while True:
             page_params = dict(params)
             page_params["page"] = str(page_number)
             payload, error = self._api_get(path, page_params)
@@ -296,29 +305,36 @@ class TicketmasterProvider(BaseProvider):
                 reported = page_info.get("totalElements")
             items = ((payload.get("_embedded") or {}).get(embedded_key)) or []
             if not items:
-                complete = True
+                # Empty page: complete only if we have already seen every
+                # reported item; otherwise the API stopped serving early
+                # (e.g. the deep-paging ceiling) and this is truncation.
+                complete = (reported is None) or (len(records) >= int(reported))
+                truncated = not complete
                 break
             for item in items:
                 records.append(normalize(item))
-                if len(records) >= max_records:
-                    truncated = True
+                if len(records) >= ceiling:
                     break
             total_pages = page_info.get("totalPages")
-            if total_pages is None or page_number + 1 >= int(total_pages):
-                complete = not truncated
+            if total_pages is not None and page_number + 1 >= int(total_pages):
+                # Reached the provider-reported final page.
+                complete = True
+                truncated = False
+                break
+            if len(records) >= ceiling:
+                # Stopped on our own ceiling before the reported end.
+                truncated = True
                 break
             page_number += 1
-        else:
-            if pages >= MAX_PAGES:
-                truncated = True
         meta = {
             "pages_fetched": pages,
             "items_fetched": len(records),
             "reported_total": reported,
             "complete": complete and not truncated,
-            "coverage_status": "TRUNCATED_BY_CAP" if truncated and not complete else ("COMPLETE" if complete else "PARTIAL"),
+            "truncated": truncated,
+            "coverage_status": "TRUNCATED_BY_CAP" if (truncated and not complete) else ("COMPLETE" if complete else "PARTIAL"),
         }
-        return records[:max_records], meta, None
+        return records[:ceiling], meta, None
 
     def _normalize_event(self, item: dict, retrieved_at: str, request: AcquisitionRequest) -> dict:
         venue = _first(((item.get("_embedded") or {}).get("venues")) or [])

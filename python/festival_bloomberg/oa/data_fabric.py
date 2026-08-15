@@ -27,7 +27,7 @@ No secret value is ever written to the report.
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +35,7 @@ from ..acquisition.contracts import AcquisitionRequest, content_hash_of, utc_now
 from ..acquisition.providers.gdelt import GdeltProvider
 from ..acquisition.providers.ticketmaster import TicketmasterProvider
 from ..acquisition.transport import UrllibTransport
+from ..attention.listenbrainz import collect_artist_listen_counts
 from ..attention.wikimedia_pageviews import collect_artist_pageviews
 from ..identity.spotify import normalize_name
 from ..intelligence.tape import (
@@ -45,7 +46,13 @@ from ..intelligence.tape import (
 from ..localenv import load_local_env
 from ..warehouse.repository import FestivalRepository
 
-SOFTWARE_VERSION = "live_entertainment_data_fabric_v1"
+SOFTWARE_VERSION = "national_coverage_entity_master_v1"
+
+#: Ticketmaster deep-paging ceiling (the provider's official limit, not ours).
+RETRIEVAL_CEILING = 1000
+FUTURE_WINDOW_DAYS = 365
+MAX_SPLIT_DEPTH = 4
+MIN_SPLIT_WINDOW_DAYS = 7
 
 #: Extended US market partitions (city, state). Washington, DC uses "DC".
 DEFAULT_MARKETS: tuple[tuple[str, str], ...] = (
@@ -212,12 +219,52 @@ def _run_wikimedia_attention(conn, names: list[str], days: int, validate: bool) 
     return collect_artist_pageviews(conn, UrllibTransport(), names=names, days=days)
 
 
-def _run_ticketmaster(conn, markets: tuple[tuple[str, str], ...], validate: bool) -> dict[str, Any]:
+def _mbid_artists(conn, limit: int) -> list[tuple[str, str]]:
+    """Resolved MusicBrainz artist IDs (the ListenBrainz join key)."""
+    try:
+        rows = conn.execute(
+            "SELECT entity_key, id_value FROM core.entity_external_ids "
+            "WHERE id_type = 'musicbrainz' AND entity_type = 'ARTIST' "
+            "ORDER BY external_id_key LIMIT ?",
+            [limit],
+        ).fetchall()
+    except Exception:
+        return []
+    out: list[tuple[str, str]] = []
+    for entity_key, mbid in rows:
+        name = entity_key or ""
+        if name.startswith("name::"):
+            name = name[len("name::"):]
+        out.append((name, mbid))
+    return out
+
+
+def _run_listenbrainz(conn, validate: bool, limit: int = 50) -> dict[str, Any]:
+    summary = {
+        "status": "SKIPPED", "artists_attempted": 0, "artists_resolved": 0,
+        "missing": 0, "error": 0, "rate_limited": 0, "rows_persisted": 0,
+    }
+    if not validate:
+        return summary
+    pairs = _mbid_artists(conn, limit)
+    if not pairs:
+        summary["status"] = "NO_MBID_RESOLVED"
+        return summary
+    result = collect_artist_listen_counts(
+        conn, UrllibTransport(), artists=pairs, min_interval_seconds=0.5,
+    )
+    summary.update(result)
+    return summary
+
+
+def _run_ticketmaster(
+    conn, markets: tuple[tuple[str, str], ...], validate: bool, *, now=None
+) -> dict[str, Any]:
     summary = {
         "status": "RUNNING", "configured": False, "partitions": 0,
         "partitions_complete": 0, "partitions_truncated": 0,
-        "events_persisted": 0, "requests": 0, "rate_limited": 0,
-        "provider_errors": 0, "distinct_events": 0,
+        "partitions_split": 0, "events_persisted": 0, "requests": 0,
+        "rate_limited": 0, "provider_errors": 0, "distinct_events": 0,
     }
     provider = TicketmasterProvider(transport=UrllibTransport())
     summary["configured"] = provider.configured()
@@ -229,55 +276,15 @@ def _run_ticketmaster(conn, markets: tuple[tuple[str, str], ...], validate: bool
         return summary
 
     run_retrieved = utc_now().isoformat()
+    start = now or utc_now()
+    end = start + timedelta(days=FUTURE_WINDOW_DAYS)
     for city, state in markets:
-        req = AcquisitionRequest.new(
-            entity_id=city.lower(),
-            entity_type="market",
-            platform="ticketmaster",
-            query="",
-            market_id=f"{city},{state},US",
-            classification_name="Music",
-            max_records=100,  # full allowed depth (5 pages x 20); deep-paging cap is never exceeded
-            operation="SEARCH_EVENTS",
-            commercial_context="research",
-            start_time=utc_now(),
+        _sweep_window(
+            conn, provider, city, state, start, end,
+            depth=0, parent_id=None, summary=summary, run_retrieved=run_retrieved,
         )
-        result = provider.acquire(req)
-        pagination = (result.provider_metadata or {}).get("pagination") or {}
-        summary["partitions"] += 1
-        summary["requests"] += int(pagination.get("pages_fetched", 1) or 1)
-        if result.status.value == "NOT_CONFIGURED":
-            summary["status"] = "NOT_CONFIGURED"
-            _persist_partition(conn, city, state, "NOT_CONFIGURED", None, False, None, run_retrieved)
+        if summary["status"].startswith(("RATE_LIMITED", "STOPPED", "NOT_CONFIGURED")):
             break
-        if result.status.value == "RATE_LIMITED":
-            summary["rate_limited"] += 1
-            summary["status"] = "RATE_LIMITED_STOPPED"
-            _persist_partition(conn, city, state, "RATE_LIMITED", None, False, "rate_limited", run_retrieved)
-            break
-        if result.status.value == "PROVIDER_ERROR":
-            summary["provider_errors"] += 1
-            summary["status"] = "STOPPED_PROVIDER_ERROR"
-            _persist_partition(conn, city, state, "ERROR", None, False, "provider_error", run_retrieved)
-            break
-
-        coverage = pagination.get("coverage_status")
-        truncated = coverage == "TRUNCATED_BY_CAP"
-        complete = bool(pagination.get("complete"))
-        if result.is_success and complete and not truncated:
-            pstatus = "COMPLETE"
-            summary["partitions_complete"] += 1
-        else:
-            pstatus = "PARTIAL"
-            if truncated:
-                summary["partitions_truncated"] += 1
-        total = pagination.get("reported_total")
-        received = pagination.get("items_fetched")
-        _persist_partition(conn, city, state, pstatus, total, truncated, None, run_retrieved,
-                           received=received)
-        for rec in result.records:
-            if _persist_event_snapshot(conn, rec, result.completed_at.isoformat()):
-                summary["events_persisted"] += 1
     summary["distinct_events"] = _count(
         conn, "SELECT COUNT(DISTINCT platform_object_id) FROM events.provider_event_snapshots WHERE provider='ticketmaster'"
     )
@@ -286,10 +293,128 @@ def _run_ticketmaster(conn, markets: tuple[tuple[str, str], ...], validate: bool
     return summary
 
 
-def _persist_partition(conn, city: str, state: str, status: str, total_expected,
-                       truncated: bool, error_category, retrieved_at: str,
-                       received: int | None = None) -> None:
-    partition_id = f"{city.lower()},{state.lower()},US:music"
+def _sweep_window(
+    conn,
+    provider,
+    city: str,
+    state: str,
+    start,
+    end,
+    *,
+    depth: int,
+    parent_id: str | None,
+    summary: dict[str, Any],
+    run_retrieved: str,
+) -> None:
+    """Recursively sweep one market x date window, splitting oversized windows.
+
+    A partition whose reported total exceeds the provider's deep-paging
+    ceiling is SPLIT in half and each half re-queried, down to a minimum
+    window, so every LEAF partition is either COMPLETE or explicitly
+    TRUNCATED_BY_CAP / RATE_LIMITED / ERROR — never silently truncated.
+    """
+    partition_id = (
+        f"{city.lower()},{state.lower()},US:music"
+        f":{start.strftime('%Y%m%d')}-{end.strftime('%Y%m%d')}"
+    )
+    market_id = f"{city},{state},US"
+    req = AcquisitionRequest.new(
+        entity_id=city.lower(),
+        entity_type="market",
+        platform="ticketmaster",
+        query="",
+        market_id=market_id,
+        classification_name="Music",
+        max_records=RETRIEVAL_CEILING,
+        operation="SEARCH_EVENTS",
+        commercial_context="research",
+        start_time=start,
+        end_time=end,
+    )
+    result = provider.acquire(req)
+    pagination = (result.provider_metadata or {}).get("pagination") or {}
+    summary["partitions"] += 1
+    summary["requests"] += int(pagination.get("pages_fetched", 1) or 1)
+
+    if result.status.value == "NOT_CONFIGURED":
+        summary["status"] = "NOT_CONFIGURED"
+        _persist_partition(conn, partition_id, market_id, start, end, "NOT_CONFIGURED",
+                           None, False, None, parent_id, depth, run_retrieved)
+        return
+    if result.status.value == "RATE_LIMITED":
+        summary["rate_limited"] += 1
+        summary["status"] = "RATE_LIMITED_STOPPED"
+        _persist_partition(conn, partition_id, market_id, start, end, "RATE_LIMITED",
+                           None, False, "rate_limited", parent_id, depth, run_retrieved)
+        return
+    if result.status.value == "PROVIDER_ERROR":
+        summary["provider_errors"] += 1
+        summary["status"] = "STOPPED_PROVIDER_ERROR"
+        _persist_partition(conn, partition_id, market_id, start, end, "ERROR",
+                           None, False, "provider_error", parent_id, depth, run_retrieved)
+        return
+
+    # One snapshot per (event, run): the split re-fetches are pagination
+    # mechanics, not separate observations, so they share the run's
+    # retrieved_at and dedupe against the parent partition's copies.
+    persisted = 0
+    for rec in result.records:
+        if _persist_event_snapshot(conn, rec, run_retrieved):
+            persisted += 1
+    summary["events_persisted"] += persisted
+
+    total = pagination.get("reported_total")
+    truncated = bool(pagination.get("truncated"))
+    complete = bool(pagination.get("complete"))
+    window_days = int((end - start).total_seconds() // 86400)
+
+    if truncated and depth < MAX_SPLIT_DEPTH and window_days > MIN_SPLIT_WINDOW_DAYS:
+        summary["partitions_split"] += 1
+        _persist_partition(
+            conn, partition_id, market_id, start, end, "SPLIT", total, True,
+            "reported_total_exceeds_ceiling", parent_id, depth, run_retrieved,
+            received=pagination.get("items_fetched"), persisted=persisted,
+            split_reason="reported_total_exceeds_ceiling",
+        )
+        mid = start + (end - start) / 2
+        _sweep_window(conn, provider, city, state, start, mid, depth=depth + 1,
+                      parent_id=partition_id, summary=summary, run_retrieved=run_retrieved)
+        _sweep_window(conn, provider, city, state, mid, end, depth=depth + 1,
+                      parent_id=partition_id, summary=summary, run_retrieved=run_retrieved)
+        return
+
+    if complete and not truncated:
+        status = "COMPLETE"
+        summary["partitions_complete"] += 1
+    elif truncated:
+        status = "TRUNCATED_BY_CAP"
+        summary["partitions_truncated"] += 1
+    else:
+        status = "PARTIAL"
+    _persist_partition(
+        conn, partition_id, market_id, start, end, status, total, truncated,
+        None, parent_id, depth, run_retrieved,
+        received=pagination.get("items_fetched"), persisted=persisted,
+    )
+
+
+def _persist_partition(
+    conn,
+    partition_id: str,
+    market_id: str,
+    start,
+    end,
+    status: str,
+    total_expected,
+    truncated: bool,
+    error_category,
+    parent_id: str | None,
+    depth: int,
+    retrieved_at: str,
+    received: int | None = None,
+    persisted: int | None = None,
+    split_reason: str | None = None,
+) -> None:
     partition_key = content_hash_of(f"ticketmaster|{partition_id}|{retrieved_at}")
     exists = conn.execute(
         "SELECT 1 FROM terminal.acquisition_partitions WHERE partition_key = ?", [partition_key]
@@ -301,15 +426,21 @@ def _persist_partition(conn, city: str, state: str, status: str, total_expected,
         INSERT INTO terminal.acquisition_partitions
             (partition_key, provider, partition_id, market_id, classification_name,
              window_start, window_end, total_expected, records_received,
-             records_persisted, truncated, status, error_category, started_at,
-             finished_at, retrieved_at, knowledge_time, software_version, ingested_at)
-        VALUES (?, 'ticketmaster', ?, ?, 'Music', NULL, NULL, ?, ?, 0, ?, ?, ?, NULL,
+             records_persisted, truncated, status, error_category, parent_partition_id,
+             depth, split_reason, started_at, finished_at, retrieved_at,
+             knowledge_time, software_version, ingested_at)
+        VALUES (?, 'ticketmaster', ?, ?, 'Music', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL,
                 NULL, ?, ?, ?, CURRENT_TIMESTAMP)
         """,
         [
-            partition_key, partition_id, f"{city},{state},US", total_expected,
-            received if received is not None else 0, truncated, status,
-            error_category, retrieved_at, retrieved_at, SOFTWARE_VERSION,
+            partition_key, partition_id, market_id,
+            start.strftime("%Y-%m-%d") if hasattr(start, "strftime") else str(start),
+            end.strftime("%Y-%m-%d") if hasattr(end, "strftime") else str(end),
+            total_expected,
+            received if received is not None else 0,
+            persisted if persisted is not None else 0,
+            truncated, status, error_category, parent_id, depth, split_reason,
+            retrieved_at, retrieved_at, SOFTWARE_VERSION,
         ],
     )
 
@@ -433,6 +564,9 @@ def run_data_fabric_oa(
         ticketmaster = _run_ticketmaster(conn, ticketmaster_markets, validate)
         conn.commit()
 
+        listenbrainz = _run_listenbrainz(conn, validate)
+        conn.commit()
+
         news_tape = derive_news_tape_entries(conn)
         new_news_tape = insert_tape_entries(conn, news_tape)
         event_tape = derive_provider_event_tape_entries(conn)
@@ -451,6 +585,7 @@ def run_data_fabric_oa(
             "gdelt": gdelt,
             "attention": attention,
             "ticketmaster": ticketmaster,
+            "listenbrainz": listenbrainz,
             "activity_tape": {
                 "news_derived": len(news_tape),
                 "news_new_rows": new_news_tape,
@@ -510,22 +645,33 @@ def _default_attention_names(conn, limit: int = 30) -> list[str]:
 
 
 def _partition_completeness(conn) -> dict[str, Any]:
-    total = _count(conn, "SELECT COUNT(*) FROM terminal.acquisition_partitions WHERE provider='ticketmaster'")
+    # Scope to THIS milestone's driver rows: historical rows from older
+    # milestones (written under the old 100-record cap) must not pollute the
+    # current run's completeness accounting.
+    leaves = _count(
+        conn,
+        "SELECT COUNT(*) FROM terminal.acquisition_partitions "
+        "WHERE provider='ticketmaster' AND status <> 'SPLIT' AND software_version = ?",
+        [SOFTWARE_VERSION],
+    )
     complete = _count(
         conn,
         "SELECT COUNT(*) FROM terminal.acquisition_partitions "
-        "WHERE provider='ticketmaster' AND status='COMPLETE'",
+        "WHERE provider='ticketmaster' AND status='COMPLETE' AND software_version = ?",
+        [SOFTWARE_VERSION],
     )
     truncated = _count(
         conn,
         "SELECT COUNT(*) FROM terminal.acquisition_partitions "
-        "WHERE provider='ticketmaster' AND truncated = TRUE",
+        "WHERE provider='ticketmaster' AND truncated = TRUE AND status <> 'SPLIT' "
+        "AND software_version = ?",
+        [SOFTWARE_VERSION],
     )
     return {
-        "total": total,
+        "leaves": leaves,
         "complete": complete,
         "truncated": truncated,
-        "complete_pct": (100.0 * complete / total) if total else None,
+        "complete_pct": (100.0 * complete / leaves) if leaves else None,
     }
 
 

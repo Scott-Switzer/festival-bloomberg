@@ -189,7 +189,7 @@ def test_no_key_provider_never_not_configured():
 
     lb = ListenBrainzProvider().describe()
     assert lb["auth_status"] == PUBLIC_NO_AUTH
-    assert lb["operational_status"] == NOT_IMPLEMENTED
+    assert lb["operational_status"] == OPERATIONAL
     # the old bug: NOT_CONFIGURED must never appear for a no-key provider
     assert lb["operational_status"] != "NOT_CONFIGURED"
 
