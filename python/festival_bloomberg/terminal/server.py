@@ -80,6 +80,12 @@ class TerminalApp:
         if path == "/api/status":
             return self._ok(readmodels.get_recent_changes(
                 self.conn, int(params.get("limit", 100))))
+        if path == "/api/news":
+            return self._ok(readmodels.get_recent_news(
+                self.conn, int(params.get("limit", 100))))
+        if path == "/api/attention":
+            return self._ok(readmodels.get_attention_coverage(
+                self.conn, int(params.get("limit", 100))))
         if path == "/api/events/live":
             return self._ok(readmodels.get_live_events(
                 self.conn, market=params.get("market"), limit=int(params.get("limit", 100))))

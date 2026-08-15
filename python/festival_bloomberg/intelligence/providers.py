@@ -119,11 +119,12 @@ class ListenBrainzProvider(ProviderScaffold):
 class GdeltProvider(ProviderScaffold):
     name = "gdelt"
     auth_required = False
-    implemented = False
+    implemented = True  # canonical acquisition.providers.gdelt.GdeltProvider
     rights_status = "OPEN_COMMERCIAL_OK"
     commercial_use_status = "OPEN_COMMERCIAL_OK"
     license = None
-    quota_note = "recent-only DOC window; metadata only (no full article text)"
+    quota_note = ("DOC artlist (metadata only); provider asks >=1 req/5s; "
+                  "recent-only window; no full article text")
 
 
 class NwsProvider(ProviderScaffold):
