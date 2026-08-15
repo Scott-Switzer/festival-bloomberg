@@ -28,6 +28,8 @@ gitleaks-report.json
 *.duckdb
 # Runtime acquisition caches (crawl index cache, venue-lookup caches)
 data/cache/
+# MusicBrainz CC0 bulk dumps (large; never committed)
+data/musicbrainz_dumps/
 *.db
 *.sqlite
 *.sqlite3

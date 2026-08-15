@@ -34,6 +34,7 @@ milestones:
   INTELLIGENCE_DATA_ESTATE_AND_FESTIVAL_SPINE_V1: "PARTIAL (festival spine + provider repair + agent memory PASS; Spotify Web API operational; keyed live ingestion remains)"
   LIVE_ENTERTAINMENT_DATA_FABRIC_V1: "PARTIAL (Wikimedia attention + 17-market Ticketmaster sweep + partition manifest real; GDELT rate-limited; date-window subdivision remains)"
   NATIONAL_COVERAGE_ENTITY_MASTER_AND_FESTIVAL_HISTORY_V1: "PARTIAL (Ticketmaster recursive date-window subdivision -> 14,023 events / 0 truncated leaves; promoter + resolution-ledger schema; ListenBrainz provider operational; MBID spine + festival-history scale remain)"
+  MUSIC_SECURITY_MASTER_AND_MONITORING_V1: "PARTIAL (music entity master + relationship graph + external-ID master schema; MusicBrainz CC0 bulk series ingest -> 6,228 festival/tour/residency series; MBID resolution + catalog + monitoring remain)"
 
 providers:
   # status taxonomy: PUBLIC_NO_AUTH | AUTH_CONFIGURED | AUTH_MISSING |
@@ -63,6 +64,7 @@ docs:
   - intelligence-terminal-mvp-v1.md
   - live-entertainment-data-fabric-v1.md
   - national-coverage-entity-master-festival-history-v1.md
+  - music-security-master-monitoring-v1.md
 
 key_commands:
   context: "PYTHONPATH=python .venv/bin/python -m festival_bloomberg.ops.context_snapshot"
