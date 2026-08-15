@@ -225,3 +225,24 @@ PYTHONPATH=python python3 -m festival_bloomberg.ops.context_snapshot
 ```
 
 See `docs/intelligence-data-estate-festival-spine-v1.md`.
+
+## Live Data Activation & Intelligence Scale V1
+
+Turns validated providers into persisted, source-backed data (migration 024).
+Fixes the NVIDIA router defect (catalog-aware, fail-closed, no off-catalog
+model ids) and validates live chat + embeddings. Runs bounded Spotify identity
+resolution (deterministic normalized-name matching, EXACT-only external-id
+promotion, no forced merges), a bounded Ticketmaster US music sweep across 5
+markets (status/public onsale/presales/price/promoter snapshots), and attaches
+NWS forecasts to future US events. Derives `EVENT_DISCOVERED` /
+`ONSALE_DISCOVERED` / `PRESALE_DISCOVERED` / `PRICE_RANGE_DISCOVERED` /
+`PROMOTER_IDENTIFIED` tape entries from snapshots and adds a STATUS view to
+the terminal.
+
+```bash
+PYTHONPATH=python python3 -m festival_bloomberg.oa.live_data_activation
+PYTHONPATH=python python3 -m festival_bloomberg.terminal.server --port 8931
+# open http://127.0.0.1:8931/#/status
+```
+
+See `docs/live-data-activation-and-intelligence-scale-v1.md`.

@@ -77,6 +77,12 @@ class TerminalApp:
             ))
         if path == "/api/sources":
             return self._ok(readmodels.get_sources(self.conn))
+        if path == "/api/status":
+            return self._ok(readmodels.get_recent_changes(
+                self.conn, int(params.get("limit", 100))))
+        if path == "/api/events/live":
+            return self._ok(readmodels.get_live_events(
+                self.conn, market=params.get("market"), limit=int(params.get("limit", 100))))
         if path == "/api/festivals":
             return self._ok(FestivalSpineRepository(self.conn).list_festivals())
 

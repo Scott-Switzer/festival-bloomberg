@@ -62,6 +62,29 @@
     });
   }
 
+  function viewStatus() {
+    setNav("status");
+    var html = "<h1>Status</h1><p class='sub'>Recently changed events — cancellations, onsales, prices, promoters.</p>";
+    api("/api/status?limit=50").then(function (changes) {
+      html += "<h2>Changes</h2>" + tableOrNone(changes, ["When", "Event", "Change", "Artist", "Market", "Source"], function (c) {
+        return row([
+          fmt(c.observed_at ? String(c.observed_at).slice(0, 19) : null),
+          esc(c.entity_id),
+          '<span class="tape-type">' + esc(c.activity_type) + "</span>",
+          esc(c.artist_id || ""), esc(c.market_id || ""), esc(c.source_provider || ""),
+        ]);
+      });
+      api("/api/events/live?limit=50").then(function (events) {
+        html += "<h2>Live Ticketmaster events</h2>" + tableOrNone(events, ["Date", "Event", "Artist", "Venue", "City", "Status", "Price", "Promoter"], function (e) {
+          var price = (e.price_min != null || e.price_max != null)
+            ? (fmt(e.price_min) + "–" + fmt(e.price_max) + " " + esc(e.price_currency || "")) : "<span class='muted'>—</span>";
+          return row([fmt(e.local_date), esc(e.event_name), esc(e.artist_name), esc(e.venue_name), esc(e.city), esc(e.event_status), price, esc(e.promoter || "")]);
+        });
+        content.innerHTML = html;
+      });
+    });
+  }
+
   function viewSearch(q) {
     setNav("");
     api("/api/search?q=" + encodeURIComponent(q)).then(function (items) {
@@ -86,7 +109,9 @@
     api("/api/artists/" + encodeURIComponent(id)).then(function (a) {
       if (!a) { content.innerHTML = "<h1>Artist</h1><div class='none'>Not found.</div>"; return; }
       var html = "<h1>" + esc(a.name) + "</h1><p class='sub'>ARTIST · " +
-        a.history_count + " historical · " + a.upcoming_count + " upcoming</p>";
+        a.history_count + " historical · " + a.upcoming_count + " upcoming";
+      if (a.spotify_id) { html += " · <a href='https://open.spotify.com/artist/" + esc(a.spotify_id) + "' target='_blank' rel='noopener'>Spotify</a>"; }
+      html += "</p>";
       html += "<h2>Upcoming events</h2>" + tableOrNone(a.upcoming, ["Date", "Venue", "Market", "Status"], function (e) {
         return row([fmt(e.event_date), esc(e.venue_name), fmt(e.market), fmt(e.event_status)]);
       });
@@ -295,7 +320,7 @@
 
   /* ---- routing --------------------------------------------------------- */
 
-  var VIEWS = { tape: viewTape, artists: null, events: null, venues: null, markets: null, festivals: viewFestivals, data: viewData, ask: viewAsk };
+  var VIEWS = { tape: viewTape, status: viewStatus, artists: null, events: null, venues: null, markets: null, festivals: viewFestivals, data: viewData, ask: viewAsk };
 
   function route() {
     var hash = location.hash.replace(/^#\/?/, "");

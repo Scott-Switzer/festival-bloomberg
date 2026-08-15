@@ -37,38 +37,72 @@ DEFAULT_TASKS: dict[str, str] = {
     "RERANK": "nvidia/llama-3.2-nv-rerankqa-1b-v2",
 }
 
-#: Catalog substring hints used to pick a real model per task.
+#: Catalog substring hints used to pick a real model per task. Hints are
+#: ordered most-preferred-first; a known-good, account-deployable model id is
+#: listed BEFORE looser substrings so a broken/unavailable same-prefix model
+#: (e.g. ``nvidia/llama-3.2-nv-embedqa-1b-v1``) never shadows a working one
+#: (``nvidia/nv-embedqa-e5-v5``).
 TASK_HINTS: dict[str, tuple[str, ...]] = {
     "FAST_EXTRACT": ("llama-3.3-70b", "llama-3.1-70b"),
-    "DEEP_REASON": ("deepseek-r1", "qwq", "deepseek-v4"),
-    "CODE_REASON": ("qwen2.5-coder", "deepseek-coder"),
-    "EMBED": ("embedqa", "embed"),
+    "DEEP_REASON": ("deepseek-v4", "deepseek-r1", "qwq"),
+    "CODE_REASON": ("deepseek-coder", "qwen2.5-coder"),
+    "EMBED": ("nv-embedqa-e5-v5", "nv-embed-v1", "embed"),
     "RERANK": ("rerankqa", "rerank"),
 }
 
 
 class ModelRouter:
-    """Resolve semantic tasks to model ids, catalog-aware."""
+    """Resolve semantic tasks to model ids, catalog-aware.
+
+    Three distinct layers, in strict routing order:
+
+    1. **explicit overrides** — user-configured ids, honored only when they
+       are valid in the known catalog;
+    2. **catalog candidates** — hint-matched against the LIVE catalog;
+    3. **fallback defaults** — ``DEFAULT_TASKS``, used only when the id is
+       present in the known catalog.
+
+    A catalog of ``None`` means "not loaded yet"; overrides/fallbacks are
+    trusted as starting points in that state. Once a catalog IS set, NO model
+    id absent from it is ever issued — the router returns ``UNAVAILABLE``
+    (fail closed) instead of inventing one.
+    """
+
+    UNAVAILABLE = "UNAVAILABLE"
 
     def __init__(self, catalog: list[str] | None = None, tasks: dict[str, str] | None = None) -> None:
-        self.catalog = list(catalog or [])
-        self.tasks = dict(tasks or DEFAULT_TASKS)
+        self.catalog: list[str] | None = list(catalog) if catalog is not None else None
+        # Explicit overrides ONLY. The defaults live in DEFAULT_TASKS (fallback
+        # layer); they must never short-circuit catalog matching.
+        self.overrides: dict[str, str] = dict(tasks or {})
+
+    def set_catalog(self, catalog: list[str] | None) -> None:
+        self.catalog = list(catalog) if catalog is not None else None
 
     def route(self, task: str) -> str:
-        # 1. Explicit override wins.
-        if task in self.tasks:
-            return self.tasks[task]
+        catalog = self.catalog
+        known = catalog is not None
+        # 1. Explicit override wins — only if valid in the known catalog.
+        override = self.overrides.get(task)
+        if override:
+            if not known or override in catalog:
+                return override
         # 2. Match against the live catalog by hint.
-        for hint in TASK_HINTS.get(task, ()):
-            for model in self.catalog:
-                if hint in model:
-                    return model
-        # 3. Fallback default.
-        return DEFAULT_TASKS.get(task, DEFAULT_TASKS["FAST_EXTRACT"])
+        if known:
+            for hint in TASK_HINTS.get(task, ()):
+                for model in catalog:
+                    if hint in model:
+                        return model
+        # 3. Fallback default — only if it exists in the known catalog.
+        fallback = DEFAULT_TASKS.get(task)
+        if fallback and (not known or fallback in catalog):
+            return fallback
+        # 4. Fail closed.
+        return self.UNAVAILABLE
 
     def resolve(self, task: str, catalog: list[str] | None = None) -> str:
-        if catalog:
-            self.catalog = list(catalog)
+        if catalog is not None:
+            self.set_catalog(catalog)
         return self.route(task)
 
 
@@ -127,14 +161,29 @@ class NimClient:
             return {"status": "SCHEMA_INVALID", "models": []}
         models = [m.get("id") for m in payload.get("data", []) if m.get("id")]
         self._models = models
+        self.router.set_catalog(models)
         return {"status": "OK", "models": models}
+
+    def _ensure_catalog(self) -> dict[str, Any]:
+        """Load the model catalog once so chat/embed only use catalog-valid ids."""
+        if self._models is None:
+            result = self.list_models()
+            if result["status"] != "OK":
+                return result
+        return {"status": "OK", "models": self._models or []}
 
     def chat(self, *, messages: list[dict[str, str]], task: str = "FAST_EXTRACT",
              max_tokens: int = 1024, temperature: float = 0.0) -> dict[str, Any]:
         """OpenAI-compatible chat completion. Fail-closed + malformed-safe."""
         if not self.is_configured:
             return {"ok": False, "status": "NOT_CONFIGURED", "content": None}
+        catalog_result = self._ensure_catalog()
+        if catalog_result["status"] != "OK":
+            return {"ok": False, "status": catalog_result["status"], "content": None}
         model = self.router.route(task)
+        if model == ModelRouter.UNAVAILABLE:
+            return {"ok": False, "status": "MODEL_UNAVAILABLE", "content": None,
+                    "task": task}
         body = json.dumps({
             "model": model,
             "messages": messages,
@@ -163,7 +212,13 @@ class NimClient:
         """OpenAI-compatible embeddings (retrieval). Fail-closed."""
         if not self.is_configured:
             return {"ok": False, "status": "NOT_CONFIGURED", "vectors": []}
+        catalog_result = self._ensure_catalog()
+        if catalog_result["status"] != "OK":
+            return {"ok": False, "status": catalog_result["status"], "vectors": []}
         model = self.router.route(task)
+        if model == ModelRouter.UNAVAILABLE:
+            return {"ok": False, "status": "MODEL_UNAVAILABLE", "vectors": [],
+                    "task": task}
         body = json.dumps({"model": model, "input": inputs,
                            "input_type": "query", "encoding_format": "float"})
         try:

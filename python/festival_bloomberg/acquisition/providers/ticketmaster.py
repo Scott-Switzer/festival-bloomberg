@@ -184,6 +184,13 @@ class TicketmasterProvider(BaseProvider):
             params["stateCode"] = state
         if country:
             params["countryCode"] = country
+        # Classification filter (e.g. "Music") and date windows, when requested.
+        if getattr(request, "classification_name", None):
+            params["classificationName"] = request.classification_name
+        if getattr(request, "start_time", None):
+            params["startDateTime"] = _tm_datetime(request.start_time)
+        if getattr(request, "end_time", None):
+            params["endDateTime"] = _tm_datetime(request.end_time)
         return self._paginate_embedded(
             "events.json",
             params,
@@ -319,7 +326,9 @@ class TicketmasterProvider(BaseProvider):
         dates = item.get("dates") or {}
         start = dates.get("start") or {}
         status = (dates.get("status") or {}).get("code")
-        sales = ((item.get("sales") or {}).get("public")) or {}
+        sales_obj = item.get("sales") or {}
+        sales = sales_obj.get("public") or {}
+        presales = sales_obj.get("presales") if isinstance(sales_obj.get("presales"), list) else []
         classifications = item.get("classifications") or []
         primary = next((c for c in classifications if c.get("primary")), classifications[0] if classifications else {})
         city = (venue.get("city") or {}).get("name") if venue else None
@@ -333,6 +342,7 @@ class TicketmasterProvider(BaseProvider):
         local_date = start.get("localDate")
         event_time = start.get("dateTime") or local_date
         price_ranges = item.get("priceRanges") if isinstance(item.get("priceRanges"), list) else None
+        first_price = price_ranges[0] if price_ranges else None
         return {
             "platform": "ticketmaster",
             "provider": PROVIDER_NAME,
@@ -370,6 +380,11 @@ class TicketmasterProvider(BaseProvider):
             "event_status": status,
             "onsale_start": sales.get("startDateTime"),
             "onsale_end": sales.get("endDateTime"),
+            "presales": presales,
+            "price_min": (first_price or {}).get("min"),
+            "price_max": (first_price or {}).get("max"),
+            "price_currency": (first_price or {}).get("currency"),
+            "price_type": (first_price or {}).get("type"),
             "classifications": {
                 "segment": ((primary.get("segment") or {}).get("name")),
                 "genre": ((primary.get("genre") or {}).get("name")),
@@ -454,6 +469,15 @@ def classify_ticketmaster_event_type(item: dict) -> str:
         if type_name == "festival":
             return "FESTIVAL_APPEARANCE"
     return "UNKNOWN"
+
+
+def _tm_datetime(value) -> str:
+    """Format a datetime the way the Ticketmaster Discovery API expects."""
+    from datetime import timezone
+
+    if value.tzinfo is not None:
+        value = value.astimezone(timezone.utc)
+    return value.replace(microsecond=0, tzinfo=None).isoformat() + "Z"
 
 
 def _market_parts(market_id: str | None) -> tuple[str | None, str | None, str | None]:
