@@ -507,6 +507,102 @@ class FlywheelRepository:
         sql += " ORDER BY canonical_event_id, cutoff_type, cutoff_kind"
         return _rows(self.conn.execute(sql, params))
 
+    # -- immutable document store ---------------------------------------------
+    def insert_evidence_document(self, row: dict[str, Any]) -> bool:
+        existing = self.conn.execute(
+            "SELECT document_id FROM flywheel.evidence_documents "
+            "WHERE document_content_hash = ? AND source_url = ?",
+            [row["document_content_hash"], row["source_url"]],
+        ).fetchone()
+        if existing:
+            return False
+        self.conn.execute(
+            """
+            INSERT INTO flywheel.evidence_documents
+                (document_id, canonical_event_id, source_url, archive_url,
+                 archive_capture_time, document_content_hash, content_kind,
+                 source_publication_time, retrieved_at, rights_status,
+                 commercial_use_status, parser_version, knowledge_time)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                row["document_id"], row["canonical_event_id"], row["source_url"],
+                row.get("archive_url"), row.get("archive_capture_time"),
+                row["document_content_hash"], row.get("content_kind"),
+                row.get("source_publication_time"), row["retrieved_at"],
+                row["rights_status"], row["commercial_use_status"],
+                row.get("parser_version"), row["knowledge_time"],
+            ],
+        )
+        self.conn.commit()
+        return True
+
+    def query_evidence_documents(
+        self, *, canonical_event_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM flywheel.evidence_documents WHERE 1=1"
+        params: list[Any] = []
+        if canonical_event_id:
+            sql += " AND canonical_event_id = ?"
+            params.append(canonical_event_id)
+        sql += " ORDER BY retrieved_at, document_id"
+        return _rows(self.conn.execute(sql, params))
+
+    # -- claim support graph --------------------------------------------------
+    def insert_evidence_claim(self, row: dict[str, Any]) -> bool:
+        """Insert one claim. ``verification_status`` is set by the
+        DETERMINISTIC verifier before this call — never by an extractor."""
+        existing = self.conn.execute(
+            "SELECT claim_id FROM flywheel.evidence_claims WHERE claim_id = ?",
+            [row["claim_id"]],
+        ).fetchone()
+        if existing:
+            return False
+        self.conn.execute(
+            """
+            INSERT INTO flywheel.evidence_claims
+                (claim_id, canonical_event_id, cutoff_type, candidate_value,
+                 lower_bound, upper_bound, granularity, evidence_class,
+                 source_provider, source_url, archive_url, source_document_id,
+                 document_content_hash, source_publication_time,
+                 archive_capture_time, retrieved_at, knowledge_time,
+                 evidence_span_start, evidence_span_end, evidence_span_hash,
+                 extractor_kind, extractor_version, model_provider, model_name,
+                 model_response_hash, entity_resolution_confidence,
+                 semantic_confidence, rights_status, commercial_use_status,
+                 verification_status, rejection_reason, software_version)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                row["claim_id"], row["canonical_event_id"], row["cutoff_type"],
+                row.get("candidate_value"), row.get("lower_bound"), row.get("upper_bound"),
+                row["granularity"], row["evidence_class"], row.get("source_provider"),
+                row.get("source_url"), row.get("archive_url"), row["source_document_id"],
+                row.get("document_content_hash"), row.get("source_publication_time"),
+                row.get("archive_capture_time"), row["retrieved_at"], row["knowledge_time"],
+                row.get("evidence_span_start"), row.get("evidence_span_end"),
+                row.get("evidence_span_hash"), row["extractor_kind"],
+                row.get("extractor_version"), row.get("model_provider"), row.get("model_name"),
+                row.get("model_response_hash"), row.get("entity_resolution_confidence"),
+                row.get("semantic_confidence"), row["rights_status"],
+                row["commercial_use_status"], row["verification_status"],
+                row.get("rejection_reason"), row.get("software_version"),
+            ],
+        )
+        self.conn.commit()
+        return True
+
+    def query_evidence_claims(
+        self, *, verification_status: str | None = None
+    ) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM flywheel.evidence_claims WHERE 1=1"
+        params: list[Any] = []
+        if verification_status:
+            sql += " AND verification_status = ?"
+            params.append(verification_status)
+        sql += " ORDER BY canonical_event_id, cutoff_type, knowledge_time"
+        return _rows(self.conn.execute(sql, params))
+
     # -- outcome hunt attempts (append-only execution ledger) -----------------
     def insert_hunt_attempt(self, row: dict[str, Any]) -> bool:
         existing = self.conn.execute(
