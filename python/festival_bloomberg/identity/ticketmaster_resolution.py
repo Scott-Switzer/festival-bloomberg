@@ -39,7 +39,7 @@ SPECIAL_SIGNALS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\band .*\b", re.I), "COLLABORATION_BILLING"),
     (re.compile(r"\btribute\b", re.I), "TRIBUTE_ACT"),
     (re.compile(r"\bcover\b", re.I), "COVER_BAND"),
-    (re.compile(r"\bdj\b|\bset\b", re.I), "DJ_EVENT"),
+    (re.compile(r"\bdj set\b|\bdj night\b|\blive set\b", re.I), "DJ_EVENT"),
     (re.compile(r"\bcomedy\b|\bcomedian\b", re.I), "COMEDIAN"),
     (re.compile(r"\bnight\b|\bparty\b", re.I), "DANCE_PARTY"),
     (re.compile(r"\bvs\.?\b|\bversus\b", re.I), "COLLABORATION_BILLING"),
@@ -98,7 +98,10 @@ def fetch_attraction_universe(conn) -> list[dict[str, Any]]:
                 aid = item.get("id") or item.get("ticketmaster_attraction_id")
                 if not name:
                     continue
-                key = normalize_name(name)
+                # Dedupe by the provider's own attraction ID when present:
+                # two distinct attractions sharing a normalized name must not
+                # collapse into one record (identity-resolution hazard).
+                key = f"id::{aid}" if aid else f"name::{normalize_name(name)}"
                 existing = out.get(key)
                 if existing is None:
                     out[key] = {
@@ -111,7 +114,7 @@ def fetch_attraction_universe(conn) -> list[dict[str, Any]]:
                     if (retrieved_at or "") > (existing["last_observed_at"] or ""):
                         existing["last_observed_at"] = retrieved_at
         elif artist_name:
-            key = normalize_name(artist_name)
+            key = f"name::{normalize_name(artist_name)}"
             if key and key not in out:
                 out[key] = {
                     "attraction_id": None,
@@ -147,11 +150,16 @@ def _mb_reference_name_candidates(conn, normalized: str) -> list[tuple[str, str]
 
 
 def _mb_alias_candidates(conn, normalized: str) -> list[tuple[str, str, str]]:
-    """(artist_key, mbid, alias) from canonical alias index (exact alias)."""
+    """(artist_key, mbid, alias) from canonical alias index (exact alias).
+
+    The MBID comes from ``core.artists.musicbrainz_id`` — never from the alias
+    row itself, which only stores the internal artist_key.
+    """
     rows = conn.execute(
         """
-        SELECT a.artist_key, a.artist_key, a.alias
+        SELECT a.artist_key, ar.musicbrainz_id, a.alias
         FROM core.artist_aliases a
+        JOIN core.artists ar ON ar.artist_key = a.artist_key
         WHERE a.normalized_alias = ?
         """,
         [normalized],
@@ -453,7 +461,14 @@ def run_identity_qa(conn, *, knowledge_time: str | None = None) -> dict[str, Any
             ok = result["resolution_status"] in ("REJECTED_NON_ARTIST", "AMBIGUOUS", "NO_MATCH") \
                 and result.get("special_classification") is not None
         else:
-            ok = result["resolution_status"] == "MATCHED_ARTIST"
+            # Verify the resolved identity actually IS the expected artist,
+            # not merely that *some* artist matched: compare the returned
+            # canonical name against the expected name.
+            ok = (
+                result["resolution_status"] == "MATCHED_ARTIST"
+                and result.get("matched_name") is not None
+                and normalize_name(str(result["matched_name"])) == normalize_name(expected)
+            )
         if ok:
             correct += 1
         results.append({
@@ -461,6 +476,8 @@ def run_identity_qa(conn, *, knowledge_time: str | None = None) -> dict[str, Any
             "expected": expected,
             "status": result["resolution_status"],
             "method": result.get("match_method"),
+            "matched_name": result.get("matched_name"),
+            "artist_mbid": result.get("artist_mbid"),
             "correct": ok,
         })
     precision = correct / total if total else 0.0

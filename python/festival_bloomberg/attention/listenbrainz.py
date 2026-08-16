@@ -35,9 +35,31 @@ def artist_key_for(name: str) -> str:
     return f"name::{normalize_name(name)}"
 
 
-def observation_key(*, artist_key: str, mbid: str, metric_kind: str, stats_range: str) -> str:
+def observation_key(
+    *,
+    artist_key: str,
+    mbid: str,
+    metric_kind: str,
+    stats_range: str,
+    retrieved_at: str | None = None,
+    provider_last_updated: str | None = None,
+) -> str:
+    """Temporal observation key for CUMULATIVE provider aggregates.
+
+    Listen counts / listener counts are cumulative sitewide totals that change
+    over time. Keying by retrieval day (and provider ``last_updated`` when the
+    API supplies it) means each distinct observation accumulates instead of
+    being silently dropped when the identical (artist, metric, range) tuple is
+    re-fetched. A re-run within the same day stays idempotent; a later
+    retrieval creates a new row.
+    """
     material = "|".join(
-        [artist_key, SOURCE_SYSTEM, metric_kind, mbid, stats_range or DEFAULT_RANGE, METRIC_VERSION]
+        [
+            artist_key, SOURCE_SYSTEM, metric_kind, mbid,
+            stats_range or DEFAULT_RANGE, METRIC_VERSION,
+            provider_last_updated or "",
+            (retrieved_at or "")[:10],  # YYYY-MM-DD bucket
+        ]
     )
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
 
@@ -76,6 +98,9 @@ def build_listenbrainz_observation(
         "observation_key": observation_key(
             artist_key=artist_key, mbid=artist_mbid,
             metric_kind=metric_kind, stats_range=stats_range,
+            retrieved_at=retrieved_at,
+            provider_last_updated=extra_provenance.get("provider_last_updated")
+            if extra_provenance else None,
         ),
         "artist_key": artist_key,
         "festival_key": None,

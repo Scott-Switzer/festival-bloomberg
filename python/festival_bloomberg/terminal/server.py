@@ -153,17 +153,6 @@ class TerminalApp:
         # ---- product workflow -------------------------------------------
         if path == "/api/today":
             return self._ok(build_today(self.conn, limit=int(params.get("limit", 50))))
-        if path == "/api/watchlists":
-            return self._ok(list_watchlists(self.conn))
-        if path == "/api/monitors":
-            return self._ok(list_monitors(self.conn))
-        if path == "/api/alerts":
-            return self._ok(list_alerts(
-                self.conn, limit=int(params.get("limit", 100)),
-                entity_key_value=params.get("entity_key")))
-        if path == "/api/data":
-            return self._ok(_data_coverage(self.conn))
-
         if path == "/api/watchlists" and method == "POST":
             try:
                 body = json.loads(body.decode("utf-8"))
@@ -174,6 +163,16 @@ class TerminalApp:
                 description=body.get("description"),
                 entity_type=body.get("entity_type"),
                 is_system=bool(body.get("is_system", False))))
+        if path == "/api/watchlists" and method == "GET":
+            return self._ok(list_watchlists(self.conn))
+        if path == "/api/monitors":
+            return self._ok(list_monitors(self.conn))
+        if path == "/api/alerts":
+            return self._ok(list_alerts(
+                self.conn, limit=int(params.get("limit", 100)),
+                entity_key_value=params.get("entity_key")))
+        if path == "/api/data":
+            return self._ok(_data_coverage(self.conn))
         if path.startswith("/api/watchlists/") and method == "POST":
             try:
                 body = json.loads(body.decode("utf-8"))
