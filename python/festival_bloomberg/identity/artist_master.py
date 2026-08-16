@@ -45,6 +45,10 @@ def external_id_key(mbid: str) -> str:
     return hashlib.sha256(f"musicbrainz:{mbid}".encode("utf-8")).hexdigest()[:32]
 
 
+def ticketmaster_external_id_key(attraction_id: str) -> str:
+    return hashlib.sha256(f"ticketmaster:{attraction_id}".encode("utf-8")).hexdigest()[:32]
+
+
 def collect_performer_mbids(conn) -> list[dict[str, Any]]:
     """Distinct performer MBIDs with their most-common credited name + counts.
 
@@ -232,6 +236,104 @@ def bootstrap_canonical_artists(
             artist_mbid=p["artist_mbid"],
             credited_names=credits,
             knowledge_time=knowledge_time,
+        )
+    summary["status"] = "COMPLETE"
+    return summary
+
+
+def persist_ticketmaster_external_id(
+    conn,
+    *,
+    artist_key: str,
+    attraction_id: str,
+    knowledge_time: str,
+) -> int:
+    """Persist a Ticketmaster attraction ID as an external identifier.
+
+    Returns 1 if newly written, 0 if already present (idempotent).
+    """
+    eid_key = ticketmaster_external_id_key(attraction_id)
+    exists = conn.execute(
+        "SELECT 1 FROM core.entity_external_ids WHERE external_id_key = ?", [eid_key]
+    ).fetchone()
+    if exists:
+        return 0
+    conn.execute(
+        """
+        INSERT INTO core.entity_external_ids
+            (external_id_key, entity_type, entity_key, id_type, id_value, url,
+             is_primary, confidence, source_system, namespace,
+             resolution_status, resolution_method, first_seen_at, last_seen_at,
+             knowledge_time, ingested_at)
+        VALUES (?, 'artist', ?, 'ticketmaster', ?,
+                ?, FALSE, 0.95, 'ticketmaster', 'ticketmaster',
+                'MATCHED_ARTIST', 'mb_reference_exact_name',
+                ?, ?, ?, CURRENT_TIMESTAMP)
+        """,
+        [
+            eid_key, artist_key, attraction_id,
+            f"https://www.ticketmaster.com/artist/{attraction_id}",
+            knowledge_time, knowledge_time, knowledge_time,
+        ],
+    )
+    return 1
+
+
+def promote_resolved_artists(
+    conn,
+    *,
+    knowledge_time: str | None = None,
+) -> dict[str, Any]:
+    """Promote reference-layer MATCHED_ARTIST rows into the canonical master.
+
+    MB_EXACT_NAME matches against the 2.2M reference estate can leave
+    ``artist_key`` NULL while ``artist_mbid`` is valid. A matched artist must
+    be usable by the product graph, so each distinct MBID is promoted into
+    ``core.artists`` (if absent), its Ticketmaster attraction ID is persisted
+    as an external identifier, and the resolution row is pointed at the
+    canonical key. Idempotent; never overwrites an existing canonical row.
+    """
+    knowledge_time = knowledge_time or datetime.now(timezone.utc).isoformat()
+    rows = conn.execute(
+        """
+        SELECT DISTINCT r.artist_mbid, r.attraction_id,
+               COALESCE(m.name, r.matched_name, r.attraction_name) AS name
+        FROM identity.ticketmaster_artist_resolutions r
+        LEFT JOIN reference.musicbrainz_artists m ON m.mbid = r.artist_mbid
+        WHERE r.resolution_status = 'MATCHED_ARTIST'
+          AND r.artist_key IS NULL
+          AND r.artist_mbid IS NOT NULL
+        """
+    ).fetchall()
+    summary: dict[str, Any] = {
+        "status": "RUNNING",
+        "candidates": len(rows),
+        "artists_promoted": 0,
+        "artists_existing": 0,
+        "tm_id_mappings": 0,
+    }
+    for mbid, attraction_id, name in rows:
+        key = artist_key_for(mbid)
+        created = persist_canonical_artist(
+            conn, artist_mbid=mbid, primary_name=name or mbid, knowledge_time=knowledge_time
+        )
+        if created:
+            summary["artists_promoted"] += 1
+        else:
+            summary["artists_existing"] += 1
+        if attraction_id:
+            summary["tm_id_mappings"] += persist_ticketmaster_external_id(
+                conn, artist_key=key, attraction_id=str(attraction_id),
+                knowledge_time=knowledge_time,
+            )
+        conn.execute(
+            """
+            UPDATE identity.ticketmaster_artist_resolutions
+            SET artist_key = ?
+            WHERE artist_mbid = ? AND resolution_status = 'MATCHED_ARTIST'
+              AND artist_key IS NULL
+            """,
+            [key, mbid],
         )
     summary["status"] = "COMPLETE"
     return summary

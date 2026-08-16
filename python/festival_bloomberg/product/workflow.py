@@ -102,11 +102,15 @@ def add_watchlist_item(
 def remove_watchlist_item(conn, *, watchlist_key_value: str, entity_type: str,
                           entity_key_value: str) -> int:
     key = item_key(watchlist_key_value, entity_type.upper(), entity_key_value)
+    exists = conn.execute(
+        "SELECT 1 FROM core.watchlist_items WHERE item_key = ? AND removed_at IS NULL",
+        [key],
+    ).fetchone()
     conn.execute(
         "UPDATE core.watchlist_items SET removed_at = now() WHERE item_key = ?",
         [key],
     )
-    return conn.execute("SELECT changes()").fetchone()[0]
+    return 1 if exists else 0
 
 
 def list_watchlists(conn) -> list[dict[str, Any]]:
@@ -561,9 +565,11 @@ def create_default_watchlists(conn) -> dict[str, Any]:
     data (never hard-coded subjective talent recommendations)."""
     created = []
 
-    # Major US festivals (from the festival spine).
-    fest_wl = create_watchlist(conn, name="Major US Festivals",
-                               description="US festival series from the MusicBrainz festival spine",
+    # Major festivals (from the festival spine). The list name does NOT claim
+    # US scope because no reliable country filter exists on the spine yet
+    # (raw.musicbrainz_place.area is a city/market, not a country).
+    fest_wl = create_watchlist(conn, name="Major Festivals",
+                               description="Festival series from the MusicBrainz festival spine (global; geography not yet filtered)",
                                entity_type="FESTIVAL", is_system=True)
     created.append(fest_wl["name"])
     fest_rows = conn.execute(
@@ -579,7 +585,7 @@ def create_default_watchlists(conn) -> dict[str, Any]:
 
     # Active tours (TOUR series with events in 2024+).
     tour_wl = create_watchlist(conn, name="Active Tours",
-                               description="Tour series with events in the reference graph",
+                               description="Tour series with events dated 2024 or later",
                                entity_type="TOUR", is_system=True)
     created.append(tour_wl["name"])
     tour_rows = conn.execute(

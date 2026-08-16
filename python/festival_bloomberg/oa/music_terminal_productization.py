@@ -40,6 +40,7 @@ from ..attention.listenbrainz import (
 from ..identity.artist_master import (
     bootstrap_canonical_artists,
     measure_performer_universe,
+    promote_resolved_artists,
 )
 from ..identity.ticketmaster_resolution import (
     resolve_attraction_universe,
@@ -562,6 +563,13 @@ def run_music_terminal_productization_oa(
                 conn, "SELECT COUNT(*) FROM identity.ticketmaster_artist_resolutions")
             return out
         _run("ticketmaster_resolution", _resolution)
+
+        # ---- Phase 7b: promote reference-layer matches into core.artists ----
+        def _promote():
+            out = promote_resolved_artists(conn)
+            conn.commit()
+            return out
+        _run("promote_resolved_artists", _promote)
 
         # ---- Phase 8: Identity QA ----
         def _qa():
