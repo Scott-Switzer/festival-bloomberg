@@ -81,7 +81,11 @@ class ListenBrainzProvider(BaseProvider):
                 },
             )
 
-        stats_range = DEFAULT_RANGE
+        # A range override may arrive via the request query (e.g. "week",
+        # "month", "year", "all_time"). Default stays all_time.
+        stats_range = (request.query or "").strip() or DEFAULT_RANGE
+        if stats_range not in ("all_time", "year", "month", "week", "today"):
+            stats_range = DEFAULT_RANGE
         url = f"{BASE_URL}/{mbid}/listeners?range={stats_range}"
         try:
             response = self.transport.request(

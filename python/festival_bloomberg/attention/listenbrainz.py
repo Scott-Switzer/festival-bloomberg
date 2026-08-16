@@ -55,9 +55,13 @@ def build_listenbrainz_observation(
     status: str,
     source_url: str,
     retrieved_at: str,
+    artist_key: str | None = None,
     extra_provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    artist_key = artist_key_for(artist_name)
+    # Prefer the canonical artist_key (``mbid::<mbid>``) so attention rows
+    # join to core.artists; fall back to the documented name-based key.
+    if not artist_key:
+        artist_key = artist_key_for(artist_name)
     provenance = {
         "source_system": SOURCE_SYSTEM,
         "endpoint": "artist_listeners",
@@ -181,12 +185,16 @@ def collect_artist_popularity(
     transport,
     *,
     artists: list[tuple[str, str]],
+    artist_keys: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Bulk ListenBrainz popularity -> attention observations (2 metrics).
 
     ``artists`` are ``(artist_name, artist_mbid)`` pairs. Missing counts stay
     NULL (never zero-filled). Labels: LISTENBRAINZ_TOTAL_LISTEN_COUNT /
     LISTENBRAINZ_TOTAL_USER_COUNT, ATTENTION_CONSUMPTION_SAMPLE.
+
+    ``artist_keys`` optionally maps MBID -> canonical artist_key so rows join
+    to core.artists; without it the name-based fallback key is used.
     """
     mbids = [mbid for _name, mbid in artists if mbid and mbid.strip()]
     name_by_mbid = {mbid: name for name, mbid in artists if mbid}
@@ -210,6 +218,7 @@ def collect_artist_popularity(
                 value=value, value_unit=unit, stats_range="all_time",
                 period_start=None, period_end=None, status="ok" if value is not None else "missing",
                 source_url=POPULARITY_URL, retrieved_at=retrieved_at,
+                artist_key=artist_keys.get(mbid) if artist_keys else None,
                 extra_provenance={"endpoint": "bulk_popularity"},
             )
             summary["rows_persisted"] += persist_observation(conn, obs)
@@ -225,6 +234,7 @@ def collect_artist_listen_counts(
     artists: list[tuple[str, str]],
     stats_range: str = DEFAULT_RANGE,
     min_interval_seconds: float = 0.5,
+    artist_keys: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Bounded ListenBrainz collection over ``(artist_name, artist_mbid)`` pairs.
 
@@ -253,7 +263,7 @@ def collect_artist_listen_counts(
             entity_id=mbid,
             entity_type="artist",
             platform="listenbrainz",
-            query="",
+            query=stats_range,
             operation="ARTIST_LISTENERS",
             external_id=mbid,
             commercial_context="research",
@@ -303,9 +313,107 @@ def collect_artist_listen_counts(
                 status="ok",
                 source_url=rec.get("source_url") or "",
                 retrieved_at=retrieved_at,
+                artist_key=artist_keys.get(mbid) if artist_keys else None,
                 extra_provenance=extra,
             )
             summary["rows_persisted"] += persist_observation(conn, row)
     if summary["status"] == "RUNNING":
         summary["status"] = "COMPLETE"
+    return summary
+
+
+def collect_priority_range_history(
+    conn,
+    transport,
+    *,
+    artists: list[tuple[str, str]],
+    ranges: tuple[str, ...] = ("week", "month", "all_time"),
+    min_interval_seconds: float = 0.6,
+    artist_keys: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Range-based artist statistics for a SMALL high-value universe.
+
+    For each artist, capture the supported ranges (week/month/all_time) so a
+    trend line exists without pretending cumulative popularity is daily
+    consumption. ``from_ts``/``to_ts``/``last_updated`` are preserved in
+    provenance. Bounded + rate-limit-aware.
+    """
+    provider = ListenBrainzProvider(transport=transport)
+    summary = {
+        "status": "RUNNING",
+        "artists_eligible": len(artists),
+        "artists_completed": 0,
+        "ranges_requested": 0,
+        "missing": 0,
+        "error": 0,
+        "rate_limited": 0,
+        "rows_persisted": 0,
+        "ranges": list(ranges),
+    }
+    for index, (name, mbid) in enumerate(artists):
+        mbid = (mbid or "").strip()
+        if not mbid:
+            continue
+        if index and min_interval_seconds > 0:
+            time.sleep(min_interval_seconds)
+        for stats_range in ranges:
+            summary["ranges_requested"] += 1
+            req = AcquisitionRequest.new(
+                entity_id=mbid,
+                entity_type="artist",
+                platform="listenbrainz",
+                query=stats_range,
+                operation="ARTIST_LISTENERS",
+                external_id=mbid,
+                commercial_context="research",
+            )
+            result = provider.acquire(req)
+            if result.status.value == "RATE_LIMITED":
+                summary["rate_limited"] += 1
+                summary["status"] = "RATE_LIMITED_STOPPED"
+                return summary
+            if result.status.value in ("NO_RESULTS", "SCHEMA_INVALID"):
+                summary["missing"] += 1
+                continue
+            if result.status.value != "SUCCESS":
+                summary["error"] += 1
+                continue
+            rec = result.records[0]
+            from ..acquisition.providers.listenbrainz import ts_to_date
+
+            period_start = ts_to_date(rec.get("from_ts"))
+            period_end = ts_to_date(rec.get("to_ts"))
+            listen_count = rec.get("total_listen_count")
+            listener_sample = rec.get("listener_count_sample")
+            for metric_kind, value, unit, extra in (
+                ("LISTENBRAINZ_LISTEN_COUNT", listen_count, "listens", {}),
+                (
+                    "LISTENBRAINZ_LISTENER_COUNT",
+                    listener_sample,
+                    "listeners",
+                    {"listener_count_scope": "top_n_sample"},
+                ),
+            ):
+                row = build_listenbrainz_observation(
+                    artist_name=name or rec.get("artist_name") or mbid,
+                    artist_mbid=mbid,
+                    metric_kind=metric_kind,
+                    value=value,
+                    value_unit=unit,
+                    stats_range=rec.get("stats_range") or stats_range,
+                    period_start=period_start,
+                    period_end=period_end,
+                    status="ok",
+                    source_url=rec.get("source_url") or "",
+                    retrieved_at=result.completed_at.isoformat(),
+                    artist_key=artist_keys.get(mbid) if artist_keys else None,
+                    extra_provenance={
+                        **extra,
+                        "provider_last_updated": rec.get("last_updated"),
+                        "range_collection": True,
+                    },
+                )
+                summary["rows_persisted"] += persist_observation(conn, row)
+        summary["artists_completed"] += 1
+    summary["status"] = "COMPLETE"
     return summary

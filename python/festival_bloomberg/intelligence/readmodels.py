@@ -58,15 +58,38 @@ def search_entities(conn, query: str, limit: int = 25) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
 
     artists = _rows(conn, """
-        SELECT DISTINCT artist AS name FROM research.canonical_boxoffice_engagements
+        SELECT name, artist_key FROM core.artists
+        WHERE lower(name) LIKE ? AND name IS NOT NULL
+        UNION
+        SELECT DISTINCT artist AS name, NULL AS artist_key
+        FROM research.canonical_boxoffice_engagements
         WHERE lower(artist) LIKE ? AND artist IS NOT NULL
         UNION
-        SELECT DISTINCT artist_name AS name FROM flywheel.forward_watch_events
+        SELECT DISTINCT artist_name AS name, NULL AS artist_key
+        FROM flywheel.forward_watch_events
         WHERE lower(artist_name) LIKE ? AND artist_name IS NOT NULL
         LIMIT ?
-    """, [q, q, limit])
+    """, [q, q, q, limit])
     for r in artists:
-        results.append({"entity_type": "ARTIST", "entity_id": entity_key(r["name"]),
+        results.append({"entity_type": "ARTIST", "entity_id": r["artist_key"] or entity_key(r["name"]),
+                        "name": r["name"]})
+
+    # Alias matches from the reference layer (MB aliases / sort names).
+    alias_hits = _rows(conn, """
+        SELECT r.name, r.mbid, r.aliases FROM reference.musicbrainz_artists r
+        WHERE json_array_length(r.aliases) > 0
+          AND EXISTS (
+              SELECT 1 FROM json_each(r.aliases) e
+              WHERE lower(e.value ->> 'name') LIKE ?
+                 OR lower(r.sort_name) LIKE ?)
+        LIMIT ?
+    """, [q, q, limit])
+    seen_names = {r["name"].lower() for r in results}
+    for r in alias_hits:
+        if r["name"].lower() in seen_names:
+            continue
+        seen_names.add(r["name"].lower())
+        results.append({"entity_type": "ARTIST", "entity_id": f"mbid::{r['mbid']}",
                         "name": r["name"]})
 
     venues = _rows(conn, """
@@ -176,12 +199,27 @@ def get_artist(conn, artist_key: str) -> dict[str, Any] | None:
         FROM identity.spotify_artist_resolutions
         WHERE normalized_local_name = ? AND resolution_status = 'EXACT'
     """, [_normalize_name(name)])
+    canonical = _rows(conn, """
+        SELECT artist_key, name, musicbrainz_id, type, area, isni, ipi,
+               sort_name, disambiguation, life_span_begin, life_span_end
+        FROM core.artists
+        WHERE artist_key = ? OR musicbrainz_id = ?
+        LIMIT 1
+    """, [artist_key, artist_key.removeprefix("mbid::")])
+    external = _rows(conn, """
+        SELECT id_type, id_value, url, namespace, confidence, source_system
+        FROM core.entity_external_ids
+        WHERE entity_type = 'artist' AND entity_key = ?
+        ORDER BY id_type
+    """, [artist_key]) if canonical else []
     return {
         "entity_type": "ARTIST",
         "entity_id": artist_key,
         "name": name,
         "spotify_id": identity[0]["spotify_id"] if identity else None,
         "identity": identity,
+        "canonical": canonical[0] if canonical else None,
+        "external_ids": external,
         "history_count": len(history),
         "upcoming_count": len(upcoming),
         "history": history,
@@ -194,6 +232,15 @@ def get_artist(conn, artist_key: str) -> dict[str, Any] | None:
 
 
 def _artist_name_for_key(conn, artist_key: str) -> str | None:
+    # Canonical identity master first: artist_key (mbid::… / name::… / hash)
+    # or the bare MusicBrainz ID.
+    row = _rows(conn, """
+        SELECT name FROM core.artists
+        WHERE artist_key = ? OR musicbrainz_id = ? OR musicbrainz_id = ?
+        LIMIT 1
+    """, [artist_key, artist_key, artist_key.removeprefix("mbid::")])
+    if row:
+        return row[0]["name"]
     row = _rows(conn, """
         SELECT artist AS name FROM research.canonical_boxoffice_engagements
         WHERE lower(artist) = ? LIMIT 1
@@ -400,6 +447,110 @@ def get_festival_edition(conn, edition_key: str) -> dict[str, Any] | None:
     return FestivalSpineRepository(conn).get_edition(edition_key)
 
 
+def get_tour(conn, tour_key: str) -> dict[str, Any] | None:
+    """TOUR page: series identity + events + performers + venues/markets."""
+    row = conn.execute(
+        """
+        SELECT s.series_key, s.name, s.musicbrainz_id, s.disambiguation,
+               s.series_type, s.begin_date, s.end_date,
+               (SELECT COUNT(*) FROM core.series_events se
+                WHERE se.series_key = s.series_key) AS event_count
+        FROM core.event_series s WHERE s.series_key = ?
+        """,
+        [tour_key],
+    ).fetchone()
+    if row is None:
+        # allow bare MBID lookup
+        row = conn.execute(
+            """
+            SELECT s.series_key, s.name, s.musicbrainz_id, s.disambiguation,
+                   s.series_type, s.begin_date, s.end_date,
+                   (SELECT COUNT(*) FROM core.series_events se
+                    WHERE se.series_key = s.series_key) AS event_count
+            FROM core.event_series s WHERE s.musicbrainz_id = ?
+            """,
+            [tour_key],
+        ).fetchone()
+    if row is None:
+        return None
+    (series_key, name, mbid, disambiguation, series_type, begin_date,
+     end_date, event_count) = row
+    events = _rows(conn, """
+        SELECT se.event_mbid AS event_key, se.event_name, se.event_begin_date AS local_date,
+               se.event_type, r.object_key AS venue_key,
+               (SELECT p.name FROM raw.musicbrainz_place p
+                WHERE 'mbid::' || p.mbid = r.object_key) AS venue_name,
+               (SELECT p.area FROM raw.musicbrainz_place p
+                WHERE 'mbid::' || p.mbid = r.object_key) AS market
+        FROM core.series_events se
+        LEFT JOIN core.entity_relationships r
+               ON r.subject_key = 'mbid::' || se.event_mbid AND r.predicate = 'EVENT_AT_PLACE'
+        WHERE se.series_key = ?
+        ORDER BY se.event_begin_date NULLS LAST, se.event_name
+        """, [series_key])
+    performers = _rows(conn, """
+        SELECT DISTINCT ep.artist_mbid, ep.artist_name, ep.performer_role,
+               a.artist_key
+        FROM core.series_events se
+        JOIN core.event_performers ep ON ep.event_mbid = se.event_mbid
+        LEFT JOIN core.artists a ON a.musicbrainz_id = ep.artist_mbid
+        WHERE se.series_key = ?
+        ORDER BY ep.artist_name
+        """, [series_key])
+    markets = sorted({e["market"] for e in events if e.get("market")})
+    venues = sorted({e["venue_name"] for e in events if e.get("venue_name")})
+    return {
+        "entity_type": "TOUR",
+        "entity_id": series_key,
+        "series_key": series_key,
+        "name": name,
+        "musicbrainz_id": mbid,
+        "disambiguation": disambiguation,
+        "series_type": series_type,
+        "date_range": [begin_date, end_date],
+        "event_count": int(event_count or 0),
+        "events": events,
+        "performers": performers,
+        "markets": markets,
+        "venues": venues,
+    }
+
+
+def list_tours(conn, *, market: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    """TOUR/RESIDENCY/RUN series list with event/market/artist counts."""
+    sql = """
+        SELECT s.series_key, s.name, s.musicbrainz_id, s.series_type,
+               s.begin_date, s.end_date, s.disambiguation,
+               (SELECT COUNT(*) FROM core.series_events se
+                WHERE se.series_key = s.series_key) AS event_count,
+               (SELECT COUNT(DISTINCT ep.artist_mbid)
+                FROM core.series_events se
+                JOIN core.event_performers ep ON ep.event_mbid = se.event_mbid
+                WHERE se.series_key = s.series_key) AS artist_count
+        FROM core.event_series s
+        WHERE s.series_type IN ('TOUR', 'RESIDENCY', 'RUN')
+    """
+    params: list[Any] = []
+    if market:
+        sql += """
+          AND s.series_key IN (
+              SELECT se.series_key FROM core.series_events se
+              JOIN core.entity_relationships r
+                   ON r.subject_key = 'mbid::' || se.event_mbid
+                  AND r.predicate = 'EVENT_AT_PLACE'
+              JOIN raw.musicbrainz_place p ON 'mbid::' || p.mbid = r.object_key
+              WHERE lower(p.area) = lower(?))
+        """
+        params.append(market)
+    sql += " ORDER BY event_count DESC LIMIT ?"
+    params.append(limit)
+    rows = _rows(conn, sql, params)
+    for r in rows:
+        r["entity_type"] = "TOUR"
+        r["entity_id"] = r["series_key"]
+    return rows
+
+
 def get_artist_billing_trajectory(conn, artist_name: str) -> list[dict[str, Any]]:
     return billing_trajectory(conn, artist_name)
 
@@ -420,14 +571,25 @@ def get_attention_series(conn, entity_name: str) -> list[dict[str, Any]]:
     # normalized name; match both. UNKNOWN/error rows are excluded here and
     # surfaced separately so a missing article never reads as zero.
     key = _normalize_name(entity_name)
-    return _rows(conn, """
+    # artist_key is either mbid::<uuid>, name::<normalized>, or a bare name.
+    # Resolve the canonical MBID for this artist when present, plus the name keys.
+    mbid_rows = _rows(conn, """
+        SELECT musicbrainz_id FROM core.artists
+        WHERE lower(name) = ? OR artist_key IN (?, ?) LIMIT 1
+    """, [entity_name.lower(), key, f"name::{key}"])
+    keys = [key, f"name::{key}"]
+    if mbid_rows and mbid_rows[0]["musicbrainz_id"]:
+        keys.append(f"mbid::{mbid_rows[0]['musicbrainz_id']}")
+        keys.append(mbid_rows[0]["musicbrainz_id"])
+    placeholders = ",".join("?" for _ in keys)
+    return _rows(conn, f"""
         SELECT period_start AS observed_date, value, value_sum, value_unit AS unit,
                metric_kind AS metric_name, source_system AS provider, article_title,
                granularity, status, source_url, retrieved_at
         FROM metrics.artist_attention_observations
-        WHERE lower(artist_key) IN (?, ?) AND status = 'ok'
+        WHERE lower(artist_key) IN ({placeholders}) AND status = 'ok'
         ORDER BY period_start, retrieved_at
-    """, [key, f"name::{key}"])
+    """, keys)
 
 
 def get_news(conn, entity_name: str) -> list[dict[str, Any]]:

@@ -25,6 +25,10 @@ from urllib.parse import parse_qs, unquote, urlparse
 from ..festivals.repository import FestivalSpineRepository
 from ..flywheel.repository import FlywheelRepository
 from ..intelligence import readmodels
+from ..product.workflow import (
+    add_watchlist_item, build_today, create_watchlist, list_alerts,
+    list_monitors, list_watchlist_items, list_watchlists, remove_watchlist_item,
+)
 from ..intelligence.ask import answer as ask_answer
 from ..intelligence.ask import DeepSeekAskClient
 from ..intelligence.llm import NimClient
@@ -43,6 +47,56 @@ DEFAULT_DB = "data/warehouse/boxoffice_research_v2.duckdb"
 
 def _json(payload: Any) -> bytes:
     return json.dumps(payload, default=str).encode("utf-8")
+
+
+def _count(conn, sql: str) -> int:
+    return int(conn.execute(sql).fetchone()[0])
+
+
+def _data_coverage(conn) -> dict[str, Any]:
+    """DATA control-panel payload: coverage, attention, providers, quality."""
+    return {
+        "identity": {
+            "canonical_artists": _count(conn, "SELECT COUNT(*) FROM core.artists"),
+            "artists_with_mbid": _count(conn, "SELECT COUNT(*) FROM core.artists WHERE musicbrainz_id IS NOT NULL"),
+            "artists_with_isni": _count(conn, "SELECT COUNT(*) FROM core.artists WHERE isni IS NOT NULL"),
+            "artists_with_wikidata": _count(conn, "SELECT COUNT(DISTINCT entity_key) FROM core.entity_external_ids WHERE id_type='wikidata'"),
+            "artists_with_youtube": _count(conn, "SELECT COUNT(DISTINCT entity_key) FROM core.entity_external_ids WHERE id_type='youtube'"),
+            "artists_with_spotify": _count(conn, "SELECT COUNT(DISTINCT entity_key) FROM core.entity_external_ids WHERE id_type='spotify'"),
+            "external_ids_total": _count(conn, "SELECT COUNT(*) FROM core.entity_external_ids"),
+        },
+        "reference": {
+            "artists": _count(conn, "SELECT COUNT(*) FROM reference.musicbrainz_artists"),
+            "areas": _count(conn, "SELECT COUNT(*) FROM reference.musicbrainz_areas"),
+            "events": _count(conn, "SELECT COUNT(*) FROM raw.musicbrainz_event"),
+            "places": _count(conn, "SELECT COUNT(*) FROM raw.musicbrainz_place"),
+            "series": _count(conn, "SELECT COUNT(*) FROM core.event_series"),
+            "performers": _count(conn, "SELECT COUNT(*) FROM core.event_performers"),
+            "relationships": _count(conn, "SELECT COUNT(*) FROM core.entity_relationships"),
+        },
+        "attention": {
+            "listenbrainz_rows": _count(conn, "SELECT COUNT(*) FROM metrics.artist_attention_observations WHERE source_system='listenbrainz'"),
+            "listenbrainz_artists": _count(conn, "SELECT COUNT(DISTINCT artist_key) FROM metrics.artist_attention_observations WHERE source_system='listenbrainz'"),
+            "wikimedia_rows": _count(conn, "SELECT COUNT(*) FROM metrics.artist_attention_observations WHERE source_system='wikimedia'"),
+        },
+        "product": {
+            "watchlists": _count(conn, "SELECT COUNT(*) FROM core.watchlists"),
+            "watchlist_items": _count(conn, "SELECT COUNT(*) FROM core.watchlist_items WHERE removed_at IS NULL"),
+            "monitors": _count(conn, "SELECT COUNT(*) FROM terminal.saved_monitors"),
+            "alerts": _count(conn, "SELECT COUNT(*) FROM core.alerts WHERE status='ACTIVE'"),
+            "tm_resolutions": _count(conn, "SELECT COUNT(*) FROM identity.ticketmaster_artist_resolutions"),
+            "deprecated_columns": _count(conn, "SELECT COUNT(*) FROM core.deprecated_columns"),
+        },
+        "live": {
+            "tm_snapshots": _count(conn, "SELECT COUNT(*) FROM events.provider_event_snapshots WHERE provider='ticketmaster'"),
+            "tm_events": _count(conn, "SELECT COUNT(DISTINCT platform_object_id) FROM events.provider_event_snapshots WHERE provider='ticketmaster'"),
+        },
+        "resolutions": {
+            "total": _count(conn, "SELECT COUNT(*) FROM identity.ticketmaster_artist_resolutions"),
+            "by_status": dict(conn.execute(
+                "SELECT resolution_status, COUNT(*) FROM identity.ticketmaster_artist_resolutions GROUP BY 1").fetchall()),
+        },
+    }
 
 
 class TerminalApp:
@@ -91,6 +145,58 @@ class TerminalApp:
                 self.conn, market=params.get("market"), limit=int(params.get("limit", 100))))
         if path == "/api/festivals":
             return self._ok(FestivalSpineRepository(self.conn).list_festivals())
+        if path == "/api/tours":
+            return self._ok(readmodels.list_tours(
+                self.conn, market=params.get("market"),
+                limit=int(params.get("limit", 100))))
+
+        # ---- product workflow -------------------------------------------
+        if path == "/api/today":
+            return self._ok(build_today(self.conn, limit=int(params.get("limit", 50))))
+        if path == "/api/watchlists":
+            return self._ok(list_watchlists(self.conn))
+        if path == "/api/monitors":
+            return self._ok(list_monitors(self.conn))
+        if path == "/api/alerts":
+            return self._ok(list_alerts(
+                self.conn, limit=int(params.get("limit", 100)),
+                entity_key_value=params.get("entity_key")))
+        if path == "/api/data":
+            return self._ok(_data_coverage(self.conn))
+
+        if path == "/api/watchlists" and method == "POST":
+            try:
+                body = json.loads(body.decode("utf-8"))
+            except Exception:
+                body = {}
+            return self._ok(create_watchlist(
+                self.conn, name=body.get("name", ""),
+                description=body.get("description"),
+                entity_type=body.get("entity_type"),
+                is_system=bool(body.get("is_system", False))))
+        if path.startswith("/api/watchlists/") and method == "POST":
+            try:
+                body = json.loads(body.decode("utf-8"))
+            except Exception:
+                body = {}
+            wl_key = path[len("/api/watchlists/"):]
+            action = body.get("action")
+            if action == "add":
+                return self._ok({"added": add_watchlist_item(
+                    self.conn, watchlist_key_value=wl_key,
+                    entity_type=body.get("entity_type", ""),
+                    entity_key_value=body.get("entity_key", ""),
+                    entity_name=body.get("entity_name"),
+                    notes=body.get("notes"), tags=body.get("tags"))})
+            if action == "remove":
+                return self._ok({"removed": remove_watchlist_item(
+                    self.conn, watchlist_key_value=wl_key,
+                    entity_type=body.get("entity_type", ""),
+                    entity_key_value=body.get("entity_key", ""))})
+            return self._ok(list_watchlist_items(self.conn, wl_key))
+        if path.startswith("/api/watchlists/"):
+            return self._ok(list_watchlist_items(
+                self.conn, path[len("/api/watchlists/"):]))
 
         if path == "/api/ask" and method == "POST":
             try:
@@ -119,6 +225,8 @@ class TerminalApp:
                 if sub == "editions" and len(parts) >= 5:
                     return self._ok(readmodels.get_festival_edition(self.conn, parts[4]))
                 return self._ok(readmodels.get_festival(self.conn, entity_id))
+            if entity_type == "tours":
+                return self._ok(readmodels.get_tour(self.conn, entity_id))
 
         return self._not_found()
 
