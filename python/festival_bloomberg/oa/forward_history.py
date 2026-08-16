@@ -414,7 +414,10 @@ def _two_snapshot_pit(economics, registry, oa_started: datetime) -> dict[str, An
       * a cutoff between them shows A only (B invisible),
       * a cutoff after B shows both.
     """
-    active = registry.get_active_events()
+    # Evaluate activity as-of the OA run start, NOT the wall clock: otherwise
+    # the PIT evidence silently changes (events fall out of their post-event
+    # window) as real time passes, making the gate time-dependent and flaky.
+    active = registry.get_active_events(as_of=oa_started)
     if not active:
         return {"status": "FAIL", "reason": "no tracked events"}
     event = active[0]
