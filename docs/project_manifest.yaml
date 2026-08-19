@@ -39,7 +39,9 @@ milestones:
   MUSIC_TERMINAL_PRODUCTIZATION_V1: "PASS (PR #31 merged; identity + ListenBrainz + watchlists + monitors + alerts + TODAY + search + ART/FEST/TOUR/MKT/DATA/ASK; 537 tests)"
   OSS_PLATFORM_EVALUATION_V1: "PASS (evaluation, not adoption: Memray profiling + Splink_NAME_ONLY=NOT_ADOPTED + Dagster offline parity PASS but REJECTED_FOR_NOW + OpenLineage file proof PASS but REJECTED_FOR_NOW + Crawlee/dlt rejected; no forced adoption)"
   COMPARABLE_EVENT_ENGINE_V1: "PASS_RESEARCH_FRAMEWORK_CHAMPION_UNCHANGED (leakage-repaired decomposable comparable distance + hierarchical strata; hierarchical median champion retained; gross-only TIME win is real but not a promotion)"
-  TALENT_BUYER_WORKBENCH_V1: "PARTIAL (planning workspace v1: projects/stages/candidates/shortlists/scenarios + scorecard + deterministic candidate universe + non-optimizing scenario board; COMPARE/BUILD SPA surfaces + dense data panel remain)"
+  TALENT_BUYER_WORKBENCH_V1: "PASS_WORKFLOW_RESEARCH_ONLY (PR #34 merged; BUILD/COMPARE SPA + scorecards + shortlists + scenario board + conflict warnings; dense data panel and comparable V2 remain)"
+  DENSE_PRE_EVENT_DATA_PANEL_V1: "IN_PROGRESS (PR #35 draft; feature registry + PIT attention + competition + coverage/VOI semantics hardened; live venue/Wikimedia/competition pilots pending warehouse unlock)"
+  DESIGN_PARTNER_DATA_ACTIVATION_V1: "IN_PROGRESS (PR #36 draft; one-command isolated partner preview CLI + deterministic readiness tiers + synthetic value curves + onboarding package)"
 
 providers:
   # status taxonomy: PUBLIC_NO_AUTH | AUTH_CONFIGURED | AUTH_MISSING |
@@ -76,6 +78,8 @@ docs:
   - talent-buyer-workbench-v1-spec.md
   - c3-goldenvoice-level-gap-matrix.md
   - design-partner-onboarding.md
+  - design-partner-value-proposition.md
+  - design-partner-target-profiles.md
 
 key_commands:
   context: "PYTHONPATH=python .venv/bin/python -m festival_bloomberg.ops.context_snapshot"

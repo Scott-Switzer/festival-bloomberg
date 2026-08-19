@@ -985,6 +985,101 @@ def cmd_summarize_social(args: argparse.Namespace) -> int:
         repo.close()
 
 
+def cmd_partner_preview(args: argparse.Namespace) -> int:
+    """One-command sanitized partner-file preview against an isolated DB.
+
+    Never touches the canonical public warehouse. No private data leaves the
+    local environment. Produces a structural summary + readiness tier — no
+    predictions.
+    """
+    import json
+    import os
+    import tempfile
+    from collections import Counter
+
+    from ..economics.partner_import import ingest_partner_files
+    from ..economics.partner_readiness import partner_readiness_tier, structural_coverage
+    from ..economics.repository import EconomicsRepository
+    from ..events.repository import EventRepository
+
+    db_path = args.db or os.path.join(
+        tempfile.gettempdir(), "festival_bloomberg_partner_preview.duckdb"
+    )
+    repo = FestivalRepository(db_path)
+    try:
+        econ = EconomicsRepository(repo.conn)
+        events_repo = EventRepository(repo.conn)
+        file_paths = [p for p in args.files.split(",") if p.strip()]
+        if not file_paths:
+            print("ERROR: no input files provided")
+            return 1
+        report = ingest_partner_files(
+            economics_repo=econ,
+            file_paths=file_paths,
+            customer_id=args.customer,
+            dataset_id=args.dataset or f"ds_{args.customer}",
+            sharing_policy=args.sharing_policy,
+            events_repo=events_repo,
+        )
+        coverage = structural_coverage(econ, events_repo)
+        tier = partner_readiness_tier(coverage)
+
+        summary = {
+            "dataset_id": report.dataset_id,
+            "customer_id": report.customer_id,
+            "files_read": report.files_read,
+            "rows_read": report.rows_read,
+            "rows_rejected": len(report.errors),
+            "quality_issues": len(report.quality_issues),
+            "claims_inserted": report.claims_inserted,
+            "duplicates_skipped": report.duplicates_skipped,
+            "pii_quarantined": report.pii_quarantined,
+            "mapping_summary": {
+                f: dict(Counter(m["status"] for m in entries))
+                for f, entries in report.mappings.items()
+            },
+            "structural_coverage": coverage,
+            "readiness": tier,
+            "sharing_policy": args.sharing_policy,
+            "isolated_db": db_path,
+            "no_predictions": True,
+        }
+        if args.output:
+            parent = os.path.dirname(args.output)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(args.output, "w", encoding="utf-8") as fh:
+                json.dump(summary, fh, indent=2, default=str)
+            print(f"summary written: {args.output}")
+        else:
+            print(json.dumps(summary, indent=2, default=str))
+
+        print("=== PARTNER PREVIEW ===")
+        print(f"files read:        {report.files_read}")
+        print(f"rows read:         {report.rows_read}")
+        print(f"claims inserted:   {report.claims_inserted}")
+        print(f"pii quarantined:   {report.pii_quarantined}")
+        print(f"duplicates skipped:{report.duplicates_skipped}")
+        print(f"readiness tier:    {tier['tier']}")
+        print(f"isolated db:       {db_path}")
+        print("NO PREDICTIONS — structural preview only.")
+        return 0
+    finally:
+        repo.close()
+
+
+def cmd_partner_value(args: argparse.Namespace) -> int:
+    """Synthetic structural value curves (no prediction accuracy)."""
+    import json
+
+    from ..economics.partner_readiness import simulate_partner_value
+
+    rows = simulate_partner_value()
+    print(json.dumps(rows, indent=2, default=str))
+    print("SYNTHETIC STRUCTURAL VALUE CURVES ONLY — no forecast accuracy simulated.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="festival")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1174,6 +1269,21 @@ def build_parser() -> argparse.ArgumentParser:
     bt_readiness.add_argument("--study", required=True)
     bt_readiness.add_argument("--db", default=None)
     bt_readiness.set_defaults(handler=cmd_backtest_readiness)
+
+    partner = sub.add_parser("partner", help="design-partner data activation (isolated, no public warehouse)")
+    partner_sub = partner.add_subparsers(dest="partner_command", required=True)
+    preview = partner_sub.add_parser("preview", help="one-command sanitized partner-file preview")
+    preview.add_argument("--files", required=True, help="comma-separated csv/tsv/xlsx paths")
+    preview.add_argument("--customer", default="preview_promoter")
+    preview.add_argument("--dataset", default=None)
+    preview.add_argument("--sharing-policy", default="PRIVATE_ONLY",
+                         choices=["PRIVATE_ONLY", "ANONYMIZED_POOL_OPT_IN", "AGGREGATE_BENCHMARK_OPT_IN"])
+    preview.add_argument("--db", default=None)
+    preview.add_argument("--output", default=None)
+    preview.set_defaults(handler=cmd_partner_preview)
+
+    pvalue = partner_sub.add_parser("value", help="synthetic structural value curves")
+    pvalue.set_defaults(handler=cmd_partner_value)
 
     labels = sub.add_parser("labels", help="deterministic human-labeling exports")
     labels_sub = labels.add_subparsers(dest="labels_command", required=True)

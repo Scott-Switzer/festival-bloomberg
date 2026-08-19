@@ -1,0 +1,4 @@
+customer_event_id,artist_name,venue_name,market,city,event_date,booking_date,announcement_date,onsale_date,venue_capacity,event_usable_capacity,ticket_capacity,deal_type,artist_guarantee,tickets_sold,paid_tickets,comp_tickets,scanned_attendance,ticket_gross,ticket_net,promoter_contribution,sold_out,currency
+SYNTH001,The National,Riviera Theatre,Chicago,Chicago,2024-05-10,2023-11-01,2024-01-15,2024-01-20,2500,2400,2400,guarantee,75000,2400,2350,50,2380,150000,145000,24000,true,USD
+SYNTH002,Phoebe Bridgers,The Chicago Theatre,Chicago,Chicago,2024-03-08,,,1900,1850,1850,guarantee,,,,,90000,86000,,false,USD
+SYNTH003,Mitski,Metro,Chicago,Chicago,2024-09-14,2024-05-01,2024-06-01,2024-06-05,1100,1100,1100,guarantee,60000,1100,1050,50,1090,70000,68000,12000,false,USD
