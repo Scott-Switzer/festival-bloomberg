@@ -21,6 +21,14 @@ the cutoff" is never confused with "a value was knowable before the cutoff":
 Critical rule for ListenBrainz-style sources: a row is admissible only if
 listened_at (observation) < cutoff AND inserted_at (available_at) < cutoff —
 late-imported historical listens must never leak backward.
+
+Three missingness states are distinguished (see ``calendar_window``):
+
+* TRUE_ZERO     a day in-range with a value (or a filled absent day when the
+                source window is known-complete);
+* MISSING       an expected day absent from an incomplete series (NEVER zero);
+* UNAVAILABLE   a day outside the source's existence (e.g. Wikimedia pageviews
+                before 2015-07-01) — not expected, not missing, not zero.
 """
 
 from __future__ import annotations
@@ -129,3 +137,74 @@ def pit_features(
         out["spike_30d"] = None
     out["days_observed"] = len([d for d in daily if d < cutoff_d])
     return out
+
+
+DAY_OBSERVED = "OBSERVED"
+DAY_TRUE_ZERO = "TRUE_ZERO"
+DAY_MISSING = "MISSING"
+DAY_UNAVAILABLE = "UNAVAILABLE"
+
+
+def calendar_window(
+    daily: dict[date, float],
+    *,
+    start: str,
+    end: str,
+    complete: bool = False,
+    unavailable: set[str] | frozenset[str] | None = None,
+) -> dict[str, Any]:
+    """Materialize a calendar window over a daily series.
+
+    Distinguishes TRUE ZERO (a day in-range with a value, or a filled absent
+    day when ``complete=True``), MISSING (an expected day absent from an
+    incomplete series), and UNAVAILABLE (a day outside the source's existence,
+    passed explicitly).
+
+    ``complete=True`` asserts the source returned every expected day, so absent
+    days are true zero and may be filled with 0.0. ``complete=False`` returns
+    only observed days and reports the gap as MISSING — never fabricated zero.
+    """
+    start_d = _d(start)
+    end_d = _d(end)
+    if start_d is None or end_d is None or end_d < start_d:
+        return {"status": "INVALID_WINDOW"}
+    unavailable_days = {_d(u) for u in (unavailable or set())}
+    unavailable_days.discard(None)
+    expected = 0
+    observed: dict[date, float] = {}
+    d = start_d
+    while d <= end_d:
+        if d in unavailable_days:
+            d += timedelta(days=1)
+            continue
+        expected += 1
+        if d in daily:
+            observed[d] = daily[d]
+        d += timedelta(days=1)
+    missing = expected - len(observed)
+    series: dict[str, float] = {}
+    true_zero = 0
+    if complete:
+        d = start_d
+        while d <= end_d:
+            if d in unavailable_days:
+                d += timedelta(days=1)
+                continue
+            v = observed.get(d, 0.0)
+            series[d.isoformat()] = v
+            if v == 0.0:
+                true_zero += 1
+            d += timedelta(days=1)
+    else:
+        series = {d.isoformat(): v for d, v in sorted(observed.items())}
+        true_zero = sum(1 for v in observed.values() if v == 0.0)
+    return {
+        "status": "OK",
+        "series": series,
+        "expected_days": expected,
+        "observed_days": len(observed),
+        "true_zero_days": true_zero,
+        "missing_days": missing,
+        "unavailable_days": len(unavailable_days),
+        "completeness_pct": round(len(observed) / expected, 4) if expected else None,
+    }

@@ -467,6 +467,33 @@ class SourceRegistry:
             notes="CC BY-SA 4.0 share-alike license may restrict commercial SaaS use. Legal review required."
         ))
         
+        self.register(SourceMetadata(
+            source_id="listenbrainz",
+            name="ListenBrainz",
+            base_url="https://listenbrainz.org",
+            category=SourceCategory.ATTENTION,
+            access_type=AccessType.DATA_DOWNLOAD,
+            auth_required=False,
+            rate_limit=None,
+            cost_class=CostClass.FREE,
+            portfolio_research_allowed=True,
+            academic_allowed=True,
+            commercial_use_status=CommercialUseStatus.OPEN_WITH_ATTRIBUTION,
+            redistribution_status="OPEN_DATA",
+            raw_storage_status="OPEN_DATA",
+            derived_data_status="OPEN_DATA",
+            attribution_required=True,
+            terms_url="https://listenbrainz.readthedocs.io/",
+            license_url="https://metabrainz.org/datasets",
+            terms_checked_at=datetime(2026, 8, 19),
+            legal_review_status="APPROVED",
+            historical_depth="2015-present",
+            geographic_coverage="Global",
+            update_frequency="Continuous",
+            confidence=0.85,
+            notes="Listen data is open data and available for commercial use (official server README: 'All of our data is available for commercial use'); the GPL license covers the server CODE, not the data. Use AGGREGATED artist-level attention only — never build user-level profiles. Attribution/support requested."
+        ))
+        
         # Low-confidence sources (commercial restrictions)
         self.register(SourceMetadata(
             source_id="ticketmaster_api",

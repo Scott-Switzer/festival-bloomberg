@@ -13,7 +13,6 @@ from festival_bloomberg.attention.historical_pit import daily_series, pit_featur
 from festival_bloomberg.events.repository import EventRepository
 from festival_bloomberg.intelligence.coverage_voi import dense_panel_coverage
 from festival_bloomberg.planning.competition import (
-    _knowable_before,
     competition_for_event,
     market_competition_profile,
 )
@@ -135,8 +134,8 @@ def test_rights_derived_from_canonical_policy():
     # ticketmaster (agreement) + musicbrainz (legal review) -> agreement required,
     # NOT the old hand-written "OPEN_ATTRIBUTION_REQUIRED"
     assert resolve_commercial_status(("ticketmaster_api", "musicbrainz")) == "COMMERCIAL_AGREEMENT_REQUIRED"
-    # listenbrainz is absent from every canonical registry -> fail closed
-    assert resolve_commercial_status(("listenbrainz",)) == "UNKNOWN"
+    # listenbrainz is registered canonically (open data, commercial use allowed)
+    assert resolve_commercial_status(("listenbrainz",)) == "APPROVED_WITH_CONDITIONS"
 
 
 def test_composite_rights_never_more_permissive():
@@ -151,10 +150,14 @@ def test_composite_rights_never_more_permissive():
     assert combined == components
 
 
-def test_listenbrainz_feature_rejected_rights():
+def test_listenbrainz_feature_rights_reconciled():
     snap = registry_snapshot(measured={"artist_attention_listenbrainz_30d_at_cutoff": 0.5})
     by_name = {s["name"]: s for s in snap}
-    assert by_name["artist_attention_listenbrainz_30d_at_cutoff"]["status"] == STATUS_REJECTED_RIGHTS
+    s = by_name["artist_attention_listenbrainz_30d_at_cutoff"]
+    # registered canonically (open data, commercial use allowed) -> research-usable
+    assert s["status"] == STATUS_ADMITTED
+    assert s["commercial_status"] == "COMMERCIAL_OK_WITH_CONDITIONS"
+    assert s["commercial_product_allowed"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -267,15 +270,17 @@ def test_competition_pit_safety(tmp_path):
             repo.conn, target_event_id="e0", event_date="2027-08-01",
             market="Chicago", research_cutoff="2027-08-01")
         assert c["status"] == "OBSERVED"
-        # same day: e1 known, e2 not-known-at-cutoff (self e0 excluded)
-        assert c["windows"]["pm0"]["known"] == 1
-        assert c["windows"]["pm0"]["unknown_knowability"] == 1
-        assert c["windows"]["pm0"]["coverage"] == 0.5
-        # +-7 / +-14: e1 + e3 known, e2 unknown
-        assert c["windows"]["pm7"]["known"] == 2
-        assert c["windows"]["pm7"]["unknown_knowability"] == 1
-        assert c["windows"]["pm14"]["known"] == 2
-        assert c["windows"]["pm14"]["unknown_knowability"] == 1
+        # same day: e1 known-before-cutoff, e2 observed-post-cutoff (self e0 excluded)
+        assert c["windows"]["pm0"]["known_before_cutoff"] == 1
+        assert c["windows"]["pm0"]["observed_post_cutoff"] == 1
+        assert c["windows"]["pm0"]["unknown_knowledge_time"] == 0
+        assert c["windows"]["pm0"]["knowledge_time_coverage"] == 1.0
+        assert c["windows"]["pm0"]["unknown_rate"] == 0.0
+        # +-7 / +-14: e1 + e3 known-before, e2 observed-post
+        assert c["windows"]["pm7"]["known_before_cutoff"] == 2
+        assert c["windows"]["pm7"]["observed_post_cutoff"] == 1
+        assert c["windows"]["pm14"]["known_before_cutoff"] == 2
+        assert c["windows"]["pm14"]["observed_post_cutoff"] == 1
     finally:
         repo.close()
 
@@ -290,19 +295,12 @@ def test_competition_non_pit_without_cutoff(tmp_path):
         c = competition_for_event(
             repo.conn, target_event_id="e0", event_date="2027-08-01", market="Chicago")
         assert c["status"] == "NON_PIT"
-        # without a cutoff every observed event counts as "known" (current view)
-        assert c["windows"]["pm0"]["known"] == 1
-        assert c["windows"]["pm0"]["unknown_knowability"] == 0
+        # without a cutoff every distinct event counts as "known" (current view)
+        assert c["windows"]["pm0"]["known_before_cutoff"] == 1
+        assert c["windows"]["pm0"]["observed_post_cutoff"] == 0
+        assert c["windows"]["pm0"]["unknown_knowledge_time"] == 0
     finally:
         repo.close()
-
-
-def test_knowable_before_semantics():
-    d = date(2024, 1, 1)
-    assert _knowable_before(None, d) is None          # unknown knowability
-    assert _knowable_before("2023-12-31", d) is True  # strictly before
-    assert _knowable_before("2024-01-01", d) is False  # at cutoff -> not before
-    assert _knowable_before("2024-01-02", d) is False  # after
 
 
 def test_market_competition_profile_busiest_date(tmp_path):

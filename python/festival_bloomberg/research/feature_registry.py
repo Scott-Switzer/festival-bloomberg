@@ -95,6 +95,41 @@ _COMMERCIAL_ORDER = (
 #: Statuses that block a feature entirely (even research use).
 _RIGHTS_BLOCKED = frozenset({"PROHIBITED", "UNKNOWN"})
 
+# ---------------------------------------------------------------------------
+# Commercial product status (distinct from research admission).
+#
+# A feature can be research-ADMITTED while remaining NOT usable in the
+# C3-facing product: e.g. Ticketmaster-derived competition is research-usable
+# but COMMERCIAL_AGREEMENT_REQUIRED. The canonical source registry remains the
+# single authority; these strings are a pure mapping of the canonical tier.
+# ---------------------------------------------------------------------------
+
+COMMERCIAL_OK = "COMMERCIAL_OK"
+COMMERCIAL_OK_WITH_CONDITIONS = "COMMERCIAL_OK_WITH_CONDITIONS"
+COMMERCIAL_AGREEMENT_REQUIRED = "COMMERCIAL_AGREEMENT_REQUIRED"
+COMMERCIAL_LEGAL_REVIEW_REQUIRED = "LEGAL_REVIEW_REQUIRED"
+COMMERCIAL_RESEARCH_ONLY = "RESEARCH_ONLY"
+COMMERCIAL_PROHIBITED = "PROHIBITED"
+COMMERCIAL_UNKNOWN = "UNKNOWN"
+
+_COMMERCIAL_TIER_TO_STATUS = {
+    "APPROVED": COMMERCIAL_OK,
+    "APPROVED_WITH_CONDITIONS": COMMERCIAL_OK_WITH_CONDITIONS,
+    "COMMERCIAL_AGREEMENT_REQUIRED": COMMERCIAL_AGREEMENT_REQUIRED,
+    "LEGAL_REVIEW_REQUIRED": COMMERCIAL_LEGAL_REVIEW_REQUIRED,
+    "RESEARCH_ONLY": COMMERCIAL_RESEARCH_ONLY,
+    "PROHIBITED": COMMERCIAL_PROHIBITED,
+    "UNKNOWN": COMMERCIAL_UNKNOWN,
+}
+
+#: Commercial statuses the C3-facing product may consume without an agreement.
+_COMMERCIAL_PRODUCT_OK = frozenset({COMMERCIAL_OK, COMMERCIAL_OK_WITH_CONDITIONS})
+
+
+def commercially_usable(status: str | None) -> bool:
+    """True only when the commercial status is usable in the product as-is."""
+    return status in _COMMERCIAL_PRODUCT_OK
+
 
 def _internal_source_commercial(source_id: str) -> str:
     """Our own derived venue-master geography/type. Provenance must be cited."""
@@ -176,8 +211,10 @@ class FeatureSpec:
     # Measured/admission state. ``current_coverage=None`` means NOT measured.
     current_coverage: float | None = None
     status: str = STATUS_CANDIDATE
-    rights_status: str | None = None        # derived at admission time
-    commercial_use_status: str | None = None  # derived at admission time
+    rights_status: str | None = None        # derived canonical tier at admission
+    commercial_use_status: str | None = None  # derived canonical tier at admission
+    research_status: str | None = None      # research admission result (mirrors status)
+    commercial_status: str | None = None    # COMMERCIAL_* product-use status
     note: str | None = None
 
 
@@ -300,49 +337,53 @@ def admit(feature: FeatureSpec, *, measured_coverage: float | None = None) -> Fe
 
     Gates are evaluated in order: leakage, semantics, rights, then coverage.
     ``measured_coverage=None`` means NOT measured (not the same as 0.0).
+
+    Two results are produced: ``research_status`` (may Comparable V2 consume
+    this feature?) and ``commercial_status`` (may the C3-facing product consume
+    it without an agreement?). A feature may be research-ADMITTED while its
+    commercial status is COMMERCIAL_AGREEMENT_REQUIRED; that never silently
+    becomes product-commercial.
     """
     out = replace(feature)
+
+    # rights first, so every result exposes a commercial status
+    commercial = resolve_commercial_status(out.sources)
+    out.rights_status = commercial
+    out.commercial_use_status = commercial
+    out.commercial_status = _COMMERCIAL_TIER_TO_STATUS.get(commercial, COMMERCIAL_UNKNOWN)
 
     # 1. leakage (must precede all other gates)
     if out.leakage_fields and set(out.leakage_fields) & set(LEAKAGE_BLACKLIST):
         out.status = STATUS_REJECTED_LEAKAGE
         out.note = "uses leakage-blacklisted outcome field"
-        return out
-
     # 2. semantics
-    if not out.pit_admissible:
+    elif not out.pit_admissible:
         out.status = STATUS_REJECTED_SEMANTICS
         out.note = "no PIT admissibility rule"
-        return out
-    if not out.event_time_meaning:
+    elif not out.event_time_meaning:
         out.status = STATUS_REJECTED_SEMANTICS
         out.note = "undefined event-time meaning"
-        return out
-
     # 3. rights (derived from canonical source policy, most restrictive)
-    commercial = resolve_commercial_status(out.sources)
-    out.rights_status = commercial
-    out.commercial_use_status = commercial
-    if commercial in _RIGHTS_BLOCKED:
+    elif commercial in _RIGHTS_BLOCKED:
         out.status = STATUS_REJECTED_RIGHTS
         out.note = (
             f"rights blocked: most restrictive of {list(out.sources) or ['(none)']} "
             f"is {commercial}"
         )
-        return out
-
     # 4. coverage
-    out.current_coverage = measured_coverage
-    if measured_coverage is None:
-        out.status = STATUS_NOT_MEASURED
-        out.note = "no measured coverage yet"
-        return out
-    if measured_coverage < out.minimum_coverage:
-        out.status = STATUS_REJECTED_COVERAGE
-        out.note = f"coverage {measured_coverage:.4f} < min {out.minimum_coverage:.4f}"
-        return out
-    out.status = STATUS_ADMITTED
-    out.note = "admitted"
+    else:
+        out.current_coverage = measured_coverage
+        if measured_coverage is None:
+            out.status = STATUS_NOT_MEASURED
+            out.note = "no measured coverage yet"
+        elif measured_coverage < out.minimum_coverage:
+            out.status = STATUS_REJECTED_COVERAGE
+            out.note = f"coverage {measured_coverage:.4f} < min {out.minimum_coverage:.4f}"
+        else:
+            out.status = STATUS_ADMITTED
+            out.note = "admitted"
+
+    out.research_status = out.status
     return out
 
 
@@ -362,6 +403,9 @@ def registry_snapshot(*, measured: dict[str, float | None] | None = None) -> lis
             "pit_admissible": s.pit_admissible,
             "rights_status": s.rights_status,
             "commercial_use_status": s.commercial_use_status,
+            "research_status": s.research_status,
+            "commercial_status": s.commercial_status,
+            "commercial_product_allowed": commercially_usable(s.commercial_status),
             "sources": list(s.sources),
             "minimum_coverage": s.minimum_coverage,
             "current_coverage": s.current_coverage,
