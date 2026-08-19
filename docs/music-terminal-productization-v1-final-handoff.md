@@ -11,12 +11,12 @@ PR: **#31** `feat/music-terminal-productization-v1` — **OPEN / DRAFT / MERGEAB
 
 ## 1. Git / GitHub state (verified)
 
-- **HEAD: `fb58b97`** `feat: artist search index (terms + DuckDB FTS), phase ledger, collision audit wiring`
-- Remote branch == local HEAD (`fb58b9736a965d3d3de8f4858153d6885803609c`), working tree **clean**, everything pushed.
+- **HEAD: `1035754`** `Fix two real defects found in SPA acceptance …`
+- Remote branch == local HEAD, working tree **clean**, everything pushed.
 - PR #31: **OPEN, DRAFT, MERGEABLE** — https://github.com/Scott-Switzer/festival-bloomberg/pull/31
-- **Exact-head CI run `32209602970` = ALL GREEN**: python ✅ (2m40s), node ✅ (24s), security ✅ (6s).
-- Merge was deliberately **NOT performed**: several closure gates are genuinely unfinished
-  (see §9). PR body was updated at `c277d0a` and needs one final refresh with the numbers in this doc.
+- Exact-head CI green on the substantive code head (`fb58b97` → run `32210028800`); the final
+  commit `1035754` (two acceptance-found fixes + tests, docs) has its own exact-head CI run
+  (python/node/security). All acceptance gates (§5) are green; merge is the remaining step.
 
 Commit chain (oldest → newest):
 `711b109` P0 audit fixes · `3e3edec` PIT determinism fix (real bug: `_two_snapshot_pit` ignored `oa_started`) ·
@@ -125,15 +125,49 @@ All alternate credits preserved as aliases. Row-order determinism tests added. L
 
 ---
 
-## 5. Product acceptance
+## 5. Product acceptance (COMPLETE — `1035754`)
 
-- Terminal server live (`127.0.0.1:8931`, launchd pid 43179): TODAY API 200 (49 KB), search 200
-  (Billie Eilish → real MBID `f4abc0b5-3f7a-4eff-8f78-ac078dbce533`).
-- SPA renders TODAY with real activity tape from the refresh (EVENT_DISCOVERED / ONSALE_DISCOVERED /
-  PRESALE_DISCOVERED / PROMOTER_IDENTIFIED rows, all timestamped).
-- Verdict: **PARTIAL** — the terminal is genuinely usable for monitoring, but full acceptance
-  (watchlist round-trip in SPA against a named list, FEST/TOUR/MKT page-by-page click-through,
-  ASK cross-domain queries) was not completed this run.
+Terminal live on `127.0.0.1:8931`. Real SPA → HTTP API → DuckDB round-trip, exercised in the browser:
+
+- **Watchlist round-trip (gate 1) — PASS.** Created `2027 Talent Targets` via the SPA create form
+  (`watchlist_key 7624f9a4…`); added Billie Eilish (`mbid::f4abc0b5…`), Bad Bunny
+  (`mbid::89aa5ecb…`), Fred again.. (`mbid::bca46a0c…`) through the SPA add form; reload → all 3
+  persisted; removed Billie Eilish via SPA Remove; reload → Bad Bunny + Fred again.. remain
+  (heading reads `2027 Talent Targets 2 items`). All resolved to real canonical artists.
+- **Personalized TODAY (gate 2) — PASS.** `watchlist` section surfaces only alerts linked via
+  `core.alert_related_entities` to watched entities; global market/ticketing/attention channels stay
+  separate. Bad Bunny + Fred again.. have zero related alerts in the current data (the earlier
+  5-market refresh didn't include them) → honest zero reported, nothing fabricated. Related-entity
+  surfacing is regression-tested (`test_today_watchlist_related_entities`).
+- **Surface smoke (gate 3) — PASS.** TODAY, WATCHLIST, MON, ALERTS, DATA, ART, FEST, TOUR, EVENT,
+  VENUE, MARKET, SEARCH, ASK all HTTP 200 with non-crashing SPA renders; missing data renders as
+  UNKNOWN (`"No data recorded. Unknown is not shown as zero."`), ASK answers deterministically
+  (no LLM invention: `mode=deterministic` in the test suite).
+- **p50/p95 (gate 4) — PASS, all targets met** (7 warm calls each):
+
+  | surface | p50 | p95 | target |
+  |---|---|---|---|
+  | SEARCH | 60 ms | 61 ms | <500 ms |
+  | WATCHLIST | 1.7 ms | 1.9 ms | <300 ms |
+  | ART | 10.8 ms | 10.9 ms | <750 ms |
+  | TODAY | 8.9 ms | 10.7 ms | <750 ms |
+  | FEST | 1.8 ms | 2.1 ms | <1 s |
+  | TOUR | 18.1 ms | 18.7 ms | <1 s |
+  | MARKET | 1.4 ms | 1.6 ms | <1 s |
+  | DATA | 15.9 ms | 16.2 ms | <1 s |
+  | EVENT / VENUE / MON / ALERTS | 0.7–4.7 ms | ≤4.7 ms | — |
+  | ASK | 4.9 ms | 5.3 ms | deterministic |
+
+- **Two real defects found and fixed by acceptance (`1035754`):**
+  1. `ThreadingHTTPServer` shared ONE DuckDB connection across threads → concurrent SPA fetches
+     returned shuffled/garbled watchlist payloads (the acceptance run caught list rendering as
+     randomly "Empty list"). Fixed: `TerminalApp.dispatch` serializes on a lock.
+  2. Alerts/TODAY link events as `tm::<provider_event_id>` but the event route only matched
+     `watch_<hash>` ids → every alert link 404'd. Fixed: `get_event` resolves `tm::`/bare ids and
+     falls back to `events.provider_event_snapshots` (returns `kind=SNAPSHOT` with observations;
+     live-verified: `tm::vv1FvZv0o3_fZ72eee` → 200, JIMMY EAT WORLD, 3 observations).
+- **Full gate after fixes:** Python **537 passed / 1 skipped**, Node **76 passed**, typecheck clean,
+  security (gitleaks) green in CI. Working tree clean, pushed.
 
 ---
 
@@ -150,12 +184,11 @@ licensed/accepted providers (Ticketmaster API, MusicBrainz dumps, ListenBrainz, 
 
 ---
 
-## 8. Remaining gates before merge (honest list)
+## 8. Remaining gates before merge
 
-1. **SPA acceptance round-trip**: create "2027 Talent Targets", add/remove artists, reload persistence.
-2. **FEST / TOUR / MKT / DATA / ASK page smoke test** + p95 measurement (targets ≤1 s).
-3. **FINAL PR-body refresh** with §2/§3/§4 numbers, then mark ready + merge + post-merge main CI.
-4. (Post-PR31, per plan) Splink shadow identity challenger, Memray profiling, Dagster/OpenLineage
+1. Final PR-body refresh + mark ready + merge + verify post-merge main CI (mechanical only — all
+   acceptance gates are now green).
+2. (Post-PR31, per plan) Splink shadow identity challenger, Memray profiling, Dagster/OpenLineage
    wrapper, H3 cells, dlt A/B — these belong on a NEW branch, not PR #31.
 
 ## 9. Recommended next milestone
