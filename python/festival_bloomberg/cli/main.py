@@ -1107,14 +1107,14 @@ def cmd_terminal_publish(args: argparse.Namespace) -> int:
 
     from ..terminal import storage
 
-    serving_path = args.serving or storage.SERVING_DEFAULT_DB
+    snapshot_dir = args.serving or storage.SERVING_DIR
     manifest = storage.publish_snapshot(
         args.canonical,
-        snapshot_path=serving_path,
+        snapshot_dir=snapshot_dir,
         snapshot_id=args.snapshot_id,
     )
     print(json.dumps(manifest, indent=2, default=str))
-    print(f"Serving snapshot published: {serving_path}")
+    print(f"Serving snapshot published: {manifest['snapshot_path']}")
     print(f"  tables={manifest['table_count']} rows={manifest['total_rows']}")
     return 0
 
@@ -1344,9 +1344,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     terminal = sub.add_parser("terminal", help="terminal serving-snapshot maintenance")
     terminal_sub = terminal.add_subparsers(dest="terminal_command", required=True)
-    publish = terminal_sub.add_parser("publish-snapshot", help="publish canonical -> serving snapshot")
+    publish = terminal_sub.add_parser("publish-snapshot", help="publish canonical -> immutable serving snapshot")
     publish.add_argument("--canonical", required=True, help="canonical warehouse path")
-    publish.add_argument("--serving", default=None, help="output serving snapshot path")
+    publish.add_argument("--serving", default=None, help="serving snapshot directory (default: data/serving)")
     publish.add_argument("--snapshot-id", default=None)
     publish.set_defaults(handler=cmd_terminal_publish)
     migrate = terminal_sub.add_parser("migrate-workspace", help="copy existing user state canonical -> workspace")

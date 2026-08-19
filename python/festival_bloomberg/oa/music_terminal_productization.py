@@ -780,44 +780,54 @@ def run_music_terminal_productization_oa(
         _run("tour_read_models", _tour_models)
 
         # ---- Phase 10: product workflows ----
+        # Watchlists/monitors are USER STATE: seeded into the WORKSPACE DB,
+        # never canonical. Evidence is read from canonical (conn).
         def _watchlists():
-            created = create_default_watchlists(conn)
-            conn.commit()
-            return {
-                "status": "COMPLETE",
-                "created": created,
-                "watchlists": list_watchlists(conn),
-            }
+            from ..terminal import storage
+            ws = storage.create_workspace_db()
+            try:
+                created = create_default_watchlists(conn, ws)
+                return {
+                    "status": "COMPLETE",
+                    "created": created,
+                    "watchlists": list_watchlists(ws),
+                }
+            finally:
+                ws.close()
         _run("watchlists", _watchlists)
 
         def _monitors():
-            save_monitor(conn, name="Artist Monitor",
-                         entity_type="ARTIST",
-                         watchlist_key_value=None,
-                         filters=[{"field": "next_event", "op": "not_null"}],
-                         visible_columns=["ARTIST", "NEXT EVENT", "NEXT FESTIVAL",
-                                          "NEXT ONSALE", "NEXT PRESALE", "MBID",
-                                          "SPOTIFY ID", "WIKIDATA ID",
-                                          "LISTENBRAINZ LISTEN COUNT",
-                                          "LISTENBRAINZ USER COUNT",
-                                          "WIKIMEDIA 7D", "WIKIMEDIA 30D",
-                                          "RECENT NEWS",
-                                          "HISTORICAL BOXOFFICE COUNT"],
-                         sort=[{"field": "next_event", "direction": "asc"}],
-                         time_horizon="30D")
-            save_monitor(conn, name="Festival Monitor",
-                         entity_type="FESTIVAL",
-                         watchlist_key_value=None,
-                         visible_columns=["FESTIVAL", "NEXT EDITION", "LINEUP COUNT",
-                                          "RETURNING ARTISTS", "NEWS"],
-                         time_horizon="90D")
-            save_monitor(conn, name="Tour Monitor",
-                         entity_type="TOUR",
-                         visible_columns=["TOUR", "ARTIST", "DATE RANGE",
-                                          "EVENT COUNT", "VENUES", "MARKETS"],
-                         time_horizon="90D")
-            conn.commit()
-            return {"status": "COMPLETE", "monitors": list_monitors(conn)}
+            from ..terminal import storage
+            ws = storage.create_workspace_db()
+            try:
+                save_monitor(ws, name="Artist Monitor",
+                             entity_type="ARTIST",
+                             watchlist_key_value=None,
+                             filters=[{"field": "next_event", "op": "not_null"}],
+                             visible_columns=["ARTIST", "NEXT EVENT", "NEXT FESTIVAL",
+                                              "NEXT ONSALE", "NEXT PRESALE", "MBID",
+                                              "SPOTIFY ID", "WIKIDATA ID",
+                                              "LISTENBRAINZ LISTEN COUNT",
+                                              "LISTENBRAINZ USER COUNT",
+                                              "WIKIMEDIA 7D", "WIKIMEDIA 30D",
+                                              "RECENT NEWS",
+                                              "HISTORICAL BOXOFFICE COUNT"],
+                             sort=[{"field": "next_event", "direction": "asc"}],
+                             time_horizon="30D")
+                save_monitor(ws, name="Festival Monitor",
+                             entity_type="FESTIVAL",
+                             watchlist_key_value=None,
+                             visible_columns=["FESTIVAL", "NEXT EDITION", "LINEUP COUNT",
+                                              "RETURNING ARTISTS", "NEWS"],
+                             time_horizon="90D")
+                save_monitor(ws, name="Tour Monitor",
+                             entity_type="TOUR",
+                             visible_columns=["TOUR", "ARTIST", "DATE RANGE",
+                                              "EVENT COUNT", "VENUES", "MARKETS"],
+                             time_horizon="90D")
+                return {"status": "COMPLETE", "monitors": list_monitors(ws)}
+            finally:
+                ws.close()
         _run("saved_monitors", _monitors)
 
         def _alerts():

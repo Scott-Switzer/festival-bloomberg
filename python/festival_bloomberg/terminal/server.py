@@ -55,8 +55,11 @@ def _count(conn, sql: str) -> int:
     return int(conn.execute(sql).fetchone()[0])
 
 
-def _data_coverage(conn) -> dict[str, Any]:
-    """DATA control-panel payload: coverage, attention, providers, quality."""
+def _data_coverage(conn, workspace_conn) -> dict[str, Any]:
+    """DATA control-panel payload: coverage, attention, providers, quality.
+
+    ``conn`` is the serving snapshot (evidence/system data); ``workspace_conn``
+    holds mutable analyst state (watchlists, monitors)."""
     return {
         "identity": {
             "canonical_artists": _count(conn, "SELECT COUNT(*) FROM core.artists"),
@@ -82,9 +85,9 @@ def _data_coverage(conn) -> dict[str, Any]:
             "wikimedia_rows": _count(conn, "SELECT COUNT(*) FROM metrics.artist_attention_observations WHERE source_system='wikimedia'"),
         },
         "product": {
-            "watchlists": _count(conn, "SELECT COUNT(*) FROM core.watchlists"),
-            "watchlist_items": _count(conn, "SELECT COUNT(*) FROM core.watchlist_items WHERE removed_at IS NULL"),
-            "monitors": _count(conn, "SELECT COUNT(*) FROM terminal.saved_monitors"),
+            "watchlists": _count(workspace_conn, "SELECT COUNT(*) FROM core.watchlists"),
+            "watchlist_items": _count(workspace_conn, "SELECT COUNT(*) FROM core.watchlist_items WHERE removed_at IS NULL"),
+            "monitors": _count(workspace_conn, "SELECT COUNT(*) FROM terminal.saved_monitors"),
             "alerts": _count(conn, "SELECT COUNT(*) FROM core.alerts WHERE status='ACTIVE'"),
             "tm_resolutions": _count(conn, "SELECT COUNT(*) FROM identity.ticketmaster_artist_resolutions"),
             "deprecated_columns": _count(conn, "SELECT COUNT(*) FROM core.deprecated_columns"),
@@ -195,7 +198,7 @@ class TerminalApp:
                 self.conn, limit=int(params.get("limit", 100)),
                 entity_key_value=params.get("entity_key")))
         if path == "/api/data":
-            return self._ok(_data_coverage(self.conn))
+            return self._ok(_data_coverage(self.conn, self.workspace_conn))
         if path == "/api/coverage":
             from ..intelligence.coverage_voi import coverage_dashboard
             return self._ok(coverage_dashboard(self.conn))
@@ -452,7 +455,7 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def make_app(
-    serving_db: str = storage.SERVING_DEFAULT_DB,
+    serving_db: str = storage.SERVING_DIR,
     workspace_db: str = storage.WORKSPACE_DEFAULT_DB,
 ) -> TerminalApp:
     """Build the terminal from a serving snapshot + workspace sidecar.
@@ -486,7 +489,7 @@ def serve(app: TerminalApp, port: int) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Festival Intelligence terminal")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
-    parser.add_argument("--serving-db", default=storage.SERVING_DEFAULT_DB)
+    parser.add_argument("--serving-db", default=storage.SERVING_DIR)
     parser.add_argument("--workspace-db", default=storage.WORKSPACE_DEFAULT_DB)
     args = parser.parse_args()
     serve(make_app(args.serving_db, args.workspace_db), args.port)

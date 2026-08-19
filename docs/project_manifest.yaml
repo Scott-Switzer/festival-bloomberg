@@ -42,7 +42,8 @@ milestones:
   TALENT_BUYER_WORKBENCH_V1: "PASS_WORKFLOW_RESEARCH_ONLY (PR #34 merged; BUILD/COMPARE SPA + scorecards + shortlists + scenario board + conflict warnings; dense data panel and comparable V2 remain)"
   DENSE_PRE_EVENT_DATA_PANEL_V1: "IN_PROGRESS (PR #35 draft; feature registry + PIT attention + competition + coverage/VOI semantics hardened; live venue/Wikimedia/competition pilots pending warehouse unlock)"
   DESIGN_PARTNER_DATA_ACTIVATION_V1: "PASS_ONBOARDING_INFRASTRUCTURE (PR #36 merged; one-command isolated partner preview CLI + breadth-gated readiness tiers + synthetic value curves + onboarding package)"
-  TERMINAL_SERVING_SNAPSHOT_V1: "IN_PROGRESS (PR #37 draft; serving snapshot + workspace sidecar so the terminal never locks canonical; concurrency acceptance tested)"
+  TERMINAL_SERVING_SNAPSHOT_V1: "IN_PROGRESS (PR #37 draft; immutable versioned snapshots + integrity contract + dedicated workspace schema + concurrency/generational acceptance tested; real 5.3GB publish pending)"
+  SHOW_ECONOMICS_WORKBENCH_V1: "SPEC_ONLY (deterministic show/offer economics research; not implemented)"
 
 providers:
   # status taxonomy: PUBLIC_NO_AUTH | AUTH_CONFIGURED | AUTH_MISSING |
@@ -82,6 +83,8 @@ docs:
   - design-partner-value-proposition.md
   - design-partner-target-profiles.md
   - terminal-serving-snapshot-v1.md
+  - terminal-storage-role-audit-v1.md
+  - show-economics-workbench-v1-spec.md
 
 key_commands:
   context: "PYTHONPATH=python .venv/bin/python -m festival_bloomberg.ops.context_snapshot"

@@ -816,15 +816,21 @@ def build_today(conn, workspace_conn=None, *, limit: int = 50) -> dict[str, Any]
 # ---------------------------------------------------------------------------
 # Default (system, user-editable) watchlists from deterministic real data
 # ---------------------------------------------------------------------------
-def create_default_watchlists(conn) -> dict[str, Any]:
+def create_default_watchlists(conn, workspace_conn=None) -> dict[str, Any]:
     """Ship clearly-marked USER-EDITABLE system watchlists derived from REAL
-    data (never hard-coded subjective talent recommendations)."""
+    data (never hard-coded subjective talent recommendations).
+
+    Evidence is read from ``conn`` (serving/canonical); watchlists are written
+    to ``workspace_conn`` (defaults to ``conn`` for single-DB callers).
+    """
+    if workspace_conn is None:
+        workspace_conn = conn
     created = []
 
     # Major festivals (from the festival spine). The list name does NOT claim
     # US scope because no reliable country filter exists on the spine yet
     # (raw.musicbrainz_place.area is a city/market, not a country).
-    fest_wl = create_watchlist(conn, name="Major Festivals",
+    fest_wl = create_watchlist(workspace_conn, name="Major Festivals",
                                description="Festival series from the MusicBrainz festival spine (global; geography not yet filtered)",
                                entity_type="FESTIVAL", is_system=True)
     created.append(fest_wl["name"])
@@ -836,11 +842,11 @@ def create_default_watchlists(conn) -> dict[str, Any]:
         """
     ).fetchall()
     for key, name in fest_rows:
-        add_watchlist_item(conn, watchlist_key_value=fest_wl["watchlist_key"],
+        add_watchlist_item(workspace_conn, watchlist_key_value=fest_wl["watchlist_key"],
                            entity_type="FESTIVAL", entity_key_value=key, entity_name=name)
 
     # Active tours (TOUR series with events in 2024+).
-    tour_wl = create_watchlist(conn, name="Active Tours",
+    tour_wl = create_watchlist(workspace_conn, name="Active Tours",
                                description="Tour series with events dated 2024 or later",
                                entity_type="TOUR", is_system=True)
     created.append(tour_wl["name"])
@@ -854,11 +860,11 @@ def create_default_watchlists(conn) -> dict[str, Any]:
         """
     ).fetchall()
     for key, name in tour_rows:
-        add_watchlist_item(conn, watchlist_key_value=tour_wl["watchlist_key"],
+        add_watchlist_item(workspace_conn, watchlist_key_value=tour_wl["watchlist_key"],
                            entity_type="TOUR", entity_key_value=key, entity_name=name)
 
     # High-activity artists (most event-performer relations in the graph).
-    artist_wl = create_watchlist(conn, name="High-Activity Artists",
+    artist_wl = create_watchlist(workspace_conn, name="High-Activity Artists",
                                  description="Artists with the most reference-graph event appearances",
                                  entity_type="ARTIST", is_system=True)
     created.append(artist_wl["name"])
@@ -871,7 +877,7 @@ def create_default_watchlists(conn) -> dict[str, Any]:
         """
     ).fetchall()
     for mbid, name, _n in artist_rows:
-        add_watchlist_item(conn, watchlist_key_value=artist_wl["watchlist_key"],
+        add_watchlist_item(workspace_conn, watchlist_key_value=artist_wl["watchlist_key"],
                            entity_type="ARTIST",
                            entity_key_value=f"mbid::{mbid}", entity_name=name)
 
