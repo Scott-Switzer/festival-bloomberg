@@ -267,8 +267,16 @@ def _persist_event_snapshot(conn, rec: dict[str, Any], retrieved_at: str,
     return True
 
 
-def _run_ticketmaster(conn, markets: tuple[tuple[str, str], ...], validate: bool) -> dict[str, Any]:
-    provider = TicketmasterProvider(transport=UrllibTransport())
+def _run_ticketmaster(
+    conn,
+    markets: tuple[tuple[str, str], ...],
+    validate: bool,
+    transport=None,
+) -> dict[str, Any]:
+    # Injectable transport: production uses UrllibTransport(), offline
+    # parity/experiment runs inject a scripted FakeTransport. Providers never
+    # talk to the network directly (see acquisition/transport.py).
+    provider = TicketmasterProvider(transport=transport or UrllibTransport())
     summary = {
         "status": "RUNNING",
         "configured": provider.configured(),
