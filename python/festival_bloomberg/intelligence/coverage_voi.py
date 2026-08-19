@@ -81,6 +81,27 @@ def _voi(coverage_gain: float, decision_importance: float, uniqueness: float,
     return round((coverage_gain * decision_importance * uniqueness * rights_usability) / cost, 3)
 
 
+def dense_panel_coverage(conn) -> dict[str, float]:
+    """Measured coverage for dense-panel feature families (registry probe).
+
+    Keys match feature_registry feature names so the registry can be admitted
+    against real measured coverage.
+    """
+    venues = _count(conn, "SELECT COUNT(*) FROM core.venues")
+    return {
+        "venue_capacity_band": (_count(conn, "SELECT COUNT(*) FROM core.venues WHERE capacity IS NOT NULL") +
+                                _count(conn, "SELECT COUNT(*) FROM economics.venue_capacity_claims")) / max(venues, 1),
+        "venue_coordinates": _count(conn, "SELECT COUNT(*) FROM core.venues WHERE latitude IS NOT NULL") / max(venues, 1),
+        "artist_attention_wikimedia_30d_at_cutoff": 0.0,  # historical PIT panel not yet built
+        "artist_attention_listenbrainz_30d_at_cutoff": 0.0,
+        "event_competition_same_day_market": 0.0,          # competition features not yet persisted
+        "event_competition_14d_market": 0.0,
+        "market_population_vintage": 0.0,                  # ACS vintages not yet ingested
+        "market_median_income_vintage": 0.0,
+        "tour_position": 0.0,
+    }
+
+
 def voi_ranking(conn) -> dict[str, Any]:
     """Deterministic top acquisition actions from MEASURED coverage gaps."""
     cov = coverage_dashboard(conn)
@@ -91,7 +112,24 @@ def voi_ranking(conn) -> dict[str, Any]:
     editions = cov["festivals"]["editions"]
     slots = cov["festivals"]["lineup_slots"]
 
+    dense = dense_panel_coverage(conn)
     candidates: list[dict[str, Any]] = [
+        {
+            "action": "build historical Wikimedia PIT attention panel (30d windows at cutoff)",
+            "coverage_gap": round(1.0 - dense["artist_attention_wikimedia_30d_at_cutoff"], 4),
+            "decision_importance": 0.85, "uniqueness": 0.8, "rights_usability": 0.9,
+            "engineering_cost": 5.0, "api_cost": 1.0, "rate_limit_cost": 2.0, "semantic_risk": 1.0,
+            "category": "attention",
+        },
+        {
+            "action": "persist event competition features (same-day / +-14d market counts)",
+            "coverage_gap": round(1.0 - dense["event_competition_same_day_market"], 4),
+            "decision_importance": 0.7, "uniqueness": 0.7, "rights_usability": 0.9,
+            "engineering_cost": 3.0, "api_cost": 0.0, "rate_limit_cost": 0.0, "semantic_risk": 3.0,
+            "category": "competition",
+            "note": "PIT knowability of competing events at cutoff is a real semantic risk",
+        },
+    ] + [
         {
             "action": "resolve venue capacity claims",
             "coverage_gap": round(1.0 - c["venue_capacity_pct"], 4),
