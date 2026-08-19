@@ -300,3 +300,42 @@ def test_venue_and_artist_coverage_by_target(tmp_path):
         assert e["TIME_HOLD_EVENTS"] == 2
     finally:
         repo.close()
+
+
+def test_venue_capacity_coverage_is_intersection_not_global(tmp_path):
+    repo = _fresh(tmp_path, "intersect.duckdb")
+    try:
+        # 5 global venues, all with capacity (but NOT in the TIME target set)
+        for i in range(5):
+            repo.conn.execute(
+                "INSERT INTO core.venues (venue_key, name, normalized_name, capacity) "
+                "VALUES (?, ?, ?, 1000)",
+                [f"g{i}", f"Global Venue {i}", f"global venue {i}"],
+            )
+        # 2 TIME venues; only 1 matches a seeded capacity venue
+        rows = [
+            {"engagement_id": "e1", "artist": "A", "venue": "Global Venue 0",
+             "folds": {"TIME": "TEST"}},
+            {"engagement_id": "e2", "artist": "B", "venue": "Unseeded Time Venue",
+             "folds": {"TIME": "TEST"}},
+        ]
+        cp = _write_corpus(tmp_path / "c.json", rows)
+        v = venue_coverage_by_target(repo.conn, corpus_path=cp)
+        time = v["BASELINE_TIME_TARGETS"]
+        assert time["total"] == 2
+        # only "Global Venue 0" is capacity-covered among TIME targets
+        assert time["capacity_count"] == 1
+        assert time["capacity_pct"] == 0.5      # 1/2, NOT 5/2 (old bug)
+        # a global covered venue outside the target set must NOT affect TIME coverage
+        assert time["coords_count"] == 0
+        assert time["coords_pct"] == 0.0
+        # every coverage fraction and numerator is within bounds
+        for key, row in v.items():
+            assert 0.0 <= row["capacity_pct"] <= 1.0, (key, row["capacity_pct"])
+            assert 0.0 <= row["coords_pct"] <= 1.0, (key, row["coords_pct"])
+            assert 0.0 <= row["canonical_match_pct"] <= 1.0, (key, row["canonical_match_pct"])
+            assert row["capacity_count"] <= row["total"]
+            assert row["coords_count"] <= row["total"]
+            assert row["canonical_match_count"] <= row["total"]
+    finally:
+        repo.close()

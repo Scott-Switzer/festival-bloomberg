@@ -90,6 +90,13 @@ def _match_rate(targets: set[str], covered: set[str]) -> float:
     return round(len(targets & covered) / len(targets), 4) if targets else 0.0
 
 
+def _pct(numerator: int, denominator: int) -> float:
+    """Clamped fraction in [0, 1]; 0.0 when the denominator is empty."""
+    if denominator <= 0:
+        return 0.0
+    return min(1.0, max(0.0, round(numerator / denominator, 4)))
+
+
 def _venue_capacity_covered(conn) -> set[str]:
     """Distinct venue names with any admissible capacity observation."""
     names: set[str] = set()
@@ -125,37 +132,44 @@ def venue_coverage_by_target(conn, corpus_path: str | None = None) -> dict[str, 
     """Venue coverage over the admission denominators.
 
     GLOBAL / TOP100 / FESTIVAL come from the warehouse; BASELINE and TIME come
-    from the corpus. Each reports distinct-venue totals plus capacity and
-    coordinate coverage fractions.
+    from the corpus. For EVERY denominator the capacity/coordinate numerator is
+    the INTERSECTION of that target set with the covered set — never the global
+    covered count divided by the target total.
     """
     targets = load_baseline_targets(corpus_path)
     all_venues = _venue_names(conn)
     cap = _venue_capacity_covered(conn)
     coords = _venue_coords_covered(conn)
 
-    def _row(name: str, total: int, matched: int) -> dict[str, Any]:
+    def _row(name: str, target_set: set[str]) -> dict[str, Any]:
+        total = len(target_set)
+        matched = target_set & all_venues
+        cap_cov = target_set & cap
+        coords_cov = target_set & coords
         return {
+            "name": name,
             "total": total,
-            "matched": matched,
-            "match_pct": round(matched / total, 4) if total else 0.0,
-            "capacity_pct": round(len(cap) / total, 4) if total else 0.0,
-            "coords_pct": round(len(coords) / total, 4) if total else 0.0,
+            "canonical_match_count": len(matched),
+            "canonical_match_pct": _pct(len(matched), total),
+            # backward-compatible aliases
+            "matched": len(matched),
+            "match_pct": _pct(len(matched), total),
+            "capacity_count": len(cap_cov),
+            "capacity_pct": _pct(len(cap_cov), total),
+            "coords_count": len(coords_cov),
+            "coords_pct": _pct(len(coords_cov), total),
         }
 
     out = {
-        "GLOBAL_CANONICAL_VENUES": _row("GLOBAL_CANONICAL_VENUES", len(all_venues), len(all_venues)),
-        "BASELINE_ALL_TARGETS": _row(
-            "BASELINE_ALL_TARGETS", len(targets["venues_all"]),
-            len(targets["venues_all"] & all_venues)),
-        "BASELINE_TIME_TARGETS": _row(
-            "BASELINE_TIME_TARGETS", len(targets["venues_time"]),
-            len(targets["venues_time"] & all_venues)),
+        "GLOBAL_CANONICAL_VENUES": _row("GLOBAL_CANONICAL_VENUES", all_venues),
+        "BASELINE_ALL_TARGETS": _row("BASELINE_ALL_TARGETS", targets["venues_all"]),
+        "BASELINE_TIME_TARGETS": _row("BASELINE_TIME_TARGETS", targets["venues_time"]),
     }
     # TOP-100 venues by distinct event count (via provider snapshots, name-matched)
     top100 = _top_venues_by_event_count(conn, 100)
-    out["TOP_100_EVENT_VENUES"] = _row("TOP_100_EVENT_VENUES", len(top100), len(top100 & all_venues))
+    out["TOP_100_EVENT_VENUES"] = _row("TOP_100_EVENT_VENUES", top100)
     festival = _festival_venues(conn)
-    out["MAJOR_FESTIVAL_VENUES"] = _row("MAJOR_FESTIVAL_VENUES", len(festival), len(festival & all_venues))
+    out["MAJOR_FESTIVAL_VENUES"] = _row("MAJOR_FESTIVAL_VENUES", festival)
     return out
 
 
