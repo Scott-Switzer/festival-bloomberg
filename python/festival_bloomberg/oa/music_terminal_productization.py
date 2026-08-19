@@ -215,7 +215,13 @@ def extract_industry_identifiers(conn, *, knowledge_time: str | None = None) -> 
                 )
                 summary["url_rows"] += 1
             elif utype == "youtube":
-                yid = resource.rsplit("/", 1)[-1]
+                # Only REAL channel identifiers are extracted — never arbitrary
+                # path fragments. YouTube page sub-paths like /featured,
+                # /videos, /about, /feed, /playlists or the bare domain carry
+                # NO channel identity and must not become an external ID.
+                yid = _extract_youtube_channel_id(resource)
+                if not yid:
+                    continue
                 ekey = hashlib_external("youtube", yid, artist_key)
                 conn.execute(
                     """
@@ -258,6 +264,81 @@ def extract_industry_identifiers(conn, *, knowledge_time: str | None = None) -> 
             summary["corroborated"] += 1
     summary["status"] = "COMPLETE"
     return summary
+
+
+def audit_external_id_collisions(conn, *, knowledge_time: str | None = None) -> dict[str, Any]:
+    """Persist GENUINE provider-ID collisions as identity conflicts.
+
+    A provider external ID that maps to more than one canonical artist is an
+    identity disagreement — never silently ignored and never auto-resolved.
+    Junk/non-identifier values (e.g. historical youtube path fragments) are
+    skipped. Idempotent via conflict_key.
+    """
+    knowledge_time = knowledge_time or datetime.now(timezone.utc).isoformat()
+    collisions = conn.execute(
+        """
+        SELECT id_type, id_value,
+               array_agg(DISTINCT entity_key ORDER BY entity_key) AS keys
+        FROM core.entity_external_ids
+        WHERE entity_type = 'artist'
+          AND id_type IN ('ticketmaster', 'spotify', 'musicbrainz', 'wikidata',
+                          'youtube', 'apple_music', 'bandcamp', 'discogs')
+          AND id_value IS NOT NULL AND id_value != ''
+        GROUP BY id_type, id_value
+        HAVING COUNT(DISTINCT entity_key) > 1
+        """
+    ).fetchall()
+    persisted = 0
+    skipped_junk = 0
+    for id_type, id_value, keys in collisions:
+        keys = [k for k in keys]
+        if len(keys) < 2:
+            continue
+        if id_type == "youtube" and (
+            not id_value.startswith(("UC", "@")) or "/" in id_value
+        ):
+            skipped_junk += 1
+            continue
+        issue = f"{id_type} id '{id_value}' resolves to multiple canonical artists"
+        import hashlib
+        conflict_key = hashlib.sha256(
+            f"{id_type}|{id_value}|{keys[0]}|{keys[1]}".encode("utf-8")
+        ).hexdigest()[:32]
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO core.identity_conflicts
+                (conflict_key, entity_type, entity_key, provider_a, provider_b,
+                 value_a, value_b, issue, resolution_status, observed_at, ingested_at)
+            VALUES (?, 'ARTIST', ?, ?, ?, ?, ?, ?, 'UNRESOLVED', ?, now())
+            """,
+            [conflict_key, keys[0], "entity_external_ids", id_type,
+             id_value, ",".join(keys), issue, knowledge_time],
+        )
+        persisted += 1
+    return {"collisions_found": len(collisions), "conflicts_persisted": persisted,
+            "skipped_junk": skipped_junk}
+
+
+def _extract_youtube_channel_id(resource: str) -> str | None:
+    """Real YouTube channel identifier from an MB youtube URL, else None.
+
+    Accepts only: /channel/UC..., /@handle, /user/name, and bare channel
+    handles (``youtube.com/@Name``). Rejects page fragments (featured,
+    videos, about, feed, playlists), search/embed paths, and the bare domain.
+    """
+    import re as _re
+    path = resource.split("?", 1)[0].rstrip("/")
+    if "/channel/" in path:
+        yid = path.rsplit("/channel/", 1)[-1]
+        if _re.fullmatch(r"UC[\w-]{10,}", yid):
+            return yid
+    m = _re.search(r"/(@[\w.-]{2,})/?$", path)
+    if m:
+        return m.group(1)
+    m = _re.search(r"/user/([\w.-]{2,})/?$", path)
+    if m:
+        return m.group(1)
+    return None
 
 
 def hashlib_external(namespace: str, value: str, entity_key: str) -> str:

@@ -129,6 +129,117 @@ def test_dj_khaled_not_rejected():
 
 def test_tribute_act_classified():
     assert classify_special("Tribute to Queen") == "TRIBUTE_ACT"
+    assert classify_special("Rumours of Fleetwood Mac") == "TRIBUTE_ACT"
+    assert classify_special("Rage UK – A Tribute to Rage Against the Machine") == "TRIBUTE_ACT"
+
+
+def test_cover_band_classified():
+    assert classify_special("Lana Del Rey Karaoke Band") == "COVER_BAND"
+
+
+def test_weak_signals_do_not_reject_real_artists():
+    # Collaboration billing and orchestra/symphony are WEAK features: real
+    # artists legitimately named "Dead & Company" or an orchestra must not
+    # be rejected by name heuristics alone.
+    assert classify_special("Dead & Company") is None  # real band name, untouched
+    assert "SPECIAL_EVENT" not in __import__(
+        "festival_bloomberg.identity.ticketmaster_resolution",
+        fromlist=["REJECT_SPECIALS"],
+    ).REJECT_SPECIALS
+    assert "COLLABORATION_BILLING" not in __import__(
+        "festival_bloomberg.identity.ticketmaster_resolution",
+        fromlist=["REJECT_SPECIALS"],
+    ).REJECT_SPECIALS
+
+
+def test_dj_khaled_still_plain_artist():
+    assert classify_special("DJ Khaled") is None
+
+
+# ---------------------------------------------------------------------------
+# External-ID collision ledger + YouTube channel extraction
+# ---------------------------------------------------------------------------
+from festival_bloomberg.oa.music_terminal_productization import (  # noqa: E402
+    _extract_youtube_channel_id,
+    audit_external_id_collisions,
+)
+
+
+def test_youtube_extraction_rejects_path_fragments():
+    assert _extract_youtube_channel_id("https://www.youtube.com/channel/UCewJbjHlk3iXNanury7vw9g") == "UCewJbjHlk3iXNanury7vw9g"
+    assert _extract_youtube_channel_id("https://www.youtube.com/@billieeilish") == "@billieeilish"
+    assert _extract_youtube_channel_id("https://www.youtube.com/featured") is None
+    assert _extract_youtube_channel_id("https://www.youtube.com/videos") is None
+    assert _extract_youtube_channel_id("https://www.youtube.com/") is None
+
+
+def test_external_id_collisions_persist_as_conflicts(tmp_path):
+    repo = FestivalRepository(str(tmp_path / "col.duckdb"))
+    try:
+        EventRepository(repo.conn)
+        for key in ("mbid::a", "mbid::b"):
+            repo.conn.execute(
+                """
+                INSERT INTO core.artists (artist_key, musicbrainz_id, name, normalized_name)
+                VALUES (?, ?, 'Artist', 'artist')
+                """,
+                [key, key.removeprefix("mbid::")],
+            )
+        for key in ("mbid::a", "mbid::b"):
+            repo.conn.execute(
+                """
+                INSERT INTO core.entity_external_ids
+                    (external_id_key, entity_type, entity_key, id_type, id_value,
+                     url, is_primary, confidence, source_system, namespace,
+                     resolution_status, resolution_method, first_seen_at, last_seen_at,
+                     knowledge_time, ingested_at)
+                VALUES (?, 'artist', ?, 'wikidata', 'Q12345', 'https://www.wikidata.org/wiki/Q12345',
+                        FALSE, 1.0, 'musicbrainz', 'wikidata', 'CROWD_CURATED_REFERENCE',
+                        'mb_url_relationship', now(), now(), now(), now())
+                """,
+                [f"ek::{key}", key],
+            )
+        res = audit_external_id_collisions(repo.conn)
+        assert res["conflicts_persisted"] == 1
+        rows = repo.conn.execute(
+            "SELECT entity_key, issue FROM core.identity_conflicts"
+        ).fetchall()
+        assert len(rows) == 1
+        assert "Q12345" in rows[0][1]
+    finally:
+        repo.close()
+
+
+def test_tribute_act_not_merged_into_real_band(tmp_path):
+    """A tribute act that shares its name with a real band must be rejected,
+    never merged into that band (false-merge is the worst failure mode)."""
+    from festival_bloomberg.identity.ticketmaster_resolution import resolve_attraction
+    repo = FestivalRepository(str(tmp_path / "trib.duckdb"))
+    try:
+        EventRepository(repo.conn)
+        # Real band "Fleetwood Mac" exists in the canonical master.
+        repo.conn.execute(
+            """
+            INSERT INTO core.artists (artist_key, musicbrainz_id, name, normalized_name)
+            VALUES ('mbid::fleetwood', 'bd13909f-1c29-4c27-a874-d4aaf27c5b1a',
+                    'Fleetwood Mac', 'fleetwood mac')
+            """
+        )
+        # "Rumours of Fleetwood Mac" is a tribute act: must NOT map to the band.
+        result = resolve_attraction(
+            repo.conn, attraction_name="Rumours of Fleetwood Mac",
+            knowledge_time="2026-08-18T00:00:00+00:00")
+        assert result["resolution_status"] == "REJECTED_NON_ARTIST"
+        assert result.get("special_classification") == "TRIBUTE_ACT"
+        assert result.get("artist_key") is None
+        # And the real band still resolves to itself.
+        real = resolve_attraction(
+            repo.conn, attraction_name="Fleetwood Mac",
+            knowledge_time="2026-08-18T00:00:00+00:00")
+        assert real["resolution_status"] == "MATCHED_ARTIST"
+        assert real.get("artist_key") == "mbid::fleetwood"
+    finally:
+        repo.close()
 
 
 def test_presale_signature_diff():

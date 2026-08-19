@@ -37,8 +37,8 @@ SPECIAL_SIGNALS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bpresents\b|presents$", re.I), "PRESENTATION"),
     (re.compile(r"\b& .*\b", re.I), "COLLABORATION_BILLING"),
     (re.compile(r"\band .*\b", re.I), "COLLABORATION_BILLING"),
-    (re.compile(r"\btribute\b", re.I), "TRIBUTE_ACT"),
-    (re.compile(r"\bcover\b", re.I), "COVER_BAND"),
+    (re.compile(r"\btribute\b|\brumou?rs of\b", re.I), "TRIBUTE_ACT"),
+    (re.compile(r"\bcover\b|\bkaraoke\b", re.I), "COVER_BAND"),
     (re.compile(r"\bdj set\b|\bdj night\b|\blive set\b", re.I), "DJ_EVENT"),
     (re.compile(r"\bcomedy\b|\bcomedian\b", re.I), "COMEDIAN"),
     (re.compile(r"\bnight\b|\bparty\b", re.I), "DANCE_PARTY"),
@@ -59,6 +59,17 @@ def classify_special(attraction_name: str) -> str | None:
         if pattern.search(attraction_name):
             return kind
     return None
+
+
+#: Special classifications that REJECT a plain-artist match outright.
+#: COLLABORATION_BILLING, DANCE_PARTY, and SPECIAL_EVENT stay WEAK features
+#: (a real band can legitimately be named "Dead & Company" and a real act can
+#: be an orchestra — e.g. Trans-Siberian Orchestra), while these strongly
+#: imply a package/event/tribute rather than a single artist identity.
+REJECT_SPECIALS = {
+    "FESTIVAL_NAME", "TOUR_PACKAGE", "PRESENTATION", "TRIBUTE_ACT",
+    "COVER_BAND", "COMEDIAN", "DJ_EVENT",
+}
 
 
 def is_plain_artist_name(name: str) -> bool:
@@ -211,7 +222,8 @@ def resolve_attraction(
     normalized = normalize_name(attraction_name)
     special = classify_special(attraction_name)
 
-    # A. exact external ID mapping.
+    # A. exact external ID mapping (explicit identity truth wins over name
+    #    heuristics — a mapped attraction id is a hard fact).
     if attraction_id:
         row = conn.execute(
             """
@@ -231,6 +243,19 @@ def resolve_attraction(
                 "match_features": {"attraction_id": attraction_id},
                 "special_classification": special,
             }
+
+    # A.5 Strong non-artist signals REJECT a plain-artist match before any
+    #     name-based ladder runs (a tribute act that shares its name with a
+    #     real band must never be merged into that band).
+    if special in REJECT_SPECIALS:
+        return {
+            "resolution_status": "REJECTED_NON_ARTIST",
+            "match_method": None,
+            "artist_key": None, "artist_mbid": None, "matched_name": None,
+            "match_similarity": None,
+            "match_features": {"special_classification": special},
+            "special_classification": special,
+        }
 
     # B. existing canonical mapping by normalized name.
     canonical = _mb_exact_name_candidates(conn, normalized)
@@ -422,71 +447,153 @@ def resolve_attraction_universe(
 
 
 # ---------------------------------------------------------------------------
-# Identity QA (phase 14): a deterministic sample + honest metrics.
+# Identity QA (phase 14): MBID-ground-truth sample + honest metrics.
 # ---------------------------------------------------------------------------
-QA_SAMPLE = [
-    ("Bruce Springsteen", "Bruce Springsteen"),          # plain exact
-    ("The E Street Band", "E Street Band"),              # leading-the normalization
-    ("Die Ärzte", "Die Ärzte"),                          # diacritics preserved
-    ("KISS", "KISS"),                                    # common-word band name
-    ("“Weird Al” Yankovic", "Weird Al Yankovic"),        # punctuation
-    ("Trans‐Siberian Orchestra", "Trans-Siberian Orchestra"),  # unicode dash
-    ("Taylor Swift", "Taylor Swift"),
-    ("Bad Bunny", "Bad Bunny"),
-    ("Billie Eilish", "Billie Eilish"),
-    ("Coachella Music Festival", None),                  # festival name -> special
-    ("Aerosmith & Journey Tour", None),                  # tour package / collab
-    ("DJ Khaled", "DJ Khaled"),                          # DJ artist (plain)
-    ("Tribute to Queen", None),                          # tribute act
+# Positive cases carry the EXPECTED MUSICBRAINZ MBID (real identity truth,
+# taken from the local reference estate — never name equality). Negative
+# cases expect a non-artist classification. Categories cover same-name
+# artists, diacritics, punctuation, aliases, DJs, orchestras, international
+# names, tribute acts, tour packages, festival names, collaboration
+# billings, and common-word band names.
+# MBID ground truth is the identity ACTUALLY used by MusicBrainz event
+# performer relations (core.event_performers) — the real live-performance
+# identity, not an arbitrary name match from the 2.2M reference estate.
+QA_SAMPLE: list[tuple[str, str | None, str]] = [
+    # -- major artists (MBID verified against core.event_performers)
+    ("Bruce Springsteen", "70248960-cb53-4ea4-943a-edb18f7d336f", "major_artist"),
+    ("The E Street Band", "d6652e7b-33fe-49ef-8336-4c863b4f996f", "leading_the"),
+    ("Taylor Swift", "20244d07-534f-4eff-b4d4-930878889970", "major_artist"),
+    ("Bad Bunny", "89aa5ecb-59ad-46f5-b3eb-2d424e941f19", "major_artist"),
+    ("Billie Eilish", "f4abc0b5-3f7a-4eff-8f78-ac078dbce533", "major_artist"),
+    ("Peso Pluma", "75e4f8ef-34c3-44fd-8467-88a7d9599f77", "international"),
+    ("Alicia Keys", "8ef1df30-ae4f-4dbd-9351-1a32b208a01e", "major_artist"),
+    ("Metallica", "65f4f0c5-ef9e-490c-aee3-909e7ae6b2ab", "major_artist"),
+    ("Beyoncé", "859d0860-d480-4efd-970c-c05d5f1776b8", "diacritics"),
+    ("Drake", "9fff2f8a-21e6-47de-a2b8-7f449929d43f", "common_word"),
+    ("The Weeknd", "c8b03190-306c-4120-bb0b-6f2ebfc06ea9", "major_artist"),
+    ("Kendrick Lamar", "381086ea-f511-4aba-bdf9-71c753dc5077", "major_artist"),
+    ("Ed Sheeran", "b8a7c51f-362c-4dcb-a259-bc6e0095f0a6", "major_artist"),
+    ("Coldplay", "cc197bad-dc9c-440d-a5b5-d52ba2e14234", "major_artist"),
+    ("Red Hot Chili Peppers", "8bfac288-ccc5-448d-9573-c33ea2aa5c30", "major_artist"),
+    ("Foo Fighters", "67f66c07-6e61-4026-ade5-7e782fad3a5d", "major_artist"),
+    ("Pearl Jam", "83b9cbe7-9857-49e2-ab8e-b57b01038103", "major_artist"),
+    ("U2", "a3cb23fc-acd3-4ce0-8f36-1e5aa6a18432", "common_word"),
+    ("The Rolling Stones", "b071f9fa-14b0-4217-8e97-eb41da73f598", "major_artist"),
+    ("Queen", "0383dadf-2a4e-4d10-a46a-e9e041da8eb3", "common_word"),
+    ("AC/DC", "66c662b6-6e2f-4930-8610-912e24c63ed1", "punctuation"),
+    ("Lady Gaga", "650e7db6-b795-4eb5-a702-5ea2fc46c848", "major_artist"),
+    ("Adele", "cc2c9c3c-b7bc-4b8b-84d8-4fbd8779e493", "major_artist"),
+    ("Post Malone", "b1e26560-60e5-4236-bbdb-9aa5a8d5ee19", "major_artist"),
+    ("Travis Scott", "e4a51f17-a57b-47b1-b37b-f552d0f8e9e6", "major_artist"),
+    ("Sabrina Carpenter", "1882fe91-cdd9-49c9-9956-8e06a3810bd4", "major_artist"),
+    ("Chappell Roan", "56a55378-f155-48de-80a5-d80104221267", "major_artist"),
+    ("Dua Lipa", "6f1a58bf-9b1b-49cf-a44a-6cefad7ae04f", "major_artist"),
+    ("Olivia Rodrigo", "6925db17-f35e-42f3-a4eb-84ee6bf5d4b0", "major_artist"),
+    ("Miley Cyrus", "7e9bd05a-117f-4cce-87bc-e011527a8b18", "major_artist"),
+    ("Bruno Mars", "afb680f2-b6eb-4cd7-a70b-a63b25c763d5", "major_artist"),
+    ("The Killers", "95e1ead9-4d31-4808-a7ac-32c3614c116b", "major_artist"),
+    ("Imagine Dragons", "012151a8-0f9a-44c9-997f-ebd68b5389f9", "major_artist"),
+    ("Maroon 5", "0ab49580-c84f-44d4-875f-d83760ea2cfe", "major_artist"),
+    ("Phish", "e01646f2-2a04-450d-8bf2-0d993082e058", "major_artist"),
+    ("Dead & Company", "94f8947c-2d9c-4519-bcf9-6d11a24ad006", "punctuation"),
+    ("Billy Strings", "640db492-34c4-47df-be14-96e2cd4b9fe4", "major_artist"),
+    ("Zach Bryan", "51e90731-08c0-4f60-89b6-5b78e5844de8", "major_artist"),
+    ("Morgan Wallen", "2077273e-eaa1-4f49-903c-f286ededecb9", "major_artist"),
+    ("Luke Combs", "c20ee61f-071f-4e65-9c81-45ee931a54ce", "major_artist"),
+    ("Stevie Nicks", "b7f2cca2-72c6-41fb-ae33-53370fc62fe7", "solo_group"),
+    ("Fleetwood Mac", "bd13909f-1c29-4c27-a874-d4aaf27c5b1a", "legacy_group"),
+    ("Oasis", "39ab1aed-75e0-4140-bd47-540276886b60", "common_word"),
+    ("Rage Against the Machine", "3798b104-01cb-484c-a3b0-56adc6399b80", "major_artist"),
+    ("Nine Inch Nails", "b7ffd2af-418f-4be2-bdd1-22f8b48613da", "major_artist"),
+    ("Kacey Musgraves", "d1393ecb-431b-4fde-a6ea-d769f2f040cb", "major_artist"),
+    ("Noah Kahan", "a2a3f910-b188-43e7-81d0-f1ac2a2f3e12", "major_artist"),
+    ("Lana Del Rey", "b7539c32-53e7-4908-bda3-81449c367da6", "major_artist"),
+    ("Fred again..", "bca46a0c-25c9-42ca-98c2-e64c8a5e337e", "punctuation"),
+    ("DJ Khaled", "081a2d60-9791-4e05-a075-f1890355eeee", "dj_artist"),
+    ("Die Ärzte", "f2fb0ff0-5679-42ec-a55c-15109ce6e320", "diacritics"),
+    ("KISS", "e1f1e33e-2e4c-4d43-b91b-7064068d3283", "common_word"),
+    ("Tyler, The Creator", "f6beac20-5dfe-4d1f-ae02-0b0a740aafd6", "punctuation"),
+    # -- non-artist / package / special cases: expect NO plain-artist match
+    ("Coachella Music Festival", None, "festival_name"),
+    ("Aerosmith & Journey Tour", None, "tour_package"),
+    ("Tribute to Queen", None, "tribute_act"),
+    ("Rumours of Fleetwood Mac", None, "tribute_act"),
+    ("Rage UK – A Tribute to Rage Against the Machine", None, "tribute_act"),
+    ("Lana Del Rey Karaoke Band", None, "tribute_act"),
 ]
 
 
 def run_identity_qa(conn, *, knowledge_time: str | None = None) -> dict[str, Any]:
-    """Deterministic QA over the sample pairs; reports precision-like metrics.
+    """Deterministic MBID-ground-truth QA over the labeled sample.
 
-    A sample item is counted correct when the resolution is MATCHED_ARTIST
-    with the expected MBID/name, or when a special attraction is correctly
-    classified as non-artist (REJECTED/AMBIGUOUS).
+    Identity truth is the EXPECTED MUSICBRAINZ MBID, never name equality:
+    a positive case counts correct only when the resolution returns
+    MATCHED_ARTIST with that exact MBID. A negative (special) case counts
+    correct only when the attraction is NOT matched as a plain artist.
+
+    Metrics: TP / FP / TN / FN, precision, recall, false-positive rate,
+    ambiguous rate, unmatched rate. PRECISION is the acceptance metric —
+    a false merge is worse than UNKNOWN.
     """
     knowledge_time = knowledge_time or datetime.now(timezone.utc).isoformat()
     results = []
-    correct = 0
-    total = len(QA_SAMPLE)
-    for name, expected in QA_SAMPLE:
+    tp = fp = tn = fn = 0
+    ambiguous = unmatched = 0
+    for name, expected_mbid, category in QA_SAMPLE:
         result = resolve_attraction(
             conn, attraction_name=name, knowledge_time=knowledge_time
         )
-        if expected is None:
-            # Special/non-artist: correct when NOT matched as a plain artist.
-            ok = result["resolution_status"] in ("REJECTED_NON_ARTIST", "AMBIGUOUS", "NO_MATCH") \
-                and result.get("special_classification") is not None
+        status = result["resolution_status"]
+        got_mbid = result.get("artist_mbid")
+        if expected_mbid is None:
+            # Negative case: correct when NOT matched as a plain artist.
+            ok = status in ("REJECTED_NON_ARTIST", "AMBIGUOUS", "NO_MATCH")
+            if ok:
+                tn += 1
+            else:
+                fp += 1
         else:
-            # Verify the resolved identity actually IS the expected artist,
-            # not merely that *some* artist matched: compare the returned
-            # canonical name against the expected name.
-            ok = (
-                result["resolution_status"] == "MATCHED_ARTIST"
-                and result.get("matched_name") is not None
-                and normalize_name(str(result["matched_name"])) == normalize_name(expected)
-            )
-        if ok:
-            correct += 1
+            if status == "MATCHED_ARTIST" and got_mbid == expected_mbid:
+                tp += 1
+                ok = True
+            elif status == "MATCHED_ARTIST":
+                fp += 1  # matched, but to the WRONG identity
+                ok = False
+            elif status == "AMBIGUOUS":
+                ambiguous += 1
+                ok = False
+            else:
+                fn += 1  # NO_MATCH / REJECTED for an artist that should match
+                ok = False
+        if not ok and status == "NO_MATCH":
+            unmatched += 1
         results.append({
             "attraction_name": name,
-            "expected": expected,
-            "status": result["resolution_status"],
+            "category": category,
+            "expected_mbid": expected_mbid,
+            "status": status,
             "method": result.get("match_method"),
             "matched_name": result.get("matched_name"),
-            "artist_mbid": result.get("artist_mbid"),
+            "artist_mbid": got_mbid,
             "correct": ok,
         })
-    precision = correct / total if total else 0.0
+    total_pos = sum(1 for _, e, _ in QA_SAMPLE if e is not None)
+    total_neg = len(QA_SAMPLE) - total_pos
+    precision = tp / (tp + fp) if (tp + fp) else 0.0
+    recall = tp / total_pos if total_pos else 0.0
+    fpr = fp / total_neg if total_neg else 0.0
     return {
-        "sample_size": total,
-        "reviewed": total,
-        "correct": correct,
+        "sample_size": len(QA_SAMPLE),
+        "positive_cases": total_pos,
+        "negative_cases": total_neg,
+        "tp": tp, "fp": fp, "tn": tn, "fn": fn,
+        "ambiguous": ambiguous,
+        "unmatched": unmatched,
         "precision": round(precision, 4),
-        "false_positive_rate": round(1.0 - precision, 4) if total else 0.0,
+        "recall": round(recall, 4),
+        "false_positive_rate": round(fpr, 4),
+        "ambiguous_rate": round(ambiguous / len(QA_SAMPLE), 4) if QA_SAMPLE else 0.0,
+        "unmatched_rate": round(unmatched / len(QA_SAMPLE), 4) if QA_SAMPLE else 0.0,
         "by_status": {},
         "results": results,
     }
