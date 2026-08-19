@@ -147,17 +147,22 @@ def _candidate_from_boxoffice(conn, *, limit: int) -> list[dict[str, Any]]:
 
 
 def build_candidate_universe(
-    conn, *, project_key: str, market: str | None = None, limit: int = 200,
+    conn, workspace_conn=None, *, project_key: str, market: str | None = None,
+    limit: int = 200,
 ) -> dict[str, Any]:
     """Assemble the deterministic candidate universe for a project.
 
-    Sources run independently; candidates are merged by normalized name and
-    every inclusion reason is recorded with its evidence. Availability stays
-    UNKNOWN until evidence exists.
+    Evidence is read from ``conn`` (serving snapshot) while projects,
+    candidates and the watchlist are read/written in ``workspace_conn``.
+    When ``workspace_conn`` is omitted (single-DB tests), both roles share
+    ``conn``. Availability stays UNKNOWN until evidence exists.
     """
     from .repository import add_candidate, get_project
 
-    project = get_project(conn, project_key)
+    if workspace_conn is None:
+        workspace_conn = conn
+
+    project = get_project(workspace_conn, project_key)
     if project is None:
         raise ValueError(f"unknown project {project_key}")
     market = market or project.get("market")
@@ -167,7 +172,7 @@ def build_candidate_universe(
         ("RECENT_FESTIVAL_ARTIST", _candidate_from_event_performers(conn, limit=limit)),
         ("TOURING_IN_REGION", _candidate_from_upcoming(conn, market=market, limit=limit)),
         ("ATTENTION_MOMENTUM", _candidate_from_attention(conn, limit=limit)),
-        ("WATCHLIST_TARGET", _candidate_from_watchlist(conn, limit=limit)),
+        ("WATCHLIST_TARGET", _candidate_from_watchlist(workspace_conn, limit=limit)),
         ("COMPARABLE_TO_PRIOR_BOOKING", _candidate_from_boxoffice(conn, limit=limit)),
     ]
     for reason, rows in sources:
@@ -191,7 +196,7 @@ def build_candidate_universe(
     added = []
     for nkey, entry in sorted(merged.items(), key=lambda kv: kv[1]["evidence"], reverse=True):
         res = add_candidate(
-            conn, project_key=project_key, artist_key=entry["artist_key"],
+            workspace_conn, project_key=project_key, artist_key=entry["artist_key"],
             artist_name=entry["name"], musicbrainz_id=entry.get("musicbrainz_id"),
             inclusion_reasons=entry["reasons"],
         )

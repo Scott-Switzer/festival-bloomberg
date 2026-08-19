@@ -1101,6 +1101,41 @@ def cmd_partner_value(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_terminal_publish(args: argparse.Namespace) -> int:
+    """Publish a consistent serving snapshot from canonical storage."""
+    import json
+
+    from ..terminal import storage
+
+    serving_path = args.serving or storage.SERVING_DEFAULT_DB
+    manifest = storage.publish_snapshot(
+        args.canonical,
+        snapshot_path=serving_path,
+        snapshot_id=args.snapshot_id,
+    )
+    print(json.dumps(manifest, indent=2, default=str))
+    print(f"Serving snapshot published: {serving_path}")
+    print(f"  tables={manifest['table_count']} rows={manifest['total_rows']}")
+    return 0
+
+
+def cmd_terminal_migrate(args: argparse.Namespace) -> int:
+    """One-time import of existing user state from canonical into workspace."""
+    import json
+
+    from ..terminal import storage
+
+    workspace_path = args.workspace or storage.WORKSPACE_DEFAULT_DB
+    workspace_conn = storage.create_workspace_db(workspace_path)
+    try:
+        migrated = storage.migrate_workspace_state(args.canonical, workspace_conn)
+    finally:
+        workspace_conn.close()
+    print(json.dumps({"workspace_db": workspace_path, "migrated_tables": migrated}, indent=2))
+    print("Canonical history NOT deleted — only copied into workspace.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="festival")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1306,6 +1341,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     pvalue = partner_sub.add_parser("value", help="synthetic structural value curves")
     pvalue.set_defaults(handler=cmd_partner_value)
+
+    terminal = sub.add_parser("terminal", help="terminal serving-snapshot maintenance")
+    terminal_sub = terminal.add_subparsers(dest="terminal_command", required=True)
+    publish = terminal_sub.add_parser("publish-snapshot", help="publish canonical -> serving snapshot")
+    publish.add_argument("--canonical", required=True, help="canonical warehouse path")
+    publish.add_argument("--serving", default=None, help="output serving snapshot path")
+    publish.add_argument("--snapshot-id", default=None)
+    publish.set_defaults(handler=cmd_terminal_publish)
+    migrate = terminal_sub.add_parser("migrate-workspace", help="copy existing user state canonical -> workspace")
+    migrate.add_argument("--canonical", required=True)
+    migrate.add_argument("--workspace", default=None)
+    migrate.set_defaults(handler=cmd_terminal_migrate)
 
     labels = sub.add_parser("labels", help="deterministic human-labeling exports")
     labels_sub = labels.add_subparsers(dest="labels_command", required=True)

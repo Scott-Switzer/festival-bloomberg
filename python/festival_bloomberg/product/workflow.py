@@ -611,26 +611,39 @@ def _identity_conflicts(conn, limit: int) -> list[dict[str, Any]]:
     return [dict(zip([c[0] for c in conn.description], r)) for r in rows]
 
 
-def build_today(conn, *, limit: int = 50) -> dict[str, Any]:
+def build_today(conn, workspace_conn=None, *, limit: int = 50) -> dict[str, Any]:
     """TODAY: sections for watchlist, ticketing, catalysts, attention, live
-    market, and data health. Channels stay separate; no urgency scores."""
+    market, and data health. Channels stay separate; no urgency scores.
+
+    ``conn`` is the serving snapshot (alerts, news, evidence);
+    ``workspace_conn`` holds the watchlist. When omitted, both roles share
+    ``conn`` (single-DB tests/backwards compatibility).
+    """
+    if workspace_conn is None:
+        workspace_conn = conn
     now = datetime.now(timezone.utc)
     today_str = now.strftime("%Y-%m-%d")
     sections: dict[str, Any] = {}
 
-    watched = conn.execute(
+    watched = workspace_conn.execute(
         """
         SELECT entity_key, entity_name, entity_type FROM core.watchlist_items
         WHERE removed_at IS NULL AND entity_type IN ('ARTIST', 'FESTIVAL', 'TOUR')
         ORDER BY entity_name
         """
     ).fetchall()
-    watched_keys = {r[0] for r in watched}
+    watched_keys = {
+        r[0] for r in workspace_conn.execute(
+            "SELECT entity_key FROM core.watchlist_items WHERE removed_at IS NULL"
+        ).fetchall()
+    }
     # Personalized: alerts whose RELATED-ENTITY graph touches a watched
     # entity (an EVENT tm::123 alert surfaces for a watched ARTIST mbid::X
     # via the alert_related_entities edge), plus alerts whose own entity is
     # watched directly. Global FESTIVAL/TOUR alerts are NOT mixed in here.
-    new_events = conn.execute(
+    # The watchlist and the alert ledger live in different storage roles, so
+    # combine in application code rather than one cross-DB join.
+    candidate_alerts = conn.execute(
         """
         SELECT DISTINCT a.alert_key, a.alert_type, a.entity_type, a.entity_key,
                a.entity_name, a.observed_at, a.detail,
@@ -640,20 +653,16 @@ def build_today(conn, *, limit: int = 50) -> dict[str, Any]:
         LEFT JOIN core.alert_related_entities re ON re.alert_key = a.alert_key
         WHERE a.alert_type IN ('NEW_EVENT', 'NEW_TOUR', 'NEW_FESTIVAL_APPEARANCE')
           AND a.status = 'ACTIVE'
-          AND (
-                a.entity_key IN (SELECT entity_key FROM core.watchlist_items
-                                 WHERE removed_at IS NULL)
-                OR re.entity_key IN (SELECT entity_key FROM core.watchlist_items
-                                     WHERE removed_at IS NULL)
-              )
         ORDER BY a.observed_at DESC LIMIT ?
         """,
-        [limit],
+        [max(limit * 20, 500)],
     ).fetchall()
     new_event_cols = [c[0] for c in conn.description]
     new_event_rows = []
-    for r in new_events:
+    for r in candidate_alerts:
         rec = dict(zip(new_event_cols, r))
+        if rec.get("entity_key") not in watched_keys and rec.get("watched_via_key") not in watched_keys:
+            continue
         detail = rec.get("detail") or {}
         new_event_rows.append({
             "alert_key": rec.get("alert_key"),
@@ -669,6 +678,8 @@ def build_today(conn, *, limit: int = 50) -> dict[str, Any]:
             "watched_via_key": rec.get("watched_via_key"),
             "watched_via_relationship": rec.get("watched_via_relationship"),
         })
+        if len(new_event_rows) >= limit:
+            break
     sections["watchlist"] = {
         "watched_entities": len(watched),
         "watched_names": [r[1] for r in watched],
