@@ -50,21 +50,63 @@ def ticketmaster_external_id_key(attraction_id: str) -> str:
 
 
 def collect_performer_mbids(conn) -> list[dict[str, Any]]:
-    """Distinct performer MBIDs with their most-common credited name + counts.
+    """Distinct performer MBIDs with a DETERMINISTIC preferred name + counts.
 
-    Returns rows ``{artist_mbid, artist_name, relation_count, festival_count,
-    tour_count, recent_count}`` ordered by relation_count DESC.
+    Name preference order:
+      1. reference.musicbrainz_artists.name (official canonical name)
+      2. most-frequent event credited name (stable lexicographic tie-break)
+      3. the MBID itself (last-resort fallback, never a real name)
+
+    Returns rows ``{artist_mbid, artist_name, relation_count, event_count}``
+    ordered by relation_count DESC. Same input data always yields the same
+    names regardless of row order (no ARBITRARY()).
     """
-    rows = conn.execute(
+    has_reference = conn.execute(
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema = 'reference' AND table_name = 'musicbrainz_artists'"
+    ).fetchone()
+    ref_join = ""
+    if has_reference:
+        ref_join = """
+        LEFT JOIN reference.musicbrainz_artists ref
+          ON ref.mbid = a.artist_mbid AND ref.name IS NOT NULL
         """
-        SELECT artist_mbid,
-               ARBITRARY(artist_name) AS artist_name,
-               COUNT(*) AS relation_count,
-               COUNT(DISTINCT event_mbid) AS event_count
-        FROM core.event_performers
-        WHERE artist_mbid IS NOT NULL
-        GROUP BY artist_mbid
-        ORDER BY relation_count DESC
+        ref_expr = "ref.name"
+    else:
+        ref_expr = "NULL"
+    rows = conn.execute(
+        f"""
+        WITH credits AS (
+            SELECT artist_mbid,
+                   artist_name,
+                   COUNT(*) AS n,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY artist_mbid
+                       ORDER BY COUNT(*) DESC, artist_name ASC
+                   ) AS rn
+            FROM core.event_performers
+            WHERE artist_mbid IS NOT NULL AND artist_name IS NOT NULL
+            GROUP BY artist_mbid, artist_name
+        ),
+        top_credit AS (
+            SELECT artist_mbid, artist_name FROM credits WHERE rn = 1
+        ),
+        agg AS (
+            SELECT ep.artist_mbid,
+                   COUNT(*) AS relation_count,
+                   COUNT(DISTINCT event_mbid) AS event_count
+            FROM core.event_performers ep
+            WHERE ep.artist_mbid IS NOT NULL
+            GROUP BY ep.artist_mbid
+        )
+        SELECT a.artist_mbid,
+               COALESCE({ref_expr}, tc.artist_name, a.artist_mbid) AS artist_name,
+               a.relation_count,
+               a.event_count
+        FROM agg a
+        LEFT JOIN top_credit tc USING (artist_mbid)
+        {ref_join}
+        ORDER BY a.relation_count DESC
         """
     ).fetchall()
     out = []
@@ -76,6 +118,44 @@ def collect_performer_mbids(conn) -> list[dict[str, Any]]:
             "event_count": int(r[3]),
         })
     return out
+
+
+def backfill_canonical_names(conn) -> dict[str, Any]:
+    """Recompute deterministic preferred names for EXISTING canonical artists.
+
+    Uses the same preference policy as ``collect_performer_mbids``:
+      1. reference.musicbrainz_artists.name
+      2. most-frequent event credited name (stable lexicographic tie-break)
+      3. MBID as last-resort
+
+    Only updates rows where the stored name differs from the preferred name
+    (e.g. rows created before the ARBITRARY() policy was removed). Never
+    touches raw source names in core.event_performers.
+    """
+    preferred: dict[str, str] = {}
+    for p in collect_performer_mbids(conn):
+        preferred[p["artist_mbid"]] = p["artist_name"]
+
+    rows = conn.execute(
+        "SELECT artist_key, musicbrainz_id, name FROM core.artists "
+        "WHERE musicbrainz_id IS NOT NULL"
+    ).fetchall()
+    updated = 0
+    for artist_key, mbid, current_name in rows:
+        want = preferred.get(mbid)
+        if not want or want == current_name:
+            continue
+        norm = normalize_name(want)
+        conn.execute(
+            """
+            UPDATE core.artists
+            SET name = ?, normalized_name = ?, sort_name = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE artist_key = ?
+            """,
+            [want, norm, want, artist_key],
+        )
+        updated += 1
+    return {"scanned": len(rows), "updated": updated}
 
 
 def credited_names_for(conn, artist_mbid: str) -> list[tuple[str, int]]:

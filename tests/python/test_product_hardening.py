@@ -305,6 +305,93 @@ def test_status_change_then_revert(tmp_path):
         repo.close()
 
 
+# ---------------------------------------------------------------------------
+# Canonical artist display-name determinism (ARBITRARY() policy removal)
+# ---------------------------------------------------------------------------
+from festival_bloomberg.identity.artist_master import (  # noqa: E402
+    collect_performer_mbids,
+    backfill_canonical_names,
+)
+from festival_bloomberg.migrations import apply_pending_migrations  # noqa: E402
+
+
+def _seed_performer(conn, *, event_mbid, artist_mbid, artist_name, role="main performer"):
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO core.event_performers
+            (performer_key, event_mbid, artist_mbid, artist_name, performer_role,
+             direction, source_system, knowledge_time, ingested_at)
+        VALUES (?, ?, ?, ?, ?, 'forward', 'musicbrainz', now(), now())
+        """,
+        [f"pk::{event_mbid}::{artist_mbid}::{artist_name}",
+         event_mbid, artist_mbid, artist_name, role],
+    )
+
+
+def test_canonical_name_uses_most_common_credit_deterministically(tmp_path):
+    repo = FestivalRepository(str(tmp_path / "nm.duckdb"))
+    apply_pending_migrations(repo.conn)
+    try:
+        # "Jay-Z" (5 relations) must beat "JAY-Z" (2) and "Jay Z" (1).
+        _seed_performer(repo.conn, event_mbid="e1", artist_mbid="mbid-x", artist_name="Jay Z")
+        for i in range(5):
+            _seed_performer(repo.conn, event_mbid=f"e{i}", artist_mbid="mbid-x", artist_name="Jay-Z")
+        for i in range(2):
+            _seed_performer(repo.conn, event_mbid=f"f{i}", artist_mbid="mbid-x", artist_name="JAY-Z")
+        rows = collect_performer_mbids(repo.conn)
+        assert rows[0]["artist_name"] == "Jay-Z"
+    finally:
+        repo.close()
+
+
+def test_canonical_name_deterministic_across_row_order(tmp_path):
+    repo = FestivalRepository(str(tmp_path / "ord.duckdb"))
+    apply_pending_migrations(repo.conn)
+    try:
+        # Same name set, different insertion order -> same preferred name.
+        _seed_performer(repo.conn, event_mbid="a", artist_mbid="m1", artist_name="zeta")
+        _seed_performer(repo.conn, event_mbid="b", artist_mbid="m1", artist_name="alpha")
+        first = collect_performer_mbids(repo.conn)[0]["artist_name"]
+        repo2 = FestivalRepository(str(tmp_path / "ord2.duckdb"))
+        apply_pending_migrations(repo2.conn)
+        try:
+            _seed_performer(repo2.conn, event_mbid="b", artist_mbid="m1", artist_name="alpha")
+            _seed_performer(repo2.conn, event_mbid="a", artist_mbid="m1", artist_name="zeta")
+            second = collect_performer_mbids(repo2.conn)[0]["artist_name"]
+            assert first == second
+        finally:
+            repo2.close()
+    finally:
+        repo.close()
+
+
+def test_backfill_canonical_names_prefers_reference_name(tmp_path):
+    repo = FestivalRepository(str(tmp_path / "bf.duckdb"))
+    apply_pending_migrations(repo.conn)
+    try:
+        _seed_performer(repo.conn, event_mbid="e1", artist_mbid="mbid-r", artist_name="Stage Name")
+        # Existing canonical row with an arbitrary/older name.
+        repo.conn.execute(
+            """
+            INSERT INTO core.artists
+                (artist_key, musicbrainz_id, name, normalized_name, sort_name, type,
+                 source_system, evidence, extraction_method, resolution_status,
+                 manually_reviewed, ingested_at, updated_at)
+            VALUES ('mbid::mbid-r', 'mbid-r', 'Old Arbitrary Name', 'old arbitrary name',
+                    'Old Arbitrary Name', 'UNKNOWN', 'musicbrainz', '{}',
+                    'mbid_from_event_performers', 'REFERENCE', FALSE, now(), now())
+            """
+        )
+        res = backfill_canonical_names(repo.conn)
+        assert res["updated"] == 1
+        name = repo.conn.execute(
+            "SELECT name FROM core.artists WHERE artist_key = 'mbid::mbid-r'"
+        ).fetchone()[0]
+        assert name == "Stage Name"
+    finally:
+        repo.close()
+
+
 def test_presale_discovered_and_unchanged_no_duplicate(tmp_path):
     repo = FestivalRepository(str(tmp_path / "pre.duckdb"))
     try:
