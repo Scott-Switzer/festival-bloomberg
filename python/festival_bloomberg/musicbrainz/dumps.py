@@ -554,6 +554,547 @@ def ingest_series_file(
     )
 
 
+# ---------------------------------------------------------------------------
+# Artist dump (compact reference layer; full universe stays in
+# reference.musicbrainz_artists — only RELEVANT artists are promoted into
+# core.artists by the identity driver, never a blind bulk copy).
+# ---------------------------------------------------------------------------
+
+#: MusicBrainz artist relation types -> external identity URL classification.
+#: Only EXPLICITLY TYPED relationships are recognized; arbitrary URLs are
+#: never inferred into an ID.
+ARTIST_URL_RELATION_TYPES = {
+    "official homepage": "official_homepage",
+    "wikidata": "wikidata",
+    "youtube": "youtube",
+    "apple music": "apple_music",
+    "bandcamp": "bandcamp",
+    "soundcloud": "soundcloud",
+    "discogs": "discogs",
+    "songkick": "songkick",
+    "bandsintown": "bandsintown",
+    "setlist.fm": "setlistfm",
+    "last.fm": "lastfm",
+    "myspace": "myspace",
+    "twitter": "twitter",
+    "instagram": "instagram",
+    "facebook": "facebook",
+    "tiktok": "tiktok",
+    "imdb": "imdb",
+    "allmusic": "allmusic",
+    "musicbrainz": "musicbrainz",
+}
+
+
+def normalize_artist(obj: dict[str, Any]) -> dict[str, Any]:
+    """Compact normalized artist record from a MusicBrainz artist dump object."""
+    mbid = obj.get("id")
+    if not mbid:
+        raise ValueError("artist object missing id")
+    lifespan = obj.get("life-span") or {}
+    area = obj.get("area") or {}
+
+    aliases: list[dict[str, Any]] = []
+    for a in obj.get("aliases") or [] if isinstance(obj.get("aliases"), list) else []:
+        if isinstance(a, dict) and a.get("name"):
+            aliases.append({
+                "name": a["name"],
+                "locale": a.get("locale"),
+                "type": a.get("type"),
+                "begin": a.get("begin"),
+                "end": a.get("end"),
+                "primary": bool(a.get("primary")),
+            })
+
+    # Explicit ISNI/IPI identifier lists (never inferred). The JSON dump
+    # stores these as ``isnis``/``ipis`` (plural lists).
+    isni = [x for x in (obj.get("isnis") or []) if isinstance(x, str) and x]
+    ipi = [x for x in (obj.get("ipis") or []) if isinstance(x, str) and x]
+
+    # Typed URL relationships (official homepage, wikidata, youtube, ...).
+    urls: list[dict[str, Any]] = []
+    for rel in obj.get("relations") or []:
+        if not isinstance(rel, dict) or rel.get("target-type") != "url":
+            continue
+        rtype = rel.get("type")
+        classification = ARTIST_URL_RELATION_TYPES.get(rtype)
+        if not classification:
+            continue
+        nested = rel.get("url") or {}
+        resource = nested.get("resource") if isinstance(nested, dict) else None
+        if resource:
+            urls.append({"type": classification, "resource": resource})
+
+    return {
+        "mbid": mbid,
+        "name": obj.get("name"),
+        "sort_name": obj.get("sort-name"),
+        "artist_type": obj.get("type"),
+        "area_mbid": area.get("id") if isinstance(area, dict) else None,
+        "area_name": area.get("name") if isinstance(area, dict) else None,
+        "begin_date": lifespan.get("begin") if isinstance(lifespan, dict) else None,
+        "end_date": lifespan.get("end") if isinstance(lifespan, dict) else None,
+        "disambiguation": obj.get("disambiguation"),
+        "isni": isni,
+        "ipi": ipi,
+        "aliases": aliases,
+        "urls": urls,
+    }
+
+
+def persist_reference_artist(conn, rec: dict[str, Any], *, dump_source_id_value: str,
+                             knowledge_time: str) -> int:
+    """Persist one compact artist reference row. Returns 1 if new."""
+    exists = conn.execute(
+        "SELECT 1 FROM reference.musicbrainz_artists WHERE mbid = ?", [rec["mbid"]]
+    ).fetchone()
+    if exists:
+        return 0
+    conn.execute(
+        """
+        INSERT INTO reference.musicbrainz_artists
+            (mbid, name, normalized_name, sort_name, artist_type, area_mbid,
+             area_name, begin_date, end_date, disambiguation, isni, ipi,
+             aliases, urls, dump_source_id, knowledge_time, ingested_at)
+        VALUES (?, ?, LOWER(TRIM(?)), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """,
+        [
+            rec["mbid"], rec["name"], rec["name"] or "", rec["sort_name"],
+            rec["artist_type"], rec["area_mbid"], rec["area_name"],
+            rec["begin_date"], rec["end_date"], rec["disambiguation"],
+            json.dumps(rec["isni"], default=str) if rec["isni"] else None,
+            json.dumps(rec["ipi"], default=str) if rec["ipi"] else None,
+            json.dumps(rec["aliases"], default=str) if rec["aliases"] else None,
+            json.dumps(rec["urls"], default=str) if rec["urls"] else None,
+            dump_source_id_value, knowledge_time,
+        ],
+    )
+    return 1
+
+
+def ingest_artist_file(
+    conn,
+    path: str | Path,
+    *,
+    dump_source_id_value: str,
+    knowledge_time: str | None = None,
+    limit: int | None = None,
+    commit_every: int | None = None,
+) -> dict[str, Any]:
+    """Stream and persist the artist dump into the compact reference layer.
+
+    Streams line-by-line (never holds the file in memory), wraps the ingest in
+    bounded transactions (``commit_every``) so huge dumps do not OOM, and only
+    ever writes the compact reference row — the full payload JSON is NOT
+    retained. Idempotent by MBID.
+    """
+    knowledge_time = knowledge_time or datetime.now(timezone.utc).isoformat()
+    batching = commit_every and commit_every > 0
+    if batching:
+        conn.execute("BEGIN TRANSACTION")
+    summary = {
+        "status": "RUNNING", "parsed": 0, "new_artists": 0,
+        "skipped_existing": 0, "invalid": 0, "by_type": {},
+        "isni_rows": 0, "ipi_rows": 0, "url_rows": 0, "alias_rows": 0,
+    }
+    count = 0
+    try:
+        with open(Path(path), encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                count += 1
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    summary["invalid"] += 1
+                    continue
+                try:
+                    rec = normalize_artist(obj)
+                except (ValueError, KeyError):
+                    summary["invalid"] += 1
+                    continue
+                summary["parsed"] += 1
+                summary["by_type"][rec["artist_type"] or "?"] = (
+                    summary["by_type"].get(rec["artist_type"] or "?", 0) + 1
+                )
+                if persist_reference_artist(conn, rec,
+                                           dump_source_id_value=dump_source_id_value,
+                                           knowledge_time=knowledge_time):
+                    summary["new_artists"] += 1
+                    summary["isni_rows"] += len(rec["isni"])
+                    summary["ipi_rows"] += len(rec["ipi"])
+                    summary["url_rows"] += len(rec["urls"])
+                    summary["alias_rows"] += len(rec["aliases"])
+                    if batching and summary["new_artists"] % commit_every == 0:
+                        _commit_batch(conn, batching=True)
+                else:
+                    summary["skipped_existing"] += 1
+                if limit is not None and summary["new_artists"] >= limit:
+                    break
+    finally:
+        if batching:
+            conn.execute("COMMIT")
+    summary["status"] = "COMPLETE"
+    summary["objects_seen"] = count
+    return summary
+
+
+# ---------------------------------------------------------------------------
+# AREA dump (geography reference for venue/artist/place enrichment).
+# ---------------------------------------------------------------------------
+
+def normalize_area(obj: dict[str, Any]) -> dict[str, Any]:
+    """Compact normalized area record from a MusicBrainz area dump object."""
+    mbid = obj.get("id")
+    if not mbid:
+        raise ValueError("area object missing id")
+    lifespan = obj.get("life-span") or {}
+    # Containment: "part of" relations to another AREA (explicit only).
+    parent_mbid = None
+    for rel in obj.get("relations") or []:
+        if not isinstance(rel, dict):
+            continue
+        if rel.get("target-type") == "area" and rel.get("type") == "part of":
+            nested = rel.get("area") or {}
+            if isinstance(nested, dict):
+                parent_mbid = nested.get("id")
+            break
+    return {
+        "mbid": mbid,
+        "name": obj.get("name"),
+        "area_type": obj.get("type"),
+        "iso_3166_1": obj.get("iso-3166-1-codes") or [],
+        "iso_3166_2": obj.get("iso-3166-2-codes") or [],
+        "iso_3166_3": obj.get("iso-3166-3-codes") or [],
+        "parent_mbid": parent_mbid,
+        "begin_date": lifespan.get("begin") if isinstance(lifespan, dict) else None,
+        "end_date": lifespan.get("end") if isinstance(lifespan, dict) else None,
+        "disambiguation": obj.get("disambiguation"),
+    }
+
+
+def persist_reference_area(conn, rec: dict[str, Any], *, dump_source_id_value: str,
+                           knowledge_time: str) -> int:
+    """Persist one compact area reference row (+ raw observation). Returns 1 if new."""
+    exists = conn.execute(
+        "SELECT 1 FROM reference.musicbrainz_areas WHERE mbid = ?", [rec["mbid"]]
+    ).fetchone()
+    if exists:
+        return 0
+    conn.execute(
+        """
+        INSERT INTO reference.musicbrainz_areas
+            (mbid, name, normalized_name, area_type, iso_3166_1, iso_3166_2,
+             iso_3166_3, parent_mbid, begin_date, end_date, disambiguation,
+             dump_source_id, knowledge_time, ingested_at)
+        VALUES (?, ?, LOWER(TRIM(?)), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """,
+        [
+            rec["mbid"], rec["name"], rec["name"] or "", rec["area_type"],
+            json.dumps(rec["iso_3166_1"], default=str) if rec["iso_3166_1"] else None,
+            json.dumps(rec["iso_3166_2"], default=str) if rec["iso_3166_2"] else None,
+            json.dumps(rec["iso_3166_3"], default=str) if rec["iso_3166_3"] else None,
+            rec["parent_mbid"], rec["begin_date"], rec["end_date"],
+            rec["disambiguation"], dump_source_id_value, knowledge_time,
+        ],
+    )
+    return 1
+
+
+def ingest_artist_archive_stream(
+    conn,
+    archive_path: str | Path,
+    *,
+    dump_source_id_value: str,
+    knowledge_time: str | None = None,
+    limit: int | None = None,
+    commit_every: int | None = None,
+    resume_after: int | None = None,
+) -> dict[str, Any]:
+    """Stream the artist dump DIRECTLY from the ``.tar.xz`` archive.
+
+    The full artist dump is ~1.7 GB compressed; extracting it to disk can
+    need 5-10x that space and caused an OOM on an earlier oversized ingest.
+    This path opens the archive, iterates the ``mbdump/artist`` member
+    line-by-line (never holding the file in memory), and persists compact
+    reference rows in bounded transactions (``commit_every``). The archive
+    itself can be deleted after a verified run; its checksum + source lineage
+    stay in ``raw.musicbrainz_dump_source``.
+
+    ``resume_after`` skips the first N JSON lines without parsing them so a
+    timed-out run can continue cheaply (idempotent by MBID; ``limit`` bounds
+    how many NEW artists this run writes).
+    """
+    import tarfile
+
+    knowledge_time = knowledge_time or datetime.now(timezone.utc).isoformat()
+    batching = commit_every and commit_every > 0
+    if batching:
+        conn.execute("BEGIN TRANSACTION")
+    summary = {
+        "status": "RUNNING", "parsed": 0, "new_artists": 0,
+        "skipped_existing": 0, "invalid": 0, "by_type": {},
+        "isni_rows": 0, "ipi_rows": 0, "url_rows": 0, "alias_rows": 0,
+        "resumed_after": resume_after,
+    }
+    count = 0
+    member_name: str | None = None
+    try:
+        with tarfile.open(archive_path, "r:xz") as tf:
+            # NOTE: use lazy iteration, NOT ``getmembers()`` — materializing
+            # all members on an xz archive seeks through the whole compressed
+            # stream (O(n^2) decompression) and hangs for the multi-GB dump.
+            for m in tf:
+                if m.name.endswith("/artist"):
+                    member_name = m.name
+                    break
+            if member_name is None:
+                summary["status"] = "MEMBER_NOT_FOUND"
+                return summary
+            fh = tf.extractfile(member_name)
+            if fh is None:
+                summary["status"] = "MEMBER_NOT_READABLE"
+                return summary
+            for raw_line in fh:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                count += 1
+                if resume_after is not None and count <= resume_after:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    summary["invalid"] += 1
+                    continue
+                try:
+                    rec = normalize_artist(obj)
+                except (ValueError, KeyError):
+                    summary["invalid"] += 1
+                    continue
+                summary["parsed"] += 1
+                summary["by_type"][rec["artist_type"] or "?"] = (
+                    summary["by_type"].get(rec["artist_type"] or "?", 0) + 1
+                )
+                if persist_reference_artist(conn, rec,
+                                           dump_source_id_value=dump_source_id_value,
+                                           knowledge_time=knowledge_time):
+                    summary["new_artists"] += 1
+                    summary["isni_rows"] += len(rec["isni"])
+                    summary["ipi_rows"] += len(rec["ipi"])
+                    summary["url_rows"] += len(rec["urls"])
+                    summary["alias_rows"] += len(rec["aliases"])
+                    if batching and summary["new_artists"] % commit_every == 0:
+                        _commit_batch(conn, batching=True)
+                else:
+                    summary["skipped_existing"] += 1
+                if limit is not None and summary["new_artists"] >= limit:
+                    break
+    finally:
+        if batching:
+            conn.execute("COMMIT")
+    summary["status"] = "COMPLETE"
+    summary["objects_seen"] = count
+    return summary
+
+
+def enrich_artist_archive_stream(
+    conn,
+    archive_path: str | Path,
+    *,
+    knowledge_time: str | None = None,
+    commit_every: int | None = None,
+    resume_after: int | None = None,
+    marker_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Backfill ISNI/IPI/URL/alias fields on EXISTING reference rows.
+
+    The original artist ingest stored rows before the dump key names were
+    confirmed (``isnis``/``ipis``), so isni/ipi columns are NULL. This pass
+    streams the archive again and UPDATEs only rows that already exist and
+    are missing values — idempotent, resumable via ``resume_after``, and
+    bounded transactions to avoid OOM. ``marker_path`` (if given) records the
+    last scanned line count after every commit so a timed-out run resumes
+    cheaply without re-parsing the prefix.
+    """
+    import tarfile
+
+    knowledge_time = knowledge_time or datetime.now(timezone.utc).isoformat()
+    batching = commit_every and commit_every > 0
+    if batching:
+        conn.execute("BEGIN TRANSACTION")
+    summary = {
+        "status": "RUNNING", "scanned": 0, "updated": 0, "missing": 0,
+        "invalid": 0, "isni_rows": 0, "ipi_rows": 0,
+        "url_rows": 0, "alias_rows": 0, "resumed_after": resume_after,
+    }
+    count = 0
+    last_marker: int | None = None
+    member_name: str | None = None
+    try:
+        with tarfile.open(archive_path, "r:xz") as tf:
+            # Lazy iteration, NOT ``getmembers()`` (see ingest above).
+            for m in tf:
+                if m.name.endswith("/artist"):
+                    member_name = m.name
+                    break
+            if member_name is None:
+                summary["status"] = "MEMBER_NOT_FOUND"
+                return summary
+            fh = tf.extractfile(member_name)
+            if fh is None:
+                summary["status"] = "MEMBER_NOT_READABLE"
+                return summary
+            for raw_line in fh:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                count += 1
+                if resume_after is not None and count <= resume_after:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    summary["invalid"] += 1
+                    continue
+                try:
+                    rec = normalize_artist(obj)
+                except (ValueError, KeyError):
+                    summary["invalid"] += 1
+                    continue
+                summary["scanned"] += 1
+                # Fast path: the original ingest already stored urls/aliases
+                # correctly; only isni/ipi were lost. Skip the DB entirely
+                # for lines carrying neither, keeping the pass archive-bound.
+                if not rec["isni"] and not rec["ipi"]:
+                    summary["missing"] += 1
+                    if batching and summary["scanned"] % commit_every == 0:
+                        _commit_batch(conn, batching=True)
+                        if marker_path:
+                            _write_marker(marker_path, count)
+                            last_marker = count
+                    continue
+                updated = _backfill_reference_artist(conn, rec)
+                if updated:
+                    summary["updated"] += 1
+                    summary["isni_rows"] += len(rec["isni"])
+                    summary["ipi_rows"] += len(rec["ipi"])
+                    summary["url_rows"] += len(rec["urls"])
+                    summary["alias_rows"] += len(rec["aliases"])
+                else:
+                    summary["missing"] += 1
+                if batching and summary["scanned"] % commit_every == 0:
+                    _commit_batch(conn, batching=True)
+                    if marker_path:
+                        _write_marker(marker_path, count)
+                        last_marker = count
+    finally:
+        if batching:
+            conn.execute("COMMIT")
+            if marker_path and last_marker is not None:
+                _write_marker(marker_path, count)
+    summary["status"] = "COMPLETE"
+    summary["objects_seen"] = count
+    return summary
+
+
+def _write_marker(marker_path: str | Path, line_count: int) -> None:
+    Path(marker_path).write_text(str(line_count), encoding="utf-8")
+
+
+def _backfill_reference_artist(conn, rec: dict[str, Any]) -> bool:
+    """Update an existing reference row's NULL identifier fields. True if changed."""
+    row = conn.execute(
+        "SELECT isni, ipi, urls, aliases FROM reference.musicbrainz_artists "
+        "WHERE mbid = ?", [rec["mbid"]]
+    ).fetchone()
+    if row is None:
+        return False
+    cur_isni, cur_ipi, cur_urls, cur_aliases = row
+    sets: list[str] = []
+    params: list[Any] = []
+    if not cur_isni and rec["isni"]:
+        sets.append("isni = ?")
+        params.append(json.dumps(rec["isni"], default=str))
+    if not cur_ipi and rec["ipi"]:
+        sets.append("ipi = ?")
+        params.append(json.dumps(rec["ipi"], default=str))
+    if not cur_urls and rec["urls"]:
+        sets.append("urls = ?")
+        params.append(json.dumps(rec["urls"], default=str))
+    if not cur_aliases and rec["aliases"]:
+        sets.append("aliases = ?")
+        params.append(json.dumps(rec["aliases"], default=str))
+    if not sets:
+        return False
+    sets.append("ingested_at = CURRENT_TIMESTAMP")
+    conn.execute(
+        f"UPDATE reference.musicbrainz_artists SET {', '.join(sets)} WHERE mbid = ?",
+        [*params, rec["mbid"]],
+    )
+    return True
+
+
+def ingest_area_file(
+    conn,
+    path: str | Path,
+    *,
+    dump_source_id_value: str,
+    knowledge_time: str | None = None,
+    limit: int | None = None,
+    commit_every: int | None = None,
+) -> dict[str, Any]:
+    """Stream and persist the area dump into reference.musicbrainz_areas."""
+    knowledge_time = knowledge_time or datetime.now(timezone.utc).isoformat()
+    batching = commit_every and commit_every > 0
+    if batching:
+        conn.execute("BEGIN TRANSACTION")
+    summary = {
+        "status": "RUNNING", "parsed": 0, "new_areas": 0,
+        "skipped_existing": 0, "invalid": 0, "by_type": {},
+    }
+    count = 0
+    try:
+        with open(Path(path), encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                count += 1
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    summary["invalid"] += 1
+                    continue
+                try:
+                    rec = normalize_area(obj)
+                except (ValueError, KeyError):
+                    summary["invalid"] += 1
+                    continue
+                summary["parsed"] += 1
+                summary["by_type"][rec["area_type"] or "?"] = (
+                    summary["by_type"].get(rec["area_type"] or "?", 0) + 1
+                )
+                if persist_reference_area(conn, rec,
+                                          dump_source_id_value=dump_source_id_value,
+                                          knowledge_time=knowledge_time):
+                    summary["new_areas"] += 1
+                    if batching and summary["new_areas"] % commit_every == 0:
+                        _commit_batch(conn, batching=True)
+                else:
+                    summary["skipped_existing"] += 1
+                if limit is not None and summary["new_areas"] >= limit:
+                    break
+    finally:
+        if batching:
+            conn.execute("COMMIT")
+    summary["status"] = "COMPLETE"
+    summary["objects_seen"] = count
+    return summary
+
+
 def _clean_coord(value, lo: float, hi: float):
     """Validate a coordinate; return None for out-of-range/garbage values.
 

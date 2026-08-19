@@ -394,6 +394,51 @@ def test_dispatcher_endpoints(conn):
     assert app.dispatch("GET", "/api/festivals/none")["status"] == 200  # honest null body
 
 
+def test_dispatcher_event_resolves_alert_style_keys(conn):
+    """Alerts/TODAY link events as ``tm::<provider_event_id>``; the event
+    route must resolve both that form and the raw provider id, never 404 on
+    a real event."""
+    from festival_bloomberg.terminal.server import TerminalApp
+
+    _seed_forward_event(conn, "watch_abc123", "Taylor Swift", "United Center", "Chicago",
+                        date(2099, 1, 1), datetime(2026, 8, 15, 10, 0, 0))
+    # _seed_forward_event sets provider_event_id = f"pe-{watch_id}"; rewrite it
+    # to the bare Ticketmaster id that forward-watch rows actually carry.
+    conn.execute("UPDATE flywheel.forward_watch_events SET provider_event_id = 'vvXYZ' WHERE watch_event_id = 'watch_abc123'")
+    conn.commit()
+    app = TerminalApp(conn)
+
+    for key in ("tm::vvXYZ", "vvXYZ"):
+        res = app.dispatch("GET", f"/api/events/{key}")
+        assert res["status"] == 200, key
+        body = json.loads(res["body"].decode())
+        assert body["watch_event_id"] == "watch_abc123"
+        assert body["kind"] == "FORWARD"
+
+    # Ticketmaster snapshot events (alert-style tm:: keys) must resolve too.
+    conn.execute("""
+        INSERT INTO events.provider_event_snapshots
+            (snapshot_key, provider, platform_object_id, event_name, artist_name,
+             venue_name, city, state_code, country_code, local_date, event_status,
+             onsale_start, price_min, price_max, price_currency, promoter, retrieved_at,
+             knowledge_time, rights_status, commercial_use_status, ingested_at)
+        VALUES ('snap1', 'ticketmaster', 'vvSNAP1', 'Snap Show', 'Snap Artist',
+                'Snap Venue', 'Chicago', 'IL', 'US', '2026-09-01', 'onsale',
+                '2026-08-01T10:00:00Z', 40.0, 120.0, 'USD', 'Snap Promoter',
+                '2026-08-18T10:00:00Z', '2026-08-18T10:00:00Z',
+                'TERMS_REVIEW_REQUIRED', 'TERMS_REVIEW_REQUIRED',
+                '2026-08-18T10:00:00Z')
+    """)
+    conn.commit()
+    res = app.dispatch("GET", "/api/events/tm::vvSNAP1")
+    assert res["status"] == 200
+    body = json.loads(res["body"].decode())
+    assert body["kind"] == "SNAPSHOT"
+    assert body["entity_key"] == "tm::vvSNAP1"
+    assert body["entity_name"] == "Snap Show"
+    assert len(body["observations"]) == 1
+
+
 def test_dispatcher_serves_static_index(conn):
     from festival_bloomberg.terminal.server import TerminalApp
 

@@ -40,6 +40,7 @@ from ..identity.spotify import (
     persist_exact_external_ids,
     persist_resolutions,
 )
+from ..product.workflow import complete_acquisition_run, start_acquisition_run
 from ..intelligence.tape import (
     derive_provider_event_tape_entries,
     insert_tape_entries,
@@ -187,7 +188,8 @@ def _run_spotify_resolution(conn, limit: int, validate: bool) -> dict[str, Any]:
     return summary
 
 
-def _persist_event_snapshot(conn, rec: dict[str, Any], retrieved_at: str) -> bool:
+def _persist_event_snapshot(conn, rec: dict[str, Any], retrieved_at: str,
+                            acquisition_run_id: str | None = None) -> bool:
     platform_object_id = rec.get("platform_object_id")
     if not platform_object_id:
         return False
@@ -212,7 +214,7 @@ def _persist_event_snapshot(conn, rec: dict[str, Any], retrieved_at: str) -> boo
              price_max, price_currency, price_type, promoter, segment, genre,
              subgenre, event_type, canonical_url, retrieved_at, knowledge_time,
              content_hash, raw_payload_hash, rights_status, commercial_use_status,
-             software_version, ingested_at)
+             software_version, acquisition_run_id, ingested_at)
         VALUES (?, 'ticketmaster',
                 ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?,
@@ -221,7 +223,7 @@ def _persist_event_snapshot(conn, rec: dict[str, Any], retrieved_at: str) -> boo
                 ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?,
                 ?, ?, ?, 'RESEARCH_ONLY',
-                'PROTOTYPE_ONLY', ?, CURRENT_TIMESTAMP)
+                'PROTOTYPE_ONLY', ?, ?, CURRENT_TIMESTAMP)
         """,
         [
             snapshot_key,          # 1  snapshot_key
@@ -259,6 +261,7 @@ def _persist_event_snapshot(conn, rec: dict[str, Any], retrieved_at: str) -> boo
             rec.get("content_hash"),  # 33 content_hash
             rec.get("content_hash"),  # 34 raw_payload_hash
             SOFTWARE_VERSION,       # 35 software_version
+            acquisition_run_id,     # 36 acquisition_run_id
         ],
     )
     return True
@@ -287,6 +290,11 @@ def _run_ticketmaster(conn, markets: tuple[tuple[str, str], ...], validate: bool
     if not validate:
         summary["status"] = "SKIPPED"
         return summary
+
+    # Every snapshot in this pass belongs to one explicit logical acquisition
+    # run (migration 030) so the alert engine compares runs, not timestamps.
+    run_id = start_acquisition_run(conn, provider="ticketmaster", operation="national_music_events_refresh")
+    summary["acquisition_run_id"] = run_id
 
     for city, state in markets:
         req = AcquisitionRequest.new(
@@ -318,7 +326,8 @@ def _run_ticketmaster(conn, markets: tuple[tuple[str, str], ...], validate: bool
             break
         summary["events_received"] += result.record_count
         for rec in result.records:
-            if _persist_event_snapshot(conn, rec, result.completed_at.isoformat()):
+            if _persist_event_snapshot(conn, rec, result.completed_at.isoformat(),
+                                       acquisition_run_id=run_id):
                 summary["events_persisted"] += 1
                 if rec.get("onsale_start"):
                     summary["with_onsale"] += 1
@@ -333,6 +342,12 @@ def _run_ticketmaster(conn, markets: tuple[tuple[str, str], ...], validate: bool
     )
     if summary["status"] == "RUNNING":
         summary["status"] = "COMPLETE"
+    complete_acquisition_run(
+        conn, run_id=run_id, status=summary["status"],
+        request_count=summary["requests"], record_count=summary["events_received"],
+        error_count=summary["provider_errors"],
+        note=f"events_persisted={summary['events_persisted']}",
+    )
     return summary
 
 

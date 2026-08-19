@@ -13,8 +13,17 @@
       .replace(/"/g, "&quot;");
   }
 
-  async function api(path) {
-    var res = await fetch(path);
+  async function api(path, opts) {
+    opts = opts || {};
+    var init = {};
+    if (opts.method) {
+      init.method = opts.method;
+      if (opts.body) {
+        init.headers = { "Content-Type": "application/json" };
+        init.body = opts.body;
+      }
+    }
+    var res = await fetch(path, init);
     if (res.status === 404) return null;
     return res.json();
   }
@@ -158,6 +167,33 @@
         a.history_count + " historical · " + a.upcoming_count + " upcoming";
       if (a.spotify_id) { html += " · <a href='https://open.spotify.com/artist/" + esc(a.spotify_id) + "' target='_blank' rel='noopener'>Spotify</a>"; }
       html += "</p>";
+      var wlKey = a.canonical && a.canonical.artist_key ? a.canonical.artist_key : id;
+      html += "<div class='panel'><h3>Watchlist</h3><select id='art-wl-select'></select> " +
+        "<button id='art-wl-add' data-key=\"" + esc(wlKey) + "\" data-name=\"" + esc(a.name || "") + "\">Add to watchlist</button></div>";
+      if (a.canonical) {
+        var c = a.canonical;
+        html += "<div class='card'><h3>Identity</h3><table>" +
+          row(["Type", esc(c.type || "")]) +
+          row(["Area", esc(c.area || "")]) +
+          row(["MBID", esc(c.musicbrainz_id || "")]) +
+          row(["ISNI", esc(c.isni || "")]) +
+          row(["IPI", esc(c.ipi || "")]) +
+          row(["Sort name", esc(c.sort_name || "")]) +
+          row(["Life span", esc((c.life_span_begin || "") + " → " + (c.life_span_end || ""))]) +
+          (c.disambiguation ? row(["Disambiguation", esc(c.disambiguation)]) : "") +
+          "</table></div>";
+      }
+      if (a.external_ids && a.external_ids.length) {
+        var seen = {};
+        html += "<h2>External identities</h2><table><thead><tr><th>Type</th><th>ID</th><th>Source</th></tr></thead><tbody>";
+        a.external_ids.forEach(function (x) {
+          if (seen[x.id_type] && seen[x.id_type] > 2) return;
+          seen[x.id_type] = (seen[x.id_type] || 0) + 1;
+          var cell = x.url ? '<a href="' + esc(x.url) + '" target="_blank" rel="noopener">' + esc(x.id_value || x.url) + "</a>" : esc(x.id_value || "");
+          html += row([esc(x.id_type), cell, esc(x.source_system || x.namespace || "")]);
+        });
+        html += "</tbody></table>";
+      }
       html += "<h2>Upcoming events</h2>" + tableOrNone(a.upcoming, ["Date", "Venue", "Market", "Status"], function (e) {
         return row([fmt(e.event_date), esc(e.venue_name), fmt(e.market), fmt(e.event_status)]);
       });
@@ -182,6 +218,25 @@
         return row([esc(n.title), esc(n.domain), fmt(n.publication_time)]);
       });
       content.innerHTML = html;
+      api("/api/watchlists").then(function (lists) {
+        var sel = document.getElementById("art-wl-select");
+        if (!sel) return;
+        (lists || []).forEach(function (w) {
+          var opt = document.createElement("option");
+          opt.value = w.watchlist_key;
+          opt.textContent = w.name;
+          sel.appendChild(opt);
+        });
+        var btn = document.getElementById("art-wl-add");
+        if (btn) btn.addEventListener("click", function () {
+          if (!sel.value) return;
+          api("/api/watchlists/" + encodeURIComponent(sel.value), { method: "POST", body: JSON.stringify({
+            action: "add", entity_type: "ARTIST",
+            entity_key: btn.getAttribute("data-key"),
+            entity_name: btn.getAttribute("data-name") }) })
+            .then(function () { content.innerHTML = "<div class='none'>Added. Watchlists refresh below — open the Watchlists view.</div>"; });
+        });
+      });
     });
   }
 
@@ -310,6 +365,195 @@
     });
   }
 
+  function viewToday() {
+    setNav("today");
+    api("/api/today").then(function (t) {
+      var html = "<h1>Today</h1><p class='sub'>What changed in your music universe since you last checked.</p>";
+      if (!t || !t.sections) { content.innerHTML = html + '<div class="none">No data.</div>'; return; }
+      var s = t.sections;
+      if (s.watchlist) {
+        html += "<h2>Watchlist (" + esc(s.watchlist.watched_entities) + " watched)</h2>" +
+          tableOrNone(s.watchlist.new_events, ["Name", "Type", "First seen"], function (x) {
+            var kind = String(x.entity_type || "").toLowerCase();
+            return row([linkTo(kind + "s", x.entity_key, x.entity_name || x.entity_key), esc(x.entity_type), fmt(x.first_seen_at)]);
+          });
+      }
+      if (s.ticketing) {
+        html += "<h2>Ticketing</h2>" + tableOrNone(s.ticketing.new_onsales, ["Event", "Onsale", "Source"], function (x) {
+          return row([esc(x.event_name), fmt(x.onsale_start), esc(x.provider || "")]);
+        });
+        html += tableOrNone(s.ticketing.new_presales, ["Event", "Presale", "Source"], function (x) {
+          return row([esc(x.event_name), fmt(x.presale_start), esc(x.provider || "")]);
+        });
+        html += tableOrNone(s.ticketing.status_changes, ["Event", "Status", "Observed"], function (x) {
+          return row([esc(x.event_name), esc(x.status), fmt(x.observed_at)]);
+        });
+      }
+      if (s.attention) {
+        html += "<h2>Attention</h2>" + tableOrNone(s.attention.movers, ["Artist", "Metric", "Value", "Provider", "Period"], function (x) {
+          var val = (x.value_sum != null ? x.value_sum : x.value);
+          var unit = x.value_unit ? " " + x.value_unit : "";
+          return row([linkTo("artists", x.artist_key, x.artist_name || x.artist_key), esc(x.metric_kind), fmt(val) + unit, esc(x.source_system), fmt(x.period_start || x.retrieved_at)]);
+        });
+      }
+      if (s.live_market) {
+        html += "<h2>Live market</h2>" + tableOrNone(s.live_market.busy_markets, ["Market", "Events"], function (x) {
+          return row([esc(x.market), fmt(x.event_count)]);
+        });
+      }
+      if (s.data_health) {
+        html += "<h2>Data health</h2>" + tableOrNone(s.data_health.providers, ["Provider", "Status", "Failures", "Rate-limited", "Last success"], function (x) {
+          var cls = x.operational_status === "OPERATIONAL" ? "ok" : x.operational_status === "NOT_CONFIGURED" ? "off" : "warn";
+          return row([esc(x.provider), '<span class="pill ' + cls + '">' + esc(x.operational_status || "") + "</span>", fmt(x.failure_count), fmt(x.rate_limit_count), fmt(x.last_seen)]);
+        });
+        html += tableOrNone(s.data_health.identity_conflicts, ["Artist", "Issue"], function (x) {
+          return row([esc(x.artist_key), esc(x.issue || "")]);
+        });
+      }
+      content.innerHTML = html || ("<div class='none'>Nothing to show yet.</div>");
+    });
+  }
+
+  function viewWatchlists() {
+    setNav("watchlists");
+    api("/api/watchlists").then(function (lists) {
+      var html = "<h1>Watchlists</h1><p class='sub'>Named lists of artists, festivals, tours, events, venues, markets.</p>";
+      html += "<div class='panel'><h3>Create watchlist</h3>" +
+        "<input id='wl-name' placeholder='Name (e.g. 2027 Talent Targets)' /> " +
+        "<select id='wl-etype'><option value='ARTIST'>Artist</option><option value='FESTIVAL'>Festival</option>" +
+        "<option value='TOUR'>Tour</option><option value='EVENT'>Event</option><option value='VENUE'>Venue</option>" +
+        "<option value='MARKET'>Market</option><option value='PROMOTER'>Promoter</option><option value='COMPANY'>Company</option></select> " +
+        "<button id='wl-create'>Create</button></div>";
+      html += "<div id='wl-list'>";
+      if (!lists || !lists.length) { html += '<div class="none">No watchlists yet.</div>'; }
+      lists.forEach(function (w) {
+        html += "<h2>" + esc(w.name) + " <span class='muted'>" + esc(w.item_count) + " items" +
+          (w.is_system ? " · system" : "") + "</span></h2>";
+        html += "<p class='muted'>" + esc(w.description || "") + "</p>";
+        html += "<div class='panel'><input id='add-" + esc(w.watchlist_key) + "-name' placeholder='Entity key (e.g. mbid::f4abc0b5…)' style='width:45%' /> " +
+          "<input id='add-" + esc(w.watchlist_key) + "-label' placeholder='Display name' style='width:25%' /> " +
+          "<select id='add-" + esc(w.watchlist_key) + "-etype'><option value='ARTIST'>Artist</option><option value='FESTIVAL'>Festival</option>" +
+          "<option value='TOUR'>Tour</option><option value='EVENT'>Event</option><option value='VENUE'>Venue</option>" +
+          "<option value='MARKET'>Market</option><option value='PROMOTER'>Promoter</option></select> " +
+          "<button data-wl-add=\"" + esc(w.watchlist_key) + "\">Add</button></div>";
+        html += "<div id='wl-" + esc(w.watchlist_key) + "'><div class='muted'>…</div></div>";
+      });
+      html += "</div>";
+      content.innerHTML = html;
+
+      var createBtn = document.getElementById("wl-create");
+      if (createBtn) createBtn.addEventListener("click", function () {
+        var name = document.getElementById("wl-name").value.trim();
+        if (!name) return;
+        api("/api/watchlists", { method: "POST", body: JSON.stringify({
+          name: name, entity_type: document.getElementById("wl-etype").value, is_system: false }) })
+          .then(function () { viewWatchlists(); });
+      });
+      document.querySelectorAll("[data-wl-add]").forEach(function (b) {
+        b.addEventListener("click", function () {
+          var key = b.getAttribute("data-wl-add");
+          api("/api/watchlists/" + encodeURIComponent(key), { method: "POST", body: JSON.stringify({
+            action: "add",
+            entity_type: document.getElementById("add-" + key + "-etype").value,
+            entity_key: document.getElementById("add-" + key + "-name").value.trim(),
+            entity_name: document.getElementById("add-" + key + "-label").value.trim() || null }) })
+            .then(function () { viewWatchlists(); });
+        });
+      });
+
+      lists.forEach(function (w) {
+        api("/api/watchlists/" + w.watchlist_key).then(function (items) {
+          var el = document.getElementById("wl-" + w.watchlist_key);
+          if (!el) return;
+          var rows = (items || []).map(function (i) {
+            var kind = String(i.entity_type || "").toLowerCase();
+            return row(['<span class="pill ok">' + esc(i.entity_type) + "</span>",
+              linkTo(kind + "s", i.entity_key, i.entity_name || i.entity_key),
+              '<button data-wl-remove="' + esc(w.watchlist_key) + '" data-etype="' + esc(i.entity_type) + '" data-ekey="' + esc(i.entity_key) + '">Remove</button>']);
+          });
+          el.innerHTML = rows.length ? "<table><thead><tr><th>Type</th><th>Name</th><th></th></tr></thead><tbody>" + rows.join("") + "</tbody></table>" : '<div class="none">Empty list.</div>';
+          el.querySelectorAll("[data-wl-remove]").forEach(function (btn) {
+            btn.addEventListener("click", function () {
+              api("/api/watchlists/" + encodeURIComponent(btn.getAttribute("data-wl-remove")), { method: "POST", body: JSON.stringify({
+                action: "remove", entity_type: btn.getAttribute("data-etype"), entity_key: btn.getAttribute("data-ekey") }) })
+                .then(function () { viewWatchlists(); });
+            });
+          });
+        });
+      });
+    });
+  }
+
+  function viewMonitors() {
+    setNav("monitors");
+    api("/api/monitors").then(function (items) {
+      var html = "<h1>Saved monitors</h1><p class='sub'>Persisted column/filter/sort configurations.</p>";
+      if (!items || !items.length) { content.innerHTML = html + '<div class="none">No saved monitors.</div>'; return; }
+      html += "<table><thead><tr><th>Name</th><th>Entity</th><th>Columns</th><th>Horizon</th><th>Sort</th></tr></thead><tbody>";
+      items.forEach(function (m) {
+        var cols = [];
+        try { cols = JSON.parse(m.visible_columns || "[]"); } catch (e) {}
+        var sort = [];
+        try { sort = JSON.parse(m.sort || "[]"); } catch (e) {}
+        html += row([esc(m.name), esc(m.entity_type), esc(cols.join(", ")), esc(m.time_horizon || ""), esc(sort.map(function (s) { return s.field + " " + s.direction; }).join(", "))]);
+      });
+      content.innerHTML = html + "</tbody></table>";
+    });
+  }
+
+  function viewAlerts() {
+    setNav("alerts");
+    api("/api/alerts?limit=200").then(function (items) {
+      var html = "<h1>Alerts</h1><p class='sub'>Deterministic, source-backed changes. One logical change → one alert; re-runs never duplicate.</p>";
+      if (!items || !items.length) { content.innerHTML = html + '<div class="none">No alerts.</div>'; return; }
+      html += "<table><thead><tr><th>Observed</th><th>Type</th><th>Entity</th><th>Detail</th></tr></thead><tbody>";
+      items.forEach(function (a) {
+        var det = "";
+        try { det = JSON.parse(a.detail || "{}"); } catch (e) {}
+        html += row([fmt(a.observed_at ? String(a.observed_at).slice(0, 16) : null),
+          '<span class="tape-type">' + esc(a.alert_type) + "</span>",
+          esc(a.entity_name || a.entity_key),
+          esc(det.event_name || det.age_days || "")]);
+      });
+      content.innerHTML = html + "</tbody></table>";
+    });
+  }
+
+  function viewTours() {
+    setNav("tours");
+    api("/api/tours?limit=200").then(function (items) {
+      var html = "<h1>Tours</h1><p class='sub'>Tour, residency, and run series from the reference graph.</p>";
+      if (!items || !items.length) { content.innerHTML = html + '<div class="none">No tour series.</div>'; return; }
+      html += "<table><thead><tr><th>Tour</th><th>Type</th><th>Date range</th><th>Events</th><th>Artists</th></tr></thead><tbody>";
+      items.forEach(function (t) {
+        html += row([linkTo("tours", t.series_key, t.name),
+          '<span class="pill ok">' + esc(t.series_type) + "</span>",
+          fmt(t.begin_date) + " → " + fmt(t.end_date),
+          fmt(t.event_count), fmt(t.artist_count)]);
+      });
+      content.innerHTML = html + "</tbody></table>";
+    });
+  }
+
+  function viewTour(id) {
+    setNav("tours");
+    api("/api/tours/" + encodeURIComponent(id)).then(function (t) {
+      if (!t) { content.innerHTML = "<h1>Tour</h1><div class='none'>Not found.</div>"; return; }
+      var html = "<h1>" + esc(t.name) + "</h1><p class='sub'>" + esc(t.series_type) + " · " +
+        fmt(t.date_range[0]) + " → " + fmt(t.date_range[1]) + " · " + t.event_count + " events</p>";
+      html += "<h2>Artists</h2>" + tableOrNone(t.performers, ["Artist", "Role"], function (p) {
+        return row([linkTo("artists", p.artist_key || p.artist_mbid, p.artist_name), fmt(p.performer_role)]);
+      });
+      html += "<h2>Markets (" + t.markets.length + ")</h2>" + (t.markets.length
+        ? "<ul>" + t.markets.map(function (m) { return "<li>" + esc(m) + "</li>"; }).join("") + "</ul>"
+        : '<div class="none">No markets resolved.</div>');
+      html += "<h2>Events</h2>" + tableOrNone(t.events, ["Date", "Event", "Venue", "Market"], function (e) {
+        return row([fmt(e.local_date), esc(e.event_name), fmt(e.venue_name), fmt(e.market)]);
+      });
+      content.innerHTML = html;
+    });
+  }
+
   function viewData() {
     setNav("data");
     api("/api/sources").then(function (sources) {
@@ -366,7 +610,7 @@
 
   /* ---- routing --------------------------------------------------------- */
 
-  var VIEWS = { tape: viewTape, status: viewStatus, news: viewNews, attention: viewAttention, artists: null, events: null, venues: null, markets: null, festivals: viewFestivals, data: viewData, ask: viewAsk };
+  var VIEWS = { today: viewToday, watchlists: viewWatchlists, monitors: viewMonitors, alerts: viewAlerts, tours: viewTours, tape: viewTape, status: viewStatus, news: viewNews, attention: viewAttention, artists: null, events: null, venues: null, markets: null, festivals: viewFestivals, data: viewData, ask: viewAsk };
 
   function route() {
     var hash = location.hash.replace(/^#\/?/, "");
@@ -378,6 +622,7 @@
     if (view === "venues" && id) return viewVenue(decodeURIComponent(id));
     if (view === "markets" && id) return viewMarket(decodeURIComponent(id));
     if (view === "festivals" && id) return viewFestival(decodeURIComponent(id));
+    if (view === "tours" && id) return viewTour(decodeURIComponent(id));
     if (VIEWS[view]) return VIEWS[view]();
     return viewTape();
   }

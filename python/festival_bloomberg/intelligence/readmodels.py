@@ -11,6 +11,7 @@ event -> venue -> market without a full identity merge.
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -53,11 +54,92 @@ def _market_of(row: dict[str, Any]) -> str | None:
 # Search
 # ---------------------------------------------------------------------------
 def search_entities(conn, query: str, limit: int = 25) -> list[dict[str, Any]]:
-    """Search artists, venues, markets, and festivals by name."""
-    q = f"%{query.strip().lower()}%"
-    results: list[dict[str, Any]] = []
+    """Search artists, venues, markets, and festivals by name.
 
-    artists = _rows(conn, """
+    Artist search hierarchy (identity never defined by fuzzy similarity):
+      1. exact canonical name (core.artists)
+      2. exact alias/sort name (reference.artist_search_terms, normalized)
+      3. prefix/substring over the indexed search terms
+      4. FTS candidate retrieval when the fts extension is available
+    """
+    q_raw = query.strip()
+    q = f"%{q_raw.lower()}%"
+    results: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+
+    def _add_artist(name: str | None, artist_key: str | None, mbid: str | None = None,
+                    priority: int = 0) -> None:
+        if not name:
+            return
+        eid = artist_key or (f"mbid::{mbid}" if mbid else entity_key(name))
+        if eid in seen_ids:
+            return
+        seen_ids.add(eid)
+        results.append({"entity_type": "ARTIST", "entity_id": eid, "name": name,
+                        "_priority": priority})
+
+    # 1. exact canonical name first (identity-backed).
+    exact = _rows(conn, """
+        SELECT name, artist_key FROM core.artists
+        WHERE lower(name) = ? AND name IS NOT NULL
+        LIMIT ?
+    """, [q_raw.lower(), limit])
+    for r in exact:
+        _add_artist(r["name"], r["artist_key"], priority=0)
+
+    # 2. exact alias / sort name from the indexed search terms.
+    alias_exact = _rows(conn, """
+        SELECT DISTINCT st.artist_mbid, r.name
+        FROM reference.artist_search_terms st
+        JOIN reference.musicbrainz_artists r ON r.mbid = st.artist_mbid
+        WHERE st.normalized_term = ? AND st.term_type IN ('ALIAS', 'SORT_NAME')
+        LIMIT ?
+    """, [q_raw.lower(), limit])
+    for r in alias_exact:
+        _add_artist(r["name"], None, r["artist_mbid"], priority=1)
+
+    # 3. substring over the INDEXED terms (not the 2.2M JSON column).
+    sub_hits = _rows(conn, """
+        SELECT DISTINCT st.artist_mbid, r.name
+        FROM reference.artist_search_terms st
+        JOIN reference.musicbrainz_artists r ON r.mbid = st.artist_mbid
+        WHERE st.normalized_term LIKE ?
+        ORDER BY length(st.normalized_term) ASC
+        LIMIT ?
+    """, [q, limit])
+    for r in sub_hits:
+        _add_artist(r["name"], None, r["artist_mbid"], priority=2)
+
+    # Also surface canonical-artist substring hits (core.artists first).
+    canon_sub = _rows(conn, """
+        SELECT name, artist_key FROM core.artists
+        WHERE lower(name) LIKE ? AND name IS NOT NULL
+        LIMIT ?
+    """, [q, limit])
+    for r in canon_sub:
+        _add_artist(r["name"], r["artist_key"], priority=3)
+
+    # 4. FTS candidate retrieval (BM25) — candidates only, never identity.
+    #    Deduplicated per artist: the terms table has one row per (artist,
+    #    term), and the FTS score function needs a unique key per row.
+    fts_hits: list[tuple[Any, ...]] = []
+    try:
+        fts_hits = _rows(conn, """
+            SELECT MAX(fts_reference_artist_search_terms.match_bm25(artist_mbid, ?)) AS score,
+                   artist_mbid
+            FROM reference.artist_search_terms
+            WHERE score IS NOT NULL
+            GROUP BY artist_mbid
+            ORDER BY score DESC
+            LIMIT ?
+        """, [q_raw, limit])
+    except Exception:
+        pass  # fts extension unavailable: deterministic layers still work
+    for r in fts_hits:
+        _add_artist(str(r[1]), None, str(r[1]), priority=4)
+
+    # Box-office / forward-watch names as fallback artist candidates.
+    legacy = _rows(conn, """
         SELECT DISTINCT artist AS name FROM research.canonical_boxoffice_engagements
         WHERE lower(artist) LIKE ? AND artist IS NOT NULL
         UNION
@@ -65,9 +147,13 @@ def search_entities(conn, query: str, limit: int = 25) -> list[dict[str, Any]]:
         WHERE lower(artist_name) LIKE ? AND artist_name IS NOT NULL
         LIMIT ?
     """, [q, q, limit])
-    for r in artists:
-        results.append({"entity_type": "ARTIST", "entity_id": entity_key(r["name"]),
-                        "name": r["name"]})
+    for r in legacy:
+        _add_artist(r["name"], None, priority=5)
+
+    # Priority-stable ordering (exact canonical beats alias beats FTS).
+    artists_sorted = sorted(results, key=lambda x: (x.pop("_priority", 99), x["name"].lower()))
+    results = artists_sorted[:limit]
+    results = [{k: v for k, v in r.items() if k != "_priority"} for r in results]
 
     venues = _rows(conn, """
         SELECT DISTINCT venue AS name FROM research.canonical_boxoffice_engagements
@@ -142,46 +228,99 @@ def query_tape(
 # ---------------------------------------------------------------------------
 # Artist
 # ---------------------------------------------------------------------------
+def _artist_name_keys(conn, artist_key: str) -> list[str]:
+    """All lowercase name forms usable for cross-table joins.
+
+    Canonical name + every alias/credit for the artist (core.artist_aliases,
+    reference aliases). Used to link box-office/forward tables that are keyed
+    by artist NAME, never by the canonical key. Returns [] when nothing is
+    known.
+    """
+    name = _artist_name_for_key(conn, artist_key)
+    if not name:
+        return []
+    forms = {_normalize_name(name)}
+    for row in conn.execute(
+        "SELECT alias FROM core.artist_aliases WHERE artist_key = ?",
+        [artist_key],
+    ).fetchall():
+        if row[0]:
+            forms.add(_normalize_name(row[0]))
+    mbid = artist_key.removeprefix("mbid::")
+    if len(mbid) > 8:
+        row = conn.execute(
+            "SELECT aliases FROM reference.musicbrainz_artists WHERE mbid = ?", [mbid],
+        ).fetchone()
+        if row and row[0]:
+            try:
+                for alias in json.loads(row[0]):
+                    aname = (alias or {}).get("name")
+                    if aname:
+                        forms.add(_normalize_name(aname))
+            except (ValueError, TypeError):
+                pass
+    return sorted(forms)
+
+
 def get_artist(conn, artist_key: str) -> dict[str, Any] | None:
     name = _artist_name_for_key(conn, artist_key)
     if name is None:
         return None
-    history = _rows(conn, """
+    name_forms = _artist_name_keys(conn, artist_key)
+    if not name_forms:
+        name_forms = [_normalize_name(name)]
+    placeholders = ",".join("?" for _ in name_forms)
+    history = _rows(conn, f"""
         SELECT canonical_engagement_id, artist, venue, city, market, start_date,
                number_of_shows, is_multi_show
         FROM research.canonical_boxoffice_engagements
-        WHERE lower(artist) = ?
+        WHERE lower(artist) IN ({placeholders})
         ORDER BY start_date
-    """, [artist_key])
-    upcoming = _rows(conn, """
+    """, name_forms)
+    upcoming = _rows(conn, f"""
         SELECT watch_event_id, provider, provider_event_id, venue_name, market,
                event_date, event_status, first_seen_at, source_url
         FROM flywheel.forward_watch_events
-        WHERE lower(artist_name) = ? AND event_date >= CURRENT_DATE
+        WHERE lower(artist_name) IN ({placeholders}) AND event_date >= CURRENT_DATE
         ORDER BY event_date
-    """, [artist_key])
+    """, name_forms)
     # Box-office outcomes are read from the raw boxscore corpus, which carries
     # headcount / gross / price directly and is keyed by artist name (the
     # economics.event_outcome_claims ledger uses a different id space).
-    outcomes = _rows(conn, """
+    outcomes = _rows(conn, f"""
         SELECT engagement_id, start_date, venue, headcount_total, headcount_definition,
                ticket_gross_total, currency, price_min, price_max,
                reporting_source, source_url
         FROM research.boxoffice_engagements
-        WHERE lower(artist) = ?
+        WHERE lower(artist) IN ({placeholders})
         ORDER BY start_date
-    """, [artist_key])
+    """, name_forms)
     identity = _rows(conn, """
         SELECT DISTINCT spotify_id, spotify_name, spotify_url, resolution_status
         FROM identity.spotify_artist_resolutions
         WHERE normalized_local_name = ? AND resolution_status = 'EXACT'
     """, [_normalize_name(name)])
+    canonical = _rows(conn, """
+        SELECT artist_key, name, musicbrainz_id, type, area, isni, ipi,
+               sort_name, disambiguation, life_span_begin, life_span_end
+        FROM core.artists
+        WHERE artist_key = ? OR musicbrainz_id = ?
+        LIMIT 1
+    """, [artist_key, artist_key.removeprefix("mbid::")])
+    external = _rows(conn, """
+        SELECT id_type, id_value, url, namespace, confidence, source_system
+        FROM core.entity_external_ids
+        WHERE entity_type = 'artist' AND entity_key = ?
+        ORDER BY id_type
+    """, [artist_key]) if canonical else []
     return {
         "entity_type": "ARTIST",
         "entity_id": artist_key,
         "name": name,
         "spotify_id": identity[0]["spotify_id"] if identity else None,
         "identity": identity,
+        "canonical": canonical[0] if canonical else None,
+        "external_ids": external,
         "history_count": len(history),
         "upcoming_count": len(upcoming),
         "history": history,
@@ -194,6 +333,15 @@ def get_artist(conn, artist_key: str) -> dict[str, Any] | None:
 
 
 def _artist_name_for_key(conn, artist_key: str) -> str | None:
+    # Canonical identity master first: artist_key (mbid::… / name::… / hash)
+    # or the bare MusicBrainz ID.
+    row = _rows(conn, """
+        SELECT name FROM core.artists
+        WHERE artist_key = ? OR musicbrainz_id = ? OR musicbrainz_id = ?
+        LIMIT 1
+    """, [artist_key, artist_key, artist_key.removeprefix("mbid::")])
+    if row:
+        return row[0]["name"]
     row = _rows(conn, """
         SELECT artist AS name FROM research.canonical_boxoffice_engagements
         WHERE lower(artist) = ? LIMIT 1
@@ -211,29 +359,49 @@ def _artist_name_for_key(conn, artist_key: str) -> str | None:
 # Event
 # ---------------------------------------------------------------------------
 def get_event(conn, event_id: str) -> dict[str, Any] | None:
+    # Alerts/TODAY carry entity_key as ``tm::<provider_event_id>`` while the
+    # forward-watch table keys on ``watch_<hash>``; resolve both forms so
+    # links from the product never 404 on a real event.
+    lookup = event_id
+    if event_id.startswith("tm::"):
+        lookup = event_id[len("tm::"):]
     row = _rows(conn, """
         SELECT watch_event_id, provider, provider_event_id, artist_name,
                venue_name, market, event_date, event_time, event_status,
                first_seen_at, tracking_status, source_url, rights_status,
                commercial_use_status
-        FROM flywheel.forward_watch_events WHERE watch_event_id = ?
-    """, [event_id])
+        FROM flywheel.forward_watch_events
+        WHERE watch_event_id = ? OR provider_event_id = ?
+        ORDER BY watch_event_id LIMIT 1
+    """, [event_id, lookup])
+    if not row:
+        # bare provider id (no tm:: prefix)
+        row = _rows(conn, """
+            SELECT watch_event_id, provider, provider_event_id, artist_name,
+                   venue_name, market, event_date, event_time, event_status,
+                   first_seen_at, tracking_status, source_url, rights_status,
+                   commercial_use_status
+            FROM flywheel.forward_watch_events
+            WHERE provider_event_id = ?
+            ORDER BY watch_event_id LIMIT 1
+        """, [event_id])
     if row:
         e = dict(row[0])
         e["kind"] = "FORWARD"
+        e["watch_event_id"] = e["watch_event_id"]
         e["observations"] = _rows(conn, """
             SELECT milestone, event_status, price_min, price_max, currency,
                    observed_at, knowledge_time, source_provider, source_url
             FROM flywheel.forward_watch_observations
             WHERE watch_event_id = ? ORDER BY knowledge_time
-        """, [event_id])
+        """, [e["watch_event_id"]])
         e["timeline"] = _rows(conn, """
             SELECT cutoff_type, cutoff_kind, cutoff_timestamp, upper_bound,
                    evidence_class, source_provider, source_url
             FROM flywheel.pre_event_cutoff_evidence
-            WHERE source_event_id = ? OR canonical_event_id = ?
+            WHERE source_event_id IN (?, ?) OR canonical_event_id IN (?, ?)
             ORDER BY knowledge_time
-        """, [event_id, event_id])
+        """, [event_id, e["watch_event_id"], event_id, e["watch_event_id"]])
         e["competition"] = get_competing_events(
             conn, e.get("market"), e.get("event_date"), days=7
         )
@@ -243,9 +411,43 @@ def get_event(conn, event_id: str) -> dict[str, Any] | None:
             UNION ALL
             SELECT source_provider, source_url, rights_status, knowledge_time
             FROM flywheel.pre_event_cutoff_evidence
-            WHERE source_event_id = ? OR canonical_event_id = ?
-        """, [event_id, event_id, event_id])
+            WHERE source_event_id IN (?, ?) OR canonical_event_id IN (?, ?)
+        """, [e["watch_event_id"], event_id, e["watch_event_id"], event_id, e["watch_event_id"]])
         return e
+    # Ticketmaster snapshot event keyed by platform_object_id (alerts/TODAY
+    # link these as ``tm::<platform_object_id>``).
+    row = _rows(conn, """
+        SELECT platform_object_id, event_name, artist_name, venue_name,
+               city, state_code, country_code, local_date, event_status,
+               onsale_start, price_min, price_max, price_currency, promoter,
+               MAX(retrieved_at) AS last_retrieved_at
+        FROM events.provider_event_snapshots
+        WHERE platform_object_id = ? AND provider = 'ticketmaster'
+        GROUP BY ALL
+        ORDER BY last_retrieved_at DESC LIMIT 1
+    """, [lookup])
+    if row:
+        s = dict(row[0])
+        s["kind"] = "SNAPSHOT"
+        s["entity_key"] = f"tm::{s['platform_object_id']}"
+        s["entity_name"] = s.get("event_name")
+        s["market"] = ", ".join(x for x in [s.get("city"), s.get("state_code"), s.get("country_code")] if x) or None
+        s["event_date"] = s.get("local_date")
+        s["observations"] = _rows(conn, """
+            SELECT retrieved_at AS observed_at, event_status, price_min, price_max,
+                   price_currency, onsale_start, promoter
+            FROM events.provider_event_snapshots
+            WHERE platform_object_id = ? AND provider = 'ticketmaster'
+            ORDER BY retrieved_at
+        """, [lookup])
+        s["evidence"] = _rows(conn, """
+            SELECT DISTINCT 'ticketmaster' AS source_provider,
+                   retrieved_at AS knowledge_time
+            FROM events.provider_event_snapshots
+            WHERE platform_object_id = ? AND provider = 'ticketmaster'
+            ORDER BY retrieved_at
+        """, [lookup])
+        return s
     # Historical engagement keyed by canonical_engagement_id.
     row = _rows(conn, """
         SELECT canonical_engagement_id, artist, venue, city, market, tour,
@@ -400,6 +602,110 @@ def get_festival_edition(conn, edition_key: str) -> dict[str, Any] | None:
     return FestivalSpineRepository(conn).get_edition(edition_key)
 
 
+def get_tour(conn, tour_key: str) -> dict[str, Any] | None:
+    """TOUR page: series identity + events + performers + venues/markets."""
+    row = conn.execute(
+        """
+        SELECT s.series_key, s.name, s.musicbrainz_id, s.disambiguation,
+               s.series_type, s.begin_date, s.end_date,
+               (SELECT COUNT(*) FROM core.series_events se
+                WHERE se.series_key = s.series_key) AS event_count
+        FROM core.event_series s WHERE s.series_key = ?
+        """,
+        [tour_key],
+    ).fetchone()
+    if row is None:
+        # allow bare MBID lookup
+        row = conn.execute(
+            """
+            SELECT s.series_key, s.name, s.musicbrainz_id, s.disambiguation,
+                   s.series_type, s.begin_date, s.end_date,
+                   (SELECT COUNT(*) FROM core.series_events se
+                    WHERE se.series_key = s.series_key) AS event_count
+            FROM core.event_series s WHERE s.musicbrainz_id = ?
+            """,
+            [tour_key],
+        ).fetchone()
+    if row is None:
+        return None
+    (series_key, name, mbid, disambiguation, series_type, begin_date,
+     end_date, event_count) = row
+    events = _rows(conn, """
+        SELECT se.event_mbid AS event_key, se.event_name, se.event_begin_date AS local_date,
+               se.event_type, r.object_key AS venue_key,
+               (SELECT p.name FROM raw.musicbrainz_place p
+                WHERE 'mbid::' || p.mbid = r.object_key) AS venue_name,
+               (SELECT p.area FROM raw.musicbrainz_place p
+                WHERE 'mbid::' || p.mbid = r.object_key) AS market
+        FROM core.series_events se
+        LEFT JOIN core.entity_relationships r
+               ON r.subject_key = 'mbid::' || se.event_mbid AND r.predicate = 'EVENT_AT_PLACE'
+        WHERE se.series_key = ?
+        ORDER BY se.event_begin_date NULLS LAST, se.event_name
+        """, [series_key])
+    performers = _rows(conn, """
+        SELECT DISTINCT ep.artist_mbid, ep.artist_name, ep.performer_role,
+               a.artist_key
+        FROM core.series_events se
+        JOIN core.event_performers ep ON ep.event_mbid = se.event_mbid
+        LEFT JOIN core.artists a ON a.musicbrainz_id = ep.artist_mbid
+        WHERE se.series_key = ?
+        ORDER BY ep.artist_name
+        """, [series_key])
+    markets = sorted({e["market"] for e in events if e.get("market")})
+    venues = sorted({e["venue_name"] for e in events if e.get("venue_name")})
+    return {
+        "entity_type": "TOUR",
+        "entity_id": series_key,
+        "series_key": series_key,
+        "name": name,
+        "musicbrainz_id": mbid,
+        "disambiguation": disambiguation,
+        "series_type": series_type,
+        "date_range": [begin_date, end_date],
+        "event_count": int(event_count or 0),
+        "events": events,
+        "performers": performers,
+        "markets": markets,
+        "venues": venues,
+    }
+
+
+def list_tours(conn, *, market: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    """TOUR/RESIDENCY/RUN series list with event/market/artist counts."""
+    sql = """
+        SELECT s.series_key, s.name, s.musicbrainz_id, s.series_type,
+               s.begin_date, s.end_date, s.disambiguation,
+               (SELECT COUNT(*) FROM core.series_events se
+                WHERE se.series_key = s.series_key) AS event_count,
+               (SELECT COUNT(DISTINCT ep.artist_mbid)
+                FROM core.series_events se
+                JOIN core.event_performers ep ON ep.event_mbid = se.event_mbid
+                WHERE se.series_key = s.series_key) AS artist_count
+        FROM core.event_series s
+        WHERE s.series_type IN ('TOUR', 'RESIDENCY', 'RUN')
+    """
+    params: list[Any] = []
+    if market:
+        sql += """
+          AND s.series_key IN (
+              SELECT se.series_key FROM core.series_events se
+              JOIN core.entity_relationships r
+                   ON r.subject_key = 'mbid::' || se.event_mbid
+                  AND r.predicate = 'EVENT_AT_PLACE'
+              JOIN raw.musicbrainz_place p ON 'mbid::' || p.mbid = r.object_key
+              WHERE lower(p.area) = lower(?))
+        """
+        params.append(market)
+    sql += " ORDER BY event_count DESC LIMIT ?"
+    params.append(limit)
+    rows = _rows(conn, sql, params)
+    for r in rows:
+        r["entity_type"] = "TOUR"
+        r["entity_id"] = r["series_key"]
+    return rows
+
+
 def get_artist_billing_trajectory(conn, artist_name: str) -> list[dict[str, Any]]:
     return billing_trajectory(conn, artist_name)
 
@@ -420,14 +726,25 @@ def get_attention_series(conn, entity_name: str) -> list[dict[str, Any]]:
     # normalized name; match both. UNKNOWN/error rows are excluded here and
     # surfaced separately so a missing article never reads as zero.
     key = _normalize_name(entity_name)
-    return _rows(conn, """
+    # artist_key is either mbid::<uuid>, name::<normalized>, or a bare name.
+    # Resolve the canonical MBID for this artist when present, plus the name keys.
+    mbid_rows = _rows(conn, """
+        SELECT musicbrainz_id FROM core.artists
+        WHERE lower(name) = ? OR artist_key IN (?, ?) LIMIT 1
+    """, [entity_name.lower(), key, f"name::{key}"])
+    keys = [key, f"name::{key}"]
+    if mbid_rows and mbid_rows[0]["musicbrainz_id"]:
+        keys.append(f"mbid::{mbid_rows[0]['musicbrainz_id']}")
+        keys.append(mbid_rows[0]["musicbrainz_id"])
+    placeholders = ",".join("?" for _ in keys)
+    return _rows(conn, f"""
         SELECT period_start AS observed_date, value, value_sum, value_unit AS unit,
                metric_kind AS metric_name, source_system AS provider, article_title,
                granularity, status, source_url, retrieved_at
         FROM metrics.artist_attention_observations
-        WHERE lower(artist_key) IN (?, ?) AND status = 'ok'
+        WHERE lower(artist_key) IN ({placeholders}) AND status = 'ok'
         ORDER BY period_start, retrieved_at
-    """, [key, f"name::{key}"])
+    """, keys)
 
 
 def get_news(conn, entity_name: str) -> list[dict[str, Any]]:
