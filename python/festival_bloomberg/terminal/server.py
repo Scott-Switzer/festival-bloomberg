@@ -34,6 +34,9 @@ from ..intelligence.ask import answer as ask_answer
 from ..intelligence.ask import DeepSeekAskClient
 from ..intelligence.llm import NimClient
 from ..localenv import load_local_env
+from ..planning import candidates as planning_candidates
+from ..planning import repository as planning_repo
+from ..planning import scenario as planning_scenario
 from ..research.repository import ResearchRepository
 from ..warehouse.repository import FestivalRepository
 
@@ -181,6 +184,103 @@ class TerminalApp:
                 entity_key_value=params.get("entity_key")))
         if path == "/api/data":
             return self._ok(_data_coverage(self.conn))
+        if path == "/api/coverage":
+            from ..intelligence.coverage_voi import coverage_dashboard
+            return self._ok(coverage_dashboard(self.conn))
+        if path == "/api/voi":
+            from ..intelligence.coverage_voi import voi_ranking
+            return self._ok(voi_ranking(self.conn))
+        if path == "/api/venues/coverage":
+            from ..intelligence.venue_intel import venue_coverage
+            return self._ok(venue_coverage(self.conn))
+        # ---- planning workspace (talent-buyer workbench) ------------------
+        if path == "/api/planning/projects" and method == "POST":
+            try:
+                body = json.loads(body.decode("utf-8"))
+            except Exception:
+                body = {}
+            return self._ok(planning_repo.create_project(
+                self.conn, name=body.get("name", ""),
+                city=body.get("city"), market=body.get("market"),
+                venue_site=body.get("venue_site"),
+                start_date=body.get("start_date"), end_date=body.get("end_date"),
+                num_days=body.get("num_days"), num_stages=body.get("num_stages"),
+                talent_budget_usd=body.get("talent_budget_usd"),
+                genre_objectives=body.get("genre_objectives"),
+                target_audience=body.get("target_audience"),
+                min_billing_tier=body.get("min_billing_tier"),
+                max_billing_tier=body.get("max_billing_tier"),
+                notes=body.get("notes"),
+                scenario_class=body.get("scenario_class", "SYNTHETIC_PLANNING_SCENARIO")))
+        if path == "/api/planning/projects":
+            return self._ok(planning_repo.list_projects(self.conn))
+        if path == "/api/planning/seed" and method == "POST":
+            return self._ok(planning_repo.seed_synthetic_project(self.conn))
+        if path == "/api/planning/scorecard":
+            return self._ok(planning_candidates.artist_scorecard(
+                self.conn, artist_key=params.get("artist_key"),
+                artist_name=params.get("artist_name")))
+        if path.startswith("/api/planning/projects/"):
+            rest = path[len("/api/planning/projects/"):]
+            segs = rest.split("/")
+            pkey = segs[0]
+            sub = segs[1] if len(segs) > 1 else None
+            if sub is None:
+                return self._ok(planning_repo.get_project(self.conn, pkey) or self._not_found())
+            if sub == "stages" and method == "POST":
+                try:
+                    b = json.loads(body.decode("utf-8"))
+                except Exception:
+                    b = {}
+                return self._ok(planning_repo.add_stage(
+                    self.conn, project_key=pkey, stage_name=b.get("stage_name", ""),
+                    capacity_claim=b.get("capacity_claim"),
+                    capacity_evidence_class=b.get("capacity_evidence_class"),
+                    indoor_outdoor=b.get("indoor_outdoor")))
+            if sub == "candidates" and method == "POST":
+                try:
+                    b = json.loads(body.decode("utf-8"))
+                except Exception:
+                    b = {}
+                if b.get("generate"):
+                    return self._ok(planning_candidates.build_candidate_universe(
+                        self.conn, project_key=pkey, market=b.get("market"),
+                        limit=int(b.get("limit", 200))))
+                return self._ok(planning_repo.add_candidate(
+                    self.conn, project_key=pkey, artist_key=b.get("artist_key"),
+                    artist_name=b.get("artist_name", ""),
+                    musicbrainz_id=b.get("musicbrainz_id"),
+                    inclusion_reasons=b.get("inclusion_reasons"),
+                    availability_status=b.get("availability_status", "UNKNOWN"),
+                    availability_evidence=b.get("availability_evidence"),
+                    scorecard_snapshot=b.get("scorecard_snapshot")))
+            if sub == "candidates":
+                return self._ok(planning_repo.list_candidates(self.conn, pkey))
+            if sub == "shortlist" and method == "POST":
+                try:
+                    b = json.loads(body.decode("utf-8"))
+                except Exception:
+                    b = {}
+                return self._ok(planning_repo.set_shortlist(
+                    self.conn, project_key=pkey, artist_key=b.get("artist_key"),
+                    artist_name=b.get("artist_name", ""), status=b.get("status", "DISCOVERED"),
+                    candidate_day=b.get("candidate_day"),
+                    candidate_stage=b.get("candidate_stage"),
+                    candidate_billing_tier=b.get("candidate_billing_tier"),
+                    notes=b.get("notes")))
+            if sub == "shortlist":
+                return self._ok(planning_repo.list_shortlists(self.conn, pkey))
+            if sub == "scenarios" and method == "POST":
+                try:
+                    b = json.loads(body.decode("utf-8"))
+                except Exception:
+                    b = {}
+                return self._ok(planning_scenario.persist_scenario(
+                    self.conn, project_key=pkey, name=b.get("name", "Scenario"),
+                    slots=b.get("slots", []), notes=b.get("notes")))
+            if sub == "scenarios":
+                return self._ok(planning_repo.list_scenarios(self.conn, pkey))
+
         if path.startswith("/api/watchlists/") and method == "POST":
             try:
                 body = json.loads(body.decode("utf-8"))

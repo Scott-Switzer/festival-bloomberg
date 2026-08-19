@@ -484,6 +484,319 @@
     });
   }
 
+  /* ---- BUILD: festival planning workspace ---------------------------- */
+
+  function viewBuild() {
+    setNav("build");
+    api("/api/planning/projects").then(function (projects) {
+      var html = "<h1>BUILD</h1><p class='sub'>Festival planning workspace — synthetic scenarios are clearly marked, never official.</p>";
+      html += "<div class='panel'><h3>Create project</h3>" +
+        "<input id='bp-name' placeholder='Festival name' /> " +
+        "<input id='bp-city' placeholder='City / market' style='width:150px' /> " +
+        "<input id='bp-start' type='date' /> <input id='bp-end' type='date' /> " +
+        "<button id='bp-create'>Create</button> " +
+        "<button id='bp-seed' class='nav-btn'>Seed synthetic Chicago 2027</button></div>";
+      html += "<div id='bp-list'>";
+      if (!projects || !projects.length) html += '<div class="none">No projects yet. Create one or seed the synthetic scenario.</div>';
+      projects.forEach(function (p) {
+        html += "<h2>" + linkTo("build", p.project_key, p.name) + " <span class='pill warn'>" + esc(p.scenario_class) + "</span></h2>" +
+          "<p class='muted'>" + esc(p.city || "") + (p.start_date ? " · " + esc(p.start_date) + " → " + esc(p.end_date) : "") +
+          " · " + esc(p.candidate_count || 0) + " candidates</p>";
+      });
+      html += "</div>";
+      content.innerHTML = html;
+      var create = document.getElementById("bp-create");
+      if (create) create.addEventListener("click", function () {
+        api("/api/planning/projects", { method: "POST", body: JSON.stringify({
+          name: document.getElementById("bp-name").value.trim(),
+          city: document.getElementById("bp-city").value.trim() || null,
+          start_date: document.getElementById("bp-start").value || null,
+          end_date: document.getElementById("bp-end").value || null,
+          scenario_class: "SYNTHETIC_PLANNING_SCENARIO" }) })
+          .then(function (p) { if (p.project_key) location.hash = "#/build/" + p.project_key; else viewBuild(); });
+      });
+      var seed = document.getElementById("bp-seed");
+      if (seed) seed.addEventListener("click", function () {
+        api("/api/planning/seed", { method: "POST" }).then(function (p) {
+          if (p.project_key) location.hash = "#/build/" + p.project_key; else viewBuild();
+        });
+      });
+    });
+  }
+
+  function viewBuildProject(id) {
+    setNav("build");
+    api("/api/planning/projects/" + encodeURIComponent(id)).then(function (p) {
+      if (!p) { content.innerHTML = "<h1>Project</h1><div class='none'>Not found.</div>"; return; }
+      var html = "<h1>" + esc(p.name) + "</h1>" +
+        "<p class='sub'><span class='pill warn'>" + esc(p.scenario_class) + "</span> · " + esc(p.city || "") +
+        (p.start_date ? " · " + esc(p.start_date) + " → " + esc(p.end_date) : "") +
+        " · " + fmt(p.talent_budget_usd) + " talent budget (UNKNOWN if none entered)</p>";
+
+      html += "<h2>Stages</h2>" + tableOrNone(p.stages, ["Stage", "Capacity claim", "Evidence", "Type"], function (s) {
+        return row([esc(s.stage_name), fmt(s.capacity_claim), fmt(s.capacity_evidence_class), fmt(s.indoor_outdoor)]);
+      });
+      html += "<div class='panel'><input id='st-name' placeholder='Stage name' /> " +
+        "<input id='st-cap' placeholder='Capacity (optional)' type='number' style='width:130px' /> " +
+        "<button id='st-add' data-project='" + esc(p.project_key) + "'>Add stage</button></div>";
+
+      html += "<h2>Candidates (" + esc(p.candidate_count) + ")</h2>" +
+        "<div class='panel'><button id='cand-gen' data-project='" + esc(p.project_key) + "'>Generate candidate universe</button> " +
+        "<input id='cand-add-name' placeholder='Artist name' /> " +
+        "<input id='cand-add-key' placeholder='artist_key (optional)' style='width:220px' /> " +
+        "<button id='cand-add' data-project='" + esc(p.project_key) + "'>Add</button></div>" +
+        "<div id='cand-list'></div>";
+
+      html += "<h2>Shortlist</h2><div id='sl-list'></div>";
+      html += "<div class='panel'><button id='sl-refresh' data-project='" + esc(p.project_key) + "'>Refresh</button></div>";
+
+      html += "<h2>Scenarios (non-optimizing)</h2>" +
+        "<div class='panel'><input id='scen-name' placeholder='Scenario name' value='Day 1 v1' /> " +
+        "<button id='scen-build' data-project='" + esc(p.project_key) + "'>Build board from shortlist</button></div>" +
+        "<div id='scen-board'></div>" +
+        "<div id='scen-list'></div>";
+      content.innerHTML = html;
+
+      var stAdd = document.getElementById("st-add");
+      if (stAdd) stAdd.addEventListener("click", function () {
+        var name = document.getElementById("st-name").value.trim();
+        if (!name) return;
+        var cap = document.getElementById("st-cap").value;
+        api("/api/planning/projects/" + encodeURIComponent(p.project_key) + "/stages", {
+          method: "POST", body: JSON.stringify({ stage_name: name, capacity_claim: cap ? Number(cap) : null, capacity_evidence_class: cap ? "ESTIMATED" : null }) })
+          .then(function () { viewBuildProject(p.project_key); });
+      });
+      var candGen = document.getElementById("cand-gen");
+      if (candGen) candGen.addEventListener("click", function () {
+        api("/api/planning/projects/" + encodeURIComponent(p.project_key) + "/candidates", {
+          method: "POST", body: JSON.stringify({ generate: true, limit: 200 }) })
+          .then(function () { viewBuildProject(p.project_key); });
+      });
+      var candAdd = document.getElementById("cand-add");
+      if (candAdd) candAdd.addEventListener("click", function () {
+        api("/api/planning/projects/" + encodeURIComponent(p.project_key) + "/candidates", {
+          method: "POST", body: JSON.stringify({
+            artist_name: document.getElementById("cand-add-name").value.trim(),
+            artist_key: document.getElementById("cand-add-key").value.trim() || null }) })
+          .then(function () { viewBuildProject(p.project_key); });
+      });
+      var slRefresh = document.getElementById("sl-refresh");
+      if (slRefresh) slRefresh.addEventListener("click", function () { loadShortlist(p.project_key); });
+      var scenBuild = document.getElementById("scen-build");
+      if (scenBuild) scenBuild.addEventListener("click", function () { buildScenarioBoard(p.project_key); });
+      loadCandidates(p.project_key);
+      loadShortlist(p.project_key);
+      loadScenarios(p.project_key);
+    });
+  }
+
+  function loadCandidates(projectKey) {
+    api("/api/planning/projects/" + encodeURIComponent(projectKey) + "/candidates").then(function (items) {
+      var el = document.getElementById("cand-list");
+      if (!el) return;
+      if (!items || !items.length) { el.innerHTML = '<div class="none">No candidates yet — generate the universe or add artists.</div>'; return; }
+      el.innerHTML = "<table><thead><tr><th>Artist</th><th>Reasons</th><th>Availability</th><th>Shortlist</th></tr></thead><tbody>" +
+        items.map(function (c) {
+          var reasons = (c.inclusion_reasons || []).map(function (r) { return '<span class="pill ok">' + esc(r.reason) + "</span>"; }).join(" ");
+          var av = String(c.availability_status || "UNKNOWN");
+          var cls = av === "NO_CONFLICT_OBSERVED" ? "warn" : av === "CONFIRMED_CONFLICT" ? "off" : "";
+          var opts = ["DISCOVERED", "RESEARCHING", "INTEREST", "HOLD", "CONTACTED", "PASSED", "SHORTLIST", "UNKNOWN"]
+            .map(function (st) { return '<option value="' + st + '">' + st + "</option>"; }).join("");
+          return "<tr><td>" + linkTo("artists", c.artist_key || c.artist_name, c.artist_name) + "</td>" +
+            "<td>" + (reasons || '<span class="muted">—</span>') + "</td>" +
+            "<td><span class='pill " + cls + "'>" + esc(av) + "</span></td>" +
+            "<td><select data-cand-sl='" + esc(projectKey) + "' data-key='" + esc(c.artist_key || "") + "' data-name='" + esc(c.artist_name) + "'>" + opts + "</select> " +
+            "<button data-cand-sl-go='" + esc(projectKey) + "'>Add</button></td></tr>";
+        }).join("") + "</tbody></table>";
+      el.querySelectorAll("[data-cand-sl-go]").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          var key = btn.getAttribute("data-cand-sl-go");
+          var sel = btn.closest("tr").querySelector("[data-cand-sl]");
+          api("/api/planning/projects/" + encodeURIComponent(key) + "/shortlist", {
+            method: "POST", body: JSON.stringify({
+              artist_key: sel.getAttribute("data-key") || null,
+              artist_name: sel.getAttribute("data-name"), status: sel.value }) })
+            .then(function () { loadShortlist(key); });
+        });
+      });
+    });
+  }
+
+  function loadShortlist(projectKey) {
+    api("/api/planning/projects/" + encodeURIComponent(projectKey) + "/shortlist").then(function (items) {
+      var el = document.getElementById("sl-list");
+      if (!el) return;
+      var statuses = ["DISCOVERED", "RESEARCHING", "INTEREST", "HOLD", "CONTACTED", "PASSED", "SHORTLIST", "UNKNOWN"];
+      if (!items || !items.length) { el.innerHTML = '<div class="none">Shortlist empty — set a status from the candidate list or add directly.</div>'; return; }
+      el.innerHTML = "<table><thead><tr><th>Artist</th><th>Status</th><th>Day</th><th>Stage</th><th>Billing</th></tr></thead><tbody>" +
+        items.map(function (s) {
+          var opts = statuses.map(function (st) {
+            return '<option value="' + st + '"' + (s.status === st ? " selected" : "") + ">" + st + "</option>";
+          }).join("");
+          return "<tr><td>" + esc(s.artist_name) + "</td>" +
+            "<td><select data-sl-status='" + esc(projectKey) + "' data-key='" + esc(s.artist_key || "") + "' data-name='" + esc(s.artist_name) + "'>" + opts + "</select></td>" +
+            "<td>" + fmt(s.candidate_day) + "</td><td>" + fmt(s.candidate_stage) + "</td><td>" + fmt(s.candidate_billing_tier) + "</td></tr>";
+        }).join("") + "</tbody></table>";
+      el.querySelectorAll("[data-sl-status]").forEach(function (sel) {
+        sel.addEventListener("change", function () {
+          api("/api/planning/projects/" + encodeURIComponent(projectKey) + "/shortlist", {
+            method: "POST", body: JSON.stringify({
+              artist_key: sel.getAttribute("data-key") || null,
+              artist_name: sel.getAttribute("data-name"), status: sel.value }) })
+            .then(function () { loadShortlist(projectKey); });
+        });
+      });
+    });
+  }
+
+  function loadScenarios(projectKey) {
+    api("/api/planning/projects/" + encodeURIComponent(projectKey) + "/scenarios").then(function (items) {
+      var el = document.getElementById("scen-list");
+      if (!el) return;
+      if (!items || !items.length) { el.innerHTML = ""; return; }
+      el.innerHTML = "<h3>Saved boards</h3><table><thead><tr><th>Name</th><th>Artists</th><th>Conflicts</th></tr></thead><tbody>" +
+        items.map(function (sc) {
+          var sum = sc.summaries || {};
+          return row([esc(sc.name), fmt(sum.artist_count), fmt(sum.conflict_count)]);
+        }).join("") + "</tbody></table>";
+    });
+  }
+
+  function buildScenarioBoard(projectKey) {
+    api("/api/planning/projects/" + encodeURIComponent(projectKey) + "/shortlist").then(function (items) {
+      var el = document.getElementById("scen-board");
+      if (!el) return;
+      if (!items || !items.length) { el.innerHTML = '<div class="none">Shortlist empty — add candidates and set statuses first.</div>'; return; }
+      var html = "<h3>Scenario board</h3><p class='sub'>Hypothetical day × stage × slot placement. Warnings only — no optimization.</p>" +
+        "<table><thead><tr><th>Artist</th><th>Day</th><th>Stage</th><th>Slot label</th><th>Billing tier</th></tr></thead><tbody>";
+      items.forEach(function (s, i) {
+        html += "<tr><td>" + esc(s.artist_name) + "</td>" +
+          "<td><input type='number' min='1' value='1' id='sc-day-" + i + "' style='width:50px' /></td>" +
+          "<td><input id='sc-stage-" + i + "' placeholder='Stage' value='" + esc(s.candidate_stage || "") + "' /></td>" +
+          "<td><input id='sc-slot-" + i + "' placeholder='e.g. 18:00' /></td>" +
+          "<td><input id='sc-tier-" + i + "' placeholder='HEADLINE' value='" + esc(s.candidate_billing_tier || "") + "' /></td></tr>";
+      });
+      html += "</tbody></table><button id='scen-save' data-project='" + esc(projectKey) + "'>Validate & save scenario</button>";
+      html += "<div id='scen-warn'></div>";
+      el.innerHTML = html;
+      var save = document.getElementById("scen-save");
+      if (save) save.addEventListener("click", function () {
+        var slots = items.map(function (s, i) {
+          return {
+            artist_key: s.artist_key || null,
+            artist_name: s.artist_name,
+            day: Number(document.getElementById("sc-day-" + i).value) || null,
+            stage: document.getElementById("sc-stage-" + i).value.trim() || null,
+            slot_label: document.getElementById("sc-slot-" + i).value.trim() || null,
+            billing_tier: document.getElementById("sc-tier-" + i).value.trim() || null,
+          };
+        });
+        api("/api/planning/projects/" + encodeURIComponent(projectKey) + "/scenarios", {
+          method: "POST", body: JSON.stringify({ name: (document.getElementById("scen-name") || {}).value || "Scenario", slots: slots }) })
+          .then(function (r) {
+            var w = document.getElementById("scen-warn");
+            var rows = (r.warnings || []).map(function (x) {
+              return '<div class="warn-line"><span class="pill ' + (x.severity === "CONFIRMED" ? "off" : x.severity === "POSSIBLE" ? "warn" : "ok") + '">' + esc(x.severity) + "</span> " + esc(x.detail) + "</div>";
+            });
+            w.innerHTML = rows.length ? "<h4>Warnings</h4>" + rows.join("") : '<div class="none">No conflicts detected.</div>';
+            loadScenarios(projectKey);
+          });
+      });
+    });
+  }
+
+  /* ---- COMPARE -------------------------------------------------------- */
+
+  var compareSet = [];
+
+  function viewCompare() {
+    setNav("compare");
+    var html = "<h1>COMPARE</h1><p class='sub'>Side-by-side artist investigation — evidence, not a recommendation. No winner badge.</p>";
+    html += "<div class='panel'><input id='cp-add' placeholder='Search artist to add…' style='width:40%' /> <button id='cp-add-btn'>Add</button></div>";
+    html += "<div id='cp-set'></div><div id='cp-out'></div>";
+    content.innerHTML = html;
+    var btn = document.getElementById("cp-add-btn");
+    if (btn) btn.addEventListener("click", function () {
+      var q = document.getElementById("cp-add").value.trim();
+      if (!q) return;
+      api("/api/search?q=" + encodeURIComponent(q) + "&limit=5").then(function (hits) {
+        if (!hits || !hits.length) return;
+        var hit = hits[0];
+        var key = hit.entity_id;
+        if (compareSet.length >= 10) { compareSet.shift(); }
+        if (compareSet.indexOf(key) === -1) compareSet.push(key);
+        renderCompare();
+      });
+    });
+    renderCompare();
+  }
+
+  function renderCompare() {
+    var setEl = document.getElementById("cp-set");
+    var outEl = document.getElementById("cp-out");
+    if (!setEl || !outEl) return;
+    if (!compareSet.length) {
+      setEl.innerHTML = '<div class="none">Add 2–10 artists to compare.</div>';
+      outEl.innerHTML = "";
+      return;
+    }
+    setEl.innerHTML = "<h3>Compare set (" + compareSet.length + ")</h3>" + compareSet.map(function (key) {
+      return "<span class='pill ok'>" + esc(key) + " <button class='link' data-cp-remove='" + esc(key) + "'>✕</button></span> ";
+    }).join("");
+    setEl.querySelectorAll("[data-cp-remove]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        compareSet = compareSet.filter(function (k) { return k !== b.getAttribute("data-cp-remove"); });
+        renderCompare();
+      });
+    });
+    outEl.innerHTML = '<div class="muted">Loading scorecards…</div>';
+    Promise.all(compareSet.map(function (key) {
+      return api("/api/planning/scorecard?artist_key=" + encodeURIComponent(key)).then(function (sc) {
+        if (sc && !sc.artist_name) return api("/api/planning/scorecard?artist_name=" + encodeURIComponent(key));
+        return sc;
+      });
+    })).then(function (cards) {
+      renderCompareTable(cards);
+    });
+  }
+
+  function compCell(card, pick) {
+    var v = pick(card);
+    if (v == null || v === "" || (typeof v === "number" && isNaN(v))) return '<span class="muted">—</span>';
+    return esc(typeof v === "number" ? String(Math.round(v * 100) / 100) : String(v));
+  }
+
+  function renderCompareTable(cards) {
+    var outEl = document.getElementById("cp-out");
+    if (!outEl) return;
+    var rows = [
+      ["Artist", function (c) { return c.artist_name; }],
+      ["Identity", function (c) { var i = c.identity || {}; return i.type ? i.type + (i.area ? " · " + i.area : "") : "UNKNOWN"; }],
+      ["External IDs", function (c) { var ids = Object.keys((c.identity || {}).external_ids || {}); return ids.length ? ids.join(", ") : "—"; }],
+      ["Upcoming shows", function (c) { var l = c.live || {}; return l.upcoming_count; }],
+      ["Historical shows", function (c) { var l = c.live || {}; return l.historical_count; }],
+      ["Festival editions", function (c) { var f = c.festival || {}; return f.edition_count; }],
+      ["Festival billing tiers", function (c) { var f = c.festival || {}; var t = Object.keys(f.billing_tiers || {}); return t.length ? t.join(", ") : "—"; }],
+      ["Attention", function (c) { var a = c.attention || {}; return a.wikimedia ? "wikimedia " + a.wikimedia.value_sum : a.latest && a.latest.length ? a.latest[0].source_system : "—"; }],
+      ["Gross comp median", function (c) { var g = (c.comparables || {}).gross || {}; return g.status === "OBSERVED" || g.status === "DERIVED" ? g.weighted_median : "UNKNOWN"; }],
+      ["Gross comp range", function (c) { var g = (c.comparables || {}).gross || {}; return (g.status === "OBSERVED" || g.status === "DERIVED") && g.p10 != null ? g.p10 + "–" + g.p90 : "—"; }],
+      ["Attendance comp median", function (c) { var a = (c.comparables || {}).attendance || {}; return a.status === "OBSERVED" || a.status === "DERIVED" ? a.weighted_median : "UNKNOWN"; }],
+      ["Market shows", function (c) { var m = c.market_history || {}; return m.shows_in_market; }],
+      ["Data coverage", function (c) { return (c.coverage || {}).coverage_score; }],
+      ["Sources known", function (c) { return (c.coverage || {}).known_source_count; }],
+    ];
+    var html = "<table><thead><tr><th>Attribute</th>" + cards.map(function (c) {
+      return "<th>" + esc(c.artist_name || c.artist_key || "?") + "</th>";
+    }).join("") + "</tr></thead><tbody>";
+    rows.forEach(function (r) {
+      html += "<tr><th>" + esc(r[0]) + "</th>" + cards.map(function (c) { return "<td>" + compCell(c, r[1]) + "</td>"; }).join("") + "</tr>";
+    });
+    html += "</tbody></table>";
+    html += "<p class='muted'>Evidence is per-scorecard; UNKNOWN cells are shown explicitly, never as zero. Comparable medians are RESEARCH-ONLY ranges." +
+      " <a href='#/artists/" + esc(cards[0].artist_key || "") + "'>Open full scorecard</a></p>";
+    outEl.innerHTML = html;
+  }
+
   function viewMonitors() {
     setNav("monitors");
     api("/api/monitors").then(function (items) {
@@ -610,7 +923,7 @@
 
   /* ---- routing --------------------------------------------------------- */
 
-  var VIEWS = { today: viewToday, watchlists: viewWatchlists, monitors: viewMonitors, alerts: viewAlerts, tours: viewTours, tape: viewTape, status: viewStatus, news: viewNews, attention: viewAttention, artists: null, events: null, venues: null, markets: null, festivals: viewFestivals, data: viewData, ask: viewAsk };
+  var VIEWS = { today: viewToday, watchlists: viewWatchlists, monitors: viewMonitors, alerts: viewAlerts, tours: viewTours, tape: viewTape, status: viewStatus, news: viewNews, attention: viewAttention, artists: null, events: null, venues: null, markets: null, festivals: viewFestivals, build: viewBuild, compare: viewCompare, data: viewData, ask: viewAsk };
 
   function route() {
     var hash = location.hash.replace(/^#\/?/, "");
@@ -623,6 +936,7 @@
     if (view === "markets" && id) return viewMarket(decodeURIComponent(id));
     if (view === "festivals" && id) return viewFestival(decodeURIComponent(id));
     if (view === "tours" && id) return viewTour(decodeURIComponent(id));
+    if (view === "build" && id) return viewBuildProject(decodeURIComponent(id));
     if (VIEWS[view]) return VIEWS[view]();
     return viewTape();
   }
