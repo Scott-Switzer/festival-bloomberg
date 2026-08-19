@@ -81,24 +81,51 @@ def _voi(coverage_gain: float, decision_importance: float, uniqueness: float,
     return round((coverage_gain * decision_importance * uniqueness * rights_usability) / cost, 3)
 
 
+def _venues_with_any_capacity(conn) -> int:
+    """Distinct canonical venues with >=1 admissible capacity observation.
+
+    A venue is covered if its canonical row has a capacity column value OR it
+    has at least one venue_capacity_claims row. Multiple (conflicting) claims
+    for one venue still count as ONE covered venue — claims are never merged.
+    """
+    return _count(conn, """
+        SELECT COUNT(DISTINCT v.venue_key)
+        FROM core.venues v
+        WHERE v.capacity IS NOT NULL
+           OR EXISTS (
+                SELECT 1 FROM economics.venue_capacity_claims c
+                WHERE c.canonical_venue_id = v.venue_key
+           )
+    """)
+
+
+def _clamp01(x: float) -> float:
+    return min(1.0, max(0.0, x))
+
+
 def dense_panel_coverage(conn) -> dict[str, float]:
     """Measured coverage for dense-panel feature families (registry probe).
 
     Keys match feature_registry feature names so the registry can be admitted
-    against real measured coverage.
+    against real measured coverage. Every value is clamped to [0, 1]; venue
+    capacity is DISTINCT-venue coverage, so it can never exceed 100%.
+
+    Not-yet-built families return ``None`` (NOT measured), NOT 0.0 — a
+    measured zero is a real failure and must not be confused with an unbuilt
+    lane. Callers should map ``None`` to NOT_MEASURED.
     """
     venues = _count(conn, "SELECT COUNT(*) FROM core.venues")
+    den = max(venues, 1)
     return {
-        "venue_capacity_band": (_count(conn, "SELECT COUNT(*) FROM core.venues WHERE capacity IS NOT NULL") +
-                                _count(conn, "SELECT COUNT(*) FROM economics.venue_capacity_claims")) / max(venues, 1),
-        "venue_coordinates": _count(conn, "SELECT COUNT(*) FROM core.venues WHERE latitude IS NOT NULL") / max(venues, 1),
-        "artist_attention_wikimedia_30d_at_cutoff": 0.0,  # historical PIT panel not yet built
-        "artist_attention_listenbrainz_30d_at_cutoff": 0.0,
-        "event_competition_same_day_market": 0.0,          # competition features not yet persisted
-        "event_competition_14d_market": 0.0,
-        "market_population_vintage": 0.0,                  # ACS vintages not yet ingested
-        "market_median_income_vintage": 0.0,
-        "tour_position": 0.0,
+        "venue_capacity_band": _clamp01(_venues_with_any_capacity(conn) / den),
+        "venue_coordinates": _clamp01(_count(conn, "SELECT COUNT(*) FROM core.venues WHERE latitude IS NOT NULL") / den),
+        "artist_attention_wikimedia_30d_at_cutoff": None,   # historical PIT panel not yet built
+        "artist_attention_listenbrainz_30d_at_cutoff": None,
+        "event_competition_same_day_market": None,          # competition features not yet persisted
+        "event_competition_14d_market": None,
+        "market_population_vintage": None,                  # ACS vintages not yet ingested
+        "market_median_income_vintage": None,
+        "tour_position": None,
     }
 
 
@@ -113,17 +140,24 @@ def voi_ranking(conn) -> dict[str, Any]:
     slots = cov["festivals"]["lineup_slots"]
 
     dense = dense_panel_coverage(conn)
+
+    def _gap(coverage: float | None) -> float:
+        """Coverage gap: NOT-measured lanes are a full gap (1.0), never zero."""
+        if coverage is None:
+            return 1.0
+        return round(_clamp01(1.0 - coverage), 4)
+
     candidates: list[dict[str, Any]] = [
         {
             "action": "build historical Wikimedia PIT attention panel (30d windows at cutoff)",
-            "coverage_gap": round(1.0 - dense["artist_attention_wikimedia_30d_at_cutoff"], 4),
+            "coverage_gap": _gap(dense["artist_attention_wikimedia_30d_at_cutoff"]),
             "decision_importance": 0.85, "uniqueness": 0.8, "rights_usability": 0.9,
             "engineering_cost": 5.0, "api_cost": 1.0, "rate_limit_cost": 2.0, "semantic_risk": 1.0,
             "category": "attention",
         },
         {
             "action": "persist event competition features (same-day / +-14d market counts)",
-            "coverage_gap": round(1.0 - dense["event_competition_same_day_market"], 4),
+            "coverage_gap": _gap(dense["event_competition_same_day_market"]),
             "decision_importance": 0.7, "uniqueness": 0.7, "rights_usability": 0.9,
             "engineering_cost": 3.0, "api_cost": 0.0, "rate_limit_cost": 0.0, "semantic_risk": 3.0,
             "category": "competition",

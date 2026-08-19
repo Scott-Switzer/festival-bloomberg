@@ -2,12 +2,25 @@
 
 Derives PIT features (7d / 30d / 90d / 365d windows, growth, trend,
 volatility, spike) from time-indexed daily observations, respecting a hard
-cutoff: only observations with observation day < cutoff may enter ANY window.
+cutoff: only observations whose observation day < cutoff may enter ANY window.
 This is pure computation over already-frozen rows (no I/O, no network).
 
+Three distinct timestamps are distinguished so that "a value existed before
+the cutoff" is never confused with "a value was knowable before the cutoff":
+
+* observation_time  — the day the value refers to (``day_fn``);
+* available_at      — when the value became knowable (``available_fn``), e.g.
+                      ListenBrainz ``inserted_at`` or a daily aggregate's
+                      publication time; a row whose available_at is not
+                      strictly before the cutoff is excluded;
+* retrieved_at      — when WE fetched it (caller provenance), which is NEVER
+                      an admissibility gate (a late retrieval does not make a
+                      value unknowable at the cutoff, and an early retrieval
+                      does not make a future value knowable).
+
 Critical rule for ListenBrainz-style sources: a row is admissible only if
-listened_at < cutoff AND inserted_at < cutoff — late-imported historical
-listens must never leak backward.
+listened_at (observation) < cutoff AND inserted_at (available_at) < cutoff —
+late-imported historical listens must never leak backward.
 """
 
 from __future__ import annotations
@@ -41,13 +54,13 @@ def _std(vals: list[float]) -> float | None:
 
 def daily_series(rows: list[dict[str, Any]], *, value_fn: Callable[[dict[str, Any]], float | None],
                  day_fn: Callable[[dict[str, Any]], Any],
-                 inserted_fn: Callable[[dict[str, Any]], Any] | None = None,
+                 available_fn: Callable[[dict[str, Any]], Any] | None = None,
                  cutoff: str | None = None) -> dict[date, float]:
     """Aggregate rows into a daily sum series, strictly before the cutoff.
 
-    ``inserted_fn`` (when given) enforces the listened_at < cutoff AND
-    inserted_at < cutoff rule: a row whose inserted_at is not < cutoff is
-    excluded even if its listened_at day is.
+    ``day_fn`` is observation_time; ``available_fn`` (when given) is the
+    available_at / inserted_at gate: a row whose available_at is not strictly
+    before the cutoff is excluded even if its observation day is.
     """
     cutoff_d = _d(cutoff)
     daily: dict[date, float] = defaultdict(float)
@@ -57,9 +70,9 @@ def daily_series(rows: list[dict[str, Any]], *, value_fn: Callable[[dict[str, An
             continue
         if cutoff_d is not None and not (day < cutoff_d):
             continue
-        if inserted_fn is not None:
-            ins = _d(inserted_fn(row))
-            if cutoff_d is not None and (ins is None or not (ins < cutoff_d)):
+        if available_fn is not None:
+            avail = _d(available_fn(row))
+            if cutoff_d is not None and (avail is None or not (avail < cutoff_d)):
                 continue
         v = value_fn(row)
         if v is None:
