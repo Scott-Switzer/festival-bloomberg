@@ -184,6 +184,15 @@ class TerminalApp:
                 entity_key_value=params.get("entity_key")))
         if path == "/api/data":
             return self._ok(_data_coverage(self.conn))
+        if path == "/api/coverage":
+            from ..intelligence.coverage_voi import coverage_dashboard
+            return self._ok(coverage_dashboard(self.conn))
+        if path == "/api/voi":
+            from ..intelligence.coverage_voi import voi_ranking
+            return self._ok(voi_ranking(self.conn))
+        if path == "/api/venues/coverage":
+            from ..intelligence.venue_intel import venue_coverage
+            return self._ok(venue_coverage(self.conn))
         # ---- planning workspace (talent-buyer workbench) ------------------
         if path == "/api/planning/projects" and method == "POST":
             try:
