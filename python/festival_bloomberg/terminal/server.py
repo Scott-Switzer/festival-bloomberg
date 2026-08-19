@@ -18,6 +18,7 @@ import argparse
 import json
 import os
 import re
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
@@ -106,8 +107,15 @@ class TerminalApp:
         self.conn = conn
         self.deepseek = deepseek
         self.llm = llm
+        # DuckDB connections are not thread-safe; ThreadingHTTPServer serves
+        # concurrent requests, so serialize every dispatch on one lock.
+        self._lock = threading.Lock()
 
     def dispatch(self, method: str, path: str, query: str = "", body: bytes = b"") -> dict[str, Any]:
+        with self._lock:
+            return self._dispatch_locked(method, path, query, body)
+
+    def _dispatch_locked(self, method: str, path: str, query: str = "", body: bytes = b"") -> dict[str, Any]:
         parts = [unquote(p) for p in path.split("/") if p]
         params = {k: v[0] for k, v in parse_qs(query).items()}
 

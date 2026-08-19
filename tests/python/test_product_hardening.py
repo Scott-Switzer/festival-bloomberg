@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from typing import Any
 
 import duckdb
 
@@ -720,5 +721,63 @@ def test_today_ticketing_contract_flat_fields(tmp_path):
             assert "detail" not in r  # contract: flat, never nested detail
         for r in tick["status_changes"]:
             assert r["event_name"]
+    finally:
+        repo.close()
+
+
+def test_terminal_concurrent_dispatch_serializes_shared_conn(tmp_path):
+    """ThreadingHTTPServer shares one DuckDB connection; concurrent dispatch
+    must be serialized so responses are never shuffled/corrupted."""
+    import threading
+
+    from festival_bloomberg.terminal.server import TerminalApp
+
+    repo = FestivalRepository(str(tmp_path / "tc.duckdb"))
+    try:
+        EventRepository(repo.conn)
+        for i in range(3):
+            _seed_snapshot(repo.conn, eid=f"E{i}", retrieved_at=T1, price=50.0 + i)
+        create_watchlist(repo.conn, name="Concurrency", entity_type="ARTIST", is_system=False)
+        add_watchlist_item(repo.conn, watchlist_key_value="Concurrency",
+                           entity_type="ARTIST", entity_key_value="mbid::abc",
+                           entity_name="Concurrency Artist")
+        repo.conn.commit()
+        app = TerminalApp(repo.conn)
+
+        paths = [
+            ("/api/search", "q=concurrency"),
+            ("/api/watchlists", ""),
+            ("/api/today", "limit=10"),
+            ("/api/data", ""),
+        ]
+        results: list[tuple[str, int, Any]] = []
+        errors: list[str] = []
+
+        def hit(path: str, query: str) -> None:
+            try:
+                res = app.dispatch("GET", path, query)
+                body = json.loads(res["body"].decode())
+                results.append((path, res["status"], body))
+            except Exception as exc:  # pragma: no cover - assertion path
+                errors.append(f"{path}:{exc}")
+
+        threads = [threading.Thread(target=hit, args=(p, q)) for p, q in paths * 5]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, errors
+        assert len(results) == len(paths) * 5
+        # every response must be valid JSON with the expected shape (no
+        # interleaved/corrupted rows from sharing one DuckDB connection)
+        for path, status, body in results:
+            assert status == 200, (path, status)
+            if path == "/api/watchlists":
+                assert any(w["name"] == "Concurrency" for w in body), body
+            elif path == "/api/search":
+                assert isinstance(body, list), body
+            elif path == "/api/data":
+                assert "identity" in body, body
     finally:
         repo.close()

@@ -359,29 +359,49 @@ def _artist_name_for_key(conn, artist_key: str) -> str | None:
 # Event
 # ---------------------------------------------------------------------------
 def get_event(conn, event_id: str) -> dict[str, Any] | None:
+    # Alerts/TODAY carry entity_key as ``tm::<provider_event_id>`` while the
+    # forward-watch table keys on ``watch_<hash>``; resolve both forms so
+    # links from the product never 404 on a real event.
+    lookup = event_id
+    if event_id.startswith("tm::"):
+        lookup = event_id[len("tm::"):]
     row = _rows(conn, """
         SELECT watch_event_id, provider, provider_event_id, artist_name,
                venue_name, market, event_date, event_time, event_status,
                first_seen_at, tracking_status, source_url, rights_status,
                commercial_use_status
-        FROM flywheel.forward_watch_events WHERE watch_event_id = ?
-    """, [event_id])
+        FROM flywheel.forward_watch_events
+        WHERE watch_event_id = ? OR provider_event_id = ?
+        ORDER BY watch_event_id LIMIT 1
+    """, [event_id, lookup])
+    if not row:
+        # bare provider id (no tm:: prefix)
+        row = _rows(conn, """
+            SELECT watch_event_id, provider, provider_event_id, artist_name,
+                   venue_name, market, event_date, event_time, event_status,
+                   first_seen_at, tracking_status, source_url, rights_status,
+                   commercial_use_status
+            FROM flywheel.forward_watch_events
+            WHERE provider_event_id = ?
+            ORDER BY watch_event_id LIMIT 1
+        """, [event_id])
     if row:
         e = dict(row[0])
         e["kind"] = "FORWARD"
+        e["watch_event_id"] = e["watch_event_id"]
         e["observations"] = _rows(conn, """
             SELECT milestone, event_status, price_min, price_max, currency,
                    observed_at, knowledge_time, source_provider, source_url
             FROM flywheel.forward_watch_observations
             WHERE watch_event_id = ? ORDER BY knowledge_time
-        """, [event_id])
+        """, [e["watch_event_id"]])
         e["timeline"] = _rows(conn, """
             SELECT cutoff_type, cutoff_kind, cutoff_timestamp, upper_bound,
                    evidence_class, source_provider, source_url
             FROM flywheel.pre_event_cutoff_evidence
-            WHERE source_event_id = ? OR canonical_event_id = ?
+            WHERE source_event_id IN (?, ?) OR canonical_event_id IN (?, ?)
             ORDER BY knowledge_time
-        """, [event_id, event_id])
+        """, [event_id, e["watch_event_id"], event_id, e["watch_event_id"]])
         e["competition"] = get_competing_events(
             conn, e.get("market"), e.get("event_date"), days=7
         )
@@ -391,9 +411,43 @@ def get_event(conn, event_id: str) -> dict[str, Any] | None:
             UNION ALL
             SELECT source_provider, source_url, rights_status, knowledge_time
             FROM flywheel.pre_event_cutoff_evidence
-            WHERE source_event_id = ? OR canonical_event_id = ?
-        """, [event_id, event_id, event_id])
+            WHERE source_event_id IN (?, ?) OR canonical_event_id IN (?, ?)
+        """, [e["watch_event_id"], event_id, e["watch_event_id"], event_id, e["watch_event_id"]])
         return e
+    # Ticketmaster snapshot event keyed by platform_object_id (alerts/TODAY
+    # link these as ``tm::<platform_object_id>``).
+    row = _rows(conn, """
+        SELECT platform_object_id, event_name, artist_name, venue_name,
+               city, state_code, country_code, local_date, event_status,
+               onsale_start, price_min, price_max, price_currency, promoter,
+               MAX(retrieved_at) AS last_retrieved_at
+        FROM events.provider_event_snapshots
+        WHERE platform_object_id = ? AND provider = 'ticketmaster'
+        GROUP BY ALL
+        ORDER BY last_retrieved_at DESC LIMIT 1
+    """, [lookup])
+    if row:
+        s = dict(row[0])
+        s["kind"] = "SNAPSHOT"
+        s["entity_key"] = f"tm::{s['platform_object_id']}"
+        s["entity_name"] = s.get("event_name")
+        s["market"] = ", ".join(x for x in [s.get("city"), s.get("state_code"), s.get("country_code")] if x) or None
+        s["event_date"] = s.get("local_date")
+        s["observations"] = _rows(conn, """
+            SELECT retrieved_at AS observed_at, event_status, price_min, price_max,
+                   price_currency, onsale_start, promoter
+            FROM events.provider_event_snapshots
+            WHERE platform_object_id = ? AND provider = 'ticketmaster'
+            ORDER BY retrieved_at
+        """, [lookup])
+        s["evidence"] = _rows(conn, """
+            SELECT DISTINCT 'ticketmaster' AS source_provider,
+                   retrieved_at AS knowledge_time
+            FROM events.provider_event_snapshots
+            WHERE platform_object_id = ? AND provider = 'ticketmaster'
+            ORDER BY retrieved_at
+        """, [lookup])
+        return s
     # Historical engagement keyed by canonical_engagement_id.
     row = _rows(conn, """
         SELECT canonical_engagement_id, artist, venue, city, market, tour,
