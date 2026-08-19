@@ -271,12 +271,14 @@ def artist_scorecard(
     # -- identity ----------------------------------------------------------
     identity = {"name": name, "external_ids": {}, "type": None, "area": None,
                 "matched": False}
+    resolved_name = None
     if artist_key:
         rows = _rows(conn, "SELECT * FROM core.artists WHERE artist_key = ?", [artist_key])
         if rows:
             a = rows[0]
+            resolved_name = a.get("name") or name
             identity.update({
-                "name": a.get("name"),
+                "name": resolved_name,
                 "type": a.get("artist_type"),
                 "area": a.get("area_name") or a.get("area_mbid"),
                 "disambiguation": a.get("disambiguation"),
@@ -295,8 +297,9 @@ def artist_scorecard(
         if rows:
             a = rows[0]
             card["artist_key"] = artist_key = a["artist_key"]
+            resolved_name = a.get("name") or name
             identity.update({
-                "name": a.get("name"), "type": a.get("artist_type"),
+                "name": resolved_name, "type": a.get("artist_type"),
                 "area": a.get("area_name") or a.get("area_mbid"),
                 "matched": True,
             })
@@ -305,28 +308,34 @@ def artist_scorecard(
                             ("isni", "isni"), ("ipi", "ipi")):
                 if a.get(col):
                     identity["external_ids"][ns] = a[col]
+    card["artist_name"] = resolved_name or name
     card["identity"] = identity
+    # Use the RESOLVED canonical name for all evidence queries below.
+    name = resolved_name or name
 
-    # -- live history (forward watch snapshots by name match) ---------------
+    # -- live history (forward watch snapshots; artist lives in attractions
+    #    JSON on the snapshot, so match the serialized attractions text).
     live = {"upcoming_count": 0, "historical_count": 0, "events": []}
-    try:
-        live_rows = _rows(
-            conn,
-            """
-            SELECT platform_object_id, event_name, venue_name, city, local_date,
-                   event_status, price_min, price_max
-            FROM events.provider_event_snapshots
-            WHERE provider = 'ticketmaster' AND LOWER(COALESCE(artist_name,'')) LIKE ?
-            ORDER BY local_date DESC LIMIT 50
-            """,
-            [f"%{_norm(name)}%"],
-        )
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        live["events"] = live_rows
-        live["upcoming_count"] = sum(1 for r in live_rows if str(r.get("local_date") or "") >= today)
-        live["historical_count"] = len(live_rows) - live["upcoming_count"]
-    except Exception:  # noqa: BLE001
-        pass
+    if name:
+        try:
+            live_rows = _rows(
+                conn,
+                """
+                SELECT platform_object_id, event_name, venue_name, city, local_date,
+                       event_status, price_min, price_max
+                FROM events.provider_event_snapshots
+                WHERE provider = 'ticketmaster'
+                  AND LOWER(CAST(COALESCE(attractions, '') AS VARCHAR)) LIKE ?
+                ORDER BY local_date DESC LIMIT 50
+                """,
+                [f"%{_norm(name)}%"],
+            )
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            live["events"] = live_rows
+            live["upcoming_count"] = sum(1 for r in live_rows if str(r.get("local_date") or "") >= today)
+            live["historical_count"] = len(live_rows) - live["upcoming_count"]
+        except Exception:  # noqa: BLE001
+            pass
     card["live"] = live
 
     # -- festival history ----------------------------------------------------
@@ -386,22 +395,24 @@ def artist_scorecard(
 
     # -- market history + comparables -----------------------------------------
     market_history = {"shows_in_market": 0, "markets": []}
-    try:
-        mk = _rows(
-            conn,
-            """
-            SELECT city AS market, COUNT(*) AS n, MIN(local_date) AS first_date,
-                   MAX(local_date) AS last_date
-            FROM events.provider_event_snapshots
-            WHERE provider = 'ticketmaster' AND LOWER(COALESCE(artist_name,'')) LIKE ?
-            GROUP BY city ORDER BY n DESC LIMIT 10
-            """,
-            [f"%{_norm(name)}%"],
-        )
-        market_history["markets"] = mk
-        market_history["shows_in_market"] = sum(r["n"] for r in mk)
-    except Exception:  # noqa: BLE001
-        pass
+    if name:
+        try:
+            mk = _rows(
+                conn,
+                """
+                SELECT city AS market, COUNT(*) AS n, MIN(local_date) AS first_date,
+                       MAX(local_date) AS last_date
+                FROM events.provider_event_snapshots
+                WHERE provider = 'ticketmaster'
+                  AND LOWER(CAST(COALESCE(attractions, '') AS VARCHAR)) LIKE ?
+                GROUP BY city ORDER BY n DESC LIMIT 10
+                """,
+                [f"%{_norm(name)}%"],
+            )
+            market_history["markets"] = mk
+            market_history["shows_in_market"] = sum(r["n"] for r in mk)
+        except Exception:  # noqa: BLE001
+            pass
     card["market_history"] = market_history
     card["comparables"] = _comparable_ranges(name)
 
