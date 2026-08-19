@@ -38,6 +38,7 @@ milestones:
   MUSIC_REFERENCE_GRAPH_AND_PRO_WORKFLOW_V1: "PARTIAL (event + place dumps turn series spine into a connected graph; artist-dump MBID resolution, ListenBrainz live coverage, and monitoring remain)"
   MUSIC_TERMINAL_PRODUCTIZATION_V1: "PASS (PR #31 merged; identity + ListenBrainz + watchlists + monitors + alerts + TODAY + search + ART/FEST/TOUR/MKT/DATA/ASK; 537 tests)"
   OSS_PLATFORM_EVALUATION_V1: "PASS (evaluation, not adoption: Memray profiling + Splink_NAME_ONLY=NOT_ADOPTED + Dagster offline parity PASS but REJECTED_FOR_NOW + OpenLineage file proof PASS but REJECTED_FOR_NOW + Crawlee/dlt rejected; no forced adoption)"
+  COMPARABLE_EVENT_ENGINE_V1: "PASS_RESEARCH_FRAMEWORK_CHAMPION_UNCHANGED (leakage-repaired decomposable comparable distance + hierarchical strata; hierarchical median champion retained; gross-only TIME win is real but not a promotion)"
 
 providers:
   # status taxonomy: PUBLIC_NO_AUTH | AUTH_CONFIGURED | AUTH_MISSING |
@@ -69,6 +70,8 @@ docs:
   - national-coverage-entity-master-festival-history-v1.md
   - music-security-master-monitoring-v1.md
   - music-reference-graph-pro-workflow-v1.md
+  - comparable-event-engine-v1.md
+  - dense-pre-event-data-panel-v1.md
 
 key_commands:
   context: "PYTHONPATH=python .venv/bin/python -m festival_bloomberg.ops.context_snapshot"
