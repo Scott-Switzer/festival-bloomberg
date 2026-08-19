@@ -611,26 +611,39 @@ def _identity_conflicts(conn, limit: int) -> list[dict[str, Any]]:
     return [dict(zip([c[0] for c in conn.description], r)) for r in rows]
 
 
-def build_today(conn, *, limit: int = 50) -> dict[str, Any]:
+def build_today(conn, workspace_conn=None, *, limit: int = 50) -> dict[str, Any]:
     """TODAY: sections for watchlist, ticketing, catalysts, attention, live
-    market, and data health. Channels stay separate; no urgency scores."""
+    market, and data health. Channels stay separate; no urgency scores.
+
+    ``conn`` is the serving snapshot (alerts, news, evidence);
+    ``workspace_conn`` holds the watchlist. When omitted, both roles share
+    ``conn`` (single-DB tests/backwards compatibility).
+    """
+    if workspace_conn is None:
+        workspace_conn = conn
     now = datetime.now(timezone.utc)
     today_str = now.strftime("%Y-%m-%d")
     sections: dict[str, Any] = {}
 
-    watched = conn.execute(
+    watched = workspace_conn.execute(
         """
         SELECT entity_key, entity_name, entity_type FROM core.watchlist_items
         WHERE removed_at IS NULL AND entity_type IN ('ARTIST', 'FESTIVAL', 'TOUR')
         ORDER BY entity_name
         """
     ).fetchall()
-    watched_keys = {r[0] for r in watched}
+    watched_keys = {
+        r[0] for r in workspace_conn.execute(
+            "SELECT entity_key FROM core.watchlist_items WHERE removed_at IS NULL"
+        ).fetchall()
+    }
     # Personalized: alerts whose RELATED-ENTITY graph touches a watched
     # entity (an EVENT tm::123 alert surfaces for a watched ARTIST mbid::X
     # via the alert_related_entities edge), plus alerts whose own entity is
     # watched directly. Global FESTIVAL/TOUR alerts are NOT mixed in here.
-    new_events = conn.execute(
+    # The watchlist and the alert ledger live in different storage roles, so
+    # combine in application code rather than one cross-DB join.
+    candidate_alerts = conn.execute(
         """
         SELECT DISTINCT a.alert_key, a.alert_type, a.entity_type, a.entity_key,
                a.entity_name, a.observed_at, a.detail,
@@ -640,20 +653,16 @@ def build_today(conn, *, limit: int = 50) -> dict[str, Any]:
         LEFT JOIN core.alert_related_entities re ON re.alert_key = a.alert_key
         WHERE a.alert_type IN ('NEW_EVENT', 'NEW_TOUR', 'NEW_FESTIVAL_APPEARANCE')
           AND a.status = 'ACTIVE'
-          AND (
-                a.entity_key IN (SELECT entity_key FROM core.watchlist_items
-                                 WHERE removed_at IS NULL)
-                OR re.entity_key IN (SELECT entity_key FROM core.watchlist_items
-                                     WHERE removed_at IS NULL)
-              )
         ORDER BY a.observed_at DESC LIMIT ?
         """,
-        [limit],
+        [max(limit * 20, 500)],
     ).fetchall()
     new_event_cols = [c[0] for c in conn.description]
     new_event_rows = []
-    for r in new_events:
+    for r in candidate_alerts:
         rec = dict(zip(new_event_cols, r))
+        if rec.get("entity_key") not in watched_keys and rec.get("watched_via_key") not in watched_keys:
+            continue
         detail = rec.get("detail") or {}
         new_event_rows.append({
             "alert_key": rec.get("alert_key"),
@@ -669,6 +678,8 @@ def build_today(conn, *, limit: int = 50) -> dict[str, Any]:
             "watched_via_key": rec.get("watched_via_key"),
             "watched_via_relationship": rec.get("watched_via_relationship"),
         })
+        if len(new_event_rows) >= limit:
+            break
     sections["watchlist"] = {
         "watched_entities": len(watched),
         "watched_names": [r[1] for r in watched],
@@ -805,15 +816,21 @@ def build_today(conn, *, limit: int = 50) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Default (system, user-editable) watchlists from deterministic real data
 # ---------------------------------------------------------------------------
-def create_default_watchlists(conn) -> dict[str, Any]:
+def create_default_watchlists(conn, workspace_conn=None) -> dict[str, Any]:
     """Ship clearly-marked USER-EDITABLE system watchlists derived from REAL
-    data (never hard-coded subjective talent recommendations)."""
+    data (never hard-coded subjective talent recommendations).
+
+    Evidence is read from ``conn`` (serving/canonical); watchlists are written
+    to ``workspace_conn`` (defaults to ``conn`` for single-DB callers).
+    """
+    if workspace_conn is None:
+        workspace_conn = conn
     created = []
 
     # Major festivals (from the festival spine). The list name does NOT claim
     # US scope because no reliable country filter exists on the spine yet
     # (raw.musicbrainz_place.area is a city/market, not a country).
-    fest_wl = create_watchlist(conn, name="Major Festivals",
+    fest_wl = create_watchlist(workspace_conn, name="Major Festivals",
                                description="Festival series from the MusicBrainz festival spine (global; geography not yet filtered)",
                                entity_type="FESTIVAL", is_system=True)
     created.append(fest_wl["name"])
@@ -825,11 +842,11 @@ def create_default_watchlists(conn) -> dict[str, Any]:
         """
     ).fetchall()
     for key, name in fest_rows:
-        add_watchlist_item(conn, watchlist_key_value=fest_wl["watchlist_key"],
+        add_watchlist_item(workspace_conn, watchlist_key_value=fest_wl["watchlist_key"],
                            entity_type="FESTIVAL", entity_key_value=key, entity_name=name)
 
     # Active tours (TOUR series with events in 2024+).
-    tour_wl = create_watchlist(conn, name="Active Tours",
+    tour_wl = create_watchlist(workspace_conn, name="Active Tours",
                                description="Tour series with events dated 2024 or later",
                                entity_type="TOUR", is_system=True)
     created.append(tour_wl["name"])
@@ -843,11 +860,11 @@ def create_default_watchlists(conn) -> dict[str, Any]:
         """
     ).fetchall()
     for key, name in tour_rows:
-        add_watchlist_item(conn, watchlist_key_value=tour_wl["watchlist_key"],
+        add_watchlist_item(workspace_conn, watchlist_key_value=tour_wl["watchlist_key"],
                            entity_type="TOUR", entity_key_value=key, entity_name=name)
 
     # High-activity artists (most event-performer relations in the graph).
-    artist_wl = create_watchlist(conn, name="High-Activity Artists",
+    artist_wl = create_watchlist(workspace_conn, name="High-Activity Artists",
                                  description="Artists with the most reference-graph event appearances",
                                  entity_type="ARTIST", is_system=True)
     created.append(artist_wl["name"])
@@ -860,7 +877,7 @@ def create_default_watchlists(conn) -> dict[str, Any]:
         """
     ).fetchall()
     for mbid, name, _n in artist_rows:
-        add_watchlist_item(conn, watchlist_key_value=artist_wl["watchlist_key"],
+        add_watchlist_item(workspace_conn, watchlist_key_value=artist_wl["watchlist_key"],
                            entity_type="ARTIST",
                            entity_key_value=f"mbid::{mbid}", entity_name=name)
 

@@ -1,13 +1,14 @@
-"""Read-only terminal server: JSON read models + the static SPA.
+"""Terminal server: JSON read models + the static SPA over a serving snapshot.
 
-The terminal NEVER writes: every handler is a thin wrapper over a read model.
-The activity tape and provider health are written by the OA driver
-(``oa/intelligence_terminal.py``), not here. The warehouse is opened once and
-read through a single connection.
+Storage roles: the terminal reads a READ-ONLY serving snapshot (published from
+canonical) and writes mutable analyst state (watchlists, monitors, planning
+projects) to a separate WORKSPACE DB. It NEVER opens the canonical research
+warehouse, so canonical ingestion can write it while the terminal stays online.
 
 Run locally::
 
-    python -m festival_bloomberg.terminal.server [--port 8931] [--db path]
+    python -m festival_bloomberg.terminal.server [--port 8931]
+        [--serving-db path] [--workspace-db path]
 
 No credentials, no arbitrary SQL, no live provider calls per render.
 """
@@ -24,7 +25,6 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 from ..festivals.repository import FestivalSpineRepository
-from ..flywheel.repository import FlywheelRepository
 from ..intelligence import readmodels
 from ..product.workflow import (
     add_watchlist_item, build_today, create_watchlist, list_alerts,
@@ -37,8 +37,7 @@ from ..localenv import load_local_env
 from ..planning import candidates as planning_candidates
 from ..planning import repository as planning_repo
 from ..planning import scenario as planning_scenario
-from ..research.repository import ResearchRepository
-from ..warehouse.repository import FestivalRepository
+from . import storage
 
 STATIC_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
@@ -46,7 +45,6 @@ STATIC_DIR = os.path.join(
 )
 
 DEFAULT_PORT = 8931
-DEFAULT_DB = "data/warehouse/boxoffice_research_v2.duckdb"
 
 
 def _json(payload: Any) -> bytes:
@@ -57,8 +55,11 @@ def _count(conn, sql: str) -> int:
     return int(conn.execute(sql).fetchone()[0])
 
 
-def _data_coverage(conn) -> dict[str, Any]:
-    """DATA control-panel payload: coverage, attention, providers, quality."""
+def _data_coverage(conn, workspace_conn) -> dict[str, Any]:
+    """DATA control-panel payload: coverage, attention, providers, quality.
+
+    ``conn`` is the serving snapshot (evidence/system data); ``workspace_conn``
+    holds mutable analyst state (watchlists, monitors)."""
     return {
         "identity": {
             "canonical_artists": _count(conn, "SELECT COUNT(*) FROM core.artists"),
@@ -84,9 +85,9 @@ def _data_coverage(conn) -> dict[str, Any]:
             "wikimedia_rows": _count(conn, "SELECT COUNT(*) FROM metrics.artist_attention_observations WHERE source_system='wikimedia'"),
         },
         "product": {
-            "watchlists": _count(conn, "SELECT COUNT(*) FROM core.watchlists"),
-            "watchlist_items": _count(conn, "SELECT COUNT(*) FROM core.watchlist_items WHERE removed_at IS NULL"),
-            "monitors": _count(conn, "SELECT COUNT(*) FROM terminal.saved_monitors"),
+            "watchlists": _count(workspace_conn, "SELECT COUNT(*) FROM core.watchlists"),
+            "watchlist_items": _count(workspace_conn, "SELECT COUNT(*) FROM core.watchlist_items WHERE removed_at IS NULL"),
+            "monitors": _count(workspace_conn, "SELECT COUNT(*) FROM terminal.saved_monitors"),
             "alerts": _count(conn, "SELECT COUNT(*) FROM core.alerts WHERE status='ACTIVE'"),
             "tm_resolutions": _count(conn, "SELECT COUNT(*) FROM identity.ticketmaster_artist_resolutions"),
             "deprecated_columns": _count(conn, "SELECT COUNT(*) FROM core.deprecated_columns"),
@@ -104,10 +105,23 @@ def _data_coverage(conn) -> dict[str, Any]:
 
 
 class TerminalApp:
-    """WSGI-style dispatcher over the read models (no sockets, testable)."""
+    """WSGI-style dispatcher over the read models (no sockets, testable).
 
-    def __init__(self, conn, *, deepseek: Any = None, llm: Any = None) -> None:
+    ``conn`` is the serving snapshot (read models). ``workspace_conn`` holds
+    mutable analyst state (watchlists, monitors, planning projects). When
+    ``workspace_conn`` is omitted (tests), both roles share ``conn``.
+    """
+
+    def __init__(
+        self,
+        conn,
+        workspace_conn=None,
+        *,
+        deepseek: Any = None,
+        llm: Any = None,
+    ) -> None:
         self.conn = conn
+        self.workspace_conn = workspace_conn if workspace_conn is not None else conn
         self.deepseek = deepseek
         self.llm = llm
         # DuckDB connections are not thread-safe; ThreadingHTTPServer serves
@@ -163,27 +177,28 @@ class TerminalApp:
 
         # ---- product workflow -------------------------------------------
         if path == "/api/today":
-            return self._ok(build_today(self.conn, limit=int(params.get("limit", 50))))
+            return self._ok(build_today(
+                self.conn, self.workspace_conn, limit=int(params.get("limit", 50))))
         if path == "/api/watchlists" and method == "POST":
             try:
                 body = json.loads(body.decode("utf-8"))
             except Exception:
                 body = {}
             return self._ok(create_watchlist(
-                self.conn, name=body.get("name", ""),
+                self.workspace_conn, name=body.get("name", ""),
                 description=body.get("description"),
                 entity_type=body.get("entity_type"),
                 is_system=bool(body.get("is_system", False))))
         if path == "/api/watchlists" and method == "GET":
-            return self._ok(list_watchlists(self.conn))
+            return self._ok(list_watchlists(self.workspace_conn))
         if path == "/api/monitors":
-            return self._ok(list_monitors(self.conn))
+            return self._ok(list_monitors(self.workspace_conn))
         if path == "/api/alerts":
             return self._ok(list_alerts(
                 self.conn, limit=int(params.get("limit", 100)),
                 entity_key_value=params.get("entity_key")))
         if path == "/api/data":
-            return self._ok(_data_coverage(self.conn))
+            return self._ok(_data_coverage(self.conn, self.workspace_conn))
         if path == "/api/coverage":
             from ..intelligence.coverage_voi import coverage_dashboard
             return self._ok(coverage_dashboard(self.conn))
@@ -200,7 +215,7 @@ class TerminalApp:
             except Exception:
                 body = {}
             return self._ok(planning_repo.create_project(
-                self.conn, name=body.get("name", ""),
+                self.workspace_conn, name=body.get("name", ""),
                 city=body.get("city"), market=body.get("market"),
                 venue_site=body.get("venue_site"),
                 start_date=body.get("start_date"), end_date=body.get("end_date"),
@@ -213,9 +228,9 @@ class TerminalApp:
                 notes=body.get("notes"),
                 scenario_class=body.get("scenario_class", "SYNTHETIC_PLANNING_SCENARIO")))
         if path == "/api/planning/projects":
-            return self._ok(planning_repo.list_projects(self.conn))
+            return self._ok(planning_repo.list_projects(self.workspace_conn))
         if path == "/api/planning/seed" and method == "POST":
-            return self._ok(planning_repo.seed_synthetic_project(self.conn))
+            return self._ok(planning_repo.seed_synthetic_project(self.workspace_conn))
         if path == "/api/planning/scorecard":
             return self._ok(planning_candidates.artist_scorecard(
                 self.conn, artist_key=params.get("artist_key"),
@@ -226,14 +241,14 @@ class TerminalApp:
             pkey = segs[0]
             sub = segs[1] if len(segs) > 1 else None
             if sub is None:
-                return self._ok(planning_repo.get_project(self.conn, pkey) or self._not_found())
+                return self._ok(planning_repo.get_project(self.workspace_conn, pkey) or self._not_found())
             if sub == "stages" and method == "POST":
                 try:
                     b = json.loads(body.decode("utf-8"))
                 except Exception:
                     b = {}
                 return self._ok(planning_repo.add_stage(
-                    self.conn, project_key=pkey, stage_name=b.get("stage_name", ""),
+                    self.workspace_conn, project_key=pkey, stage_name=b.get("stage_name", ""),
                     capacity_claim=b.get("capacity_claim"),
                     capacity_evidence_class=b.get("capacity_evidence_class"),
                     indoor_outdoor=b.get("indoor_outdoor")))
@@ -244,10 +259,10 @@ class TerminalApp:
                     b = {}
                 if b.get("generate"):
                     return self._ok(planning_candidates.build_candidate_universe(
-                        self.conn, project_key=pkey, market=b.get("market"),
-                        limit=int(b.get("limit", 200))))
+                        self.conn, self.workspace_conn, project_key=pkey,
+                        market=b.get("market"), limit=int(b.get("limit", 200))))
                 return self._ok(planning_repo.add_candidate(
-                    self.conn, project_key=pkey, artist_key=b.get("artist_key"),
+                    self.workspace_conn, project_key=pkey, artist_key=b.get("artist_key"),
                     artist_name=b.get("artist_name", ""),
                     musicbrainz_id=b.get("musicbrainz_id"),
                     inclusion_reasons=b.get("inclusion_reasons"),
@@ -255,31 +270,31 @@ class TerminalApp:
                     availability_evidence=b.get("availability_evidence"),
                     scorecard_snapshot=b.get("scorecard_snapshot")))
             if sub == "candidates":
-                return self._ok(planning_repo.list_candidates(self.conn, pkey))
+                return self._ok(planning_repo.list_candidates(self.workspace_conn, pkey))
             if sub == "shortlist" and method == "POST":
                 try:
                     b = json.loads(body.decode("utf-8"))
                 except Exception:
                     b = {}
                 return self._ok(planning_repo.set_shortlist(
-                    self.conn, project_key=pkey, artist_key=b.get("artist_key"),
+                    self.workspace_conn, project_key=pkey, artist_key=b.get("artist_key"),
                     artist_name=b.get("artist_name", ""), status=b.get("status", "DISCOVERED"),
                     candidate_day=b.get("candidate_day"),
                     candidate_stage=b.get("candidate_stage"),
                     candidate_billing_tier=b.get("candidate_billing_tier"),
                     notes=b.get("notes")))
             if sub == "shortlist":
-                return self._ok(planning_repo.list_shortlists(self.conn, pkey))
+                return self._ok(planning_repo.list_shortlists(self.workspace_conn, pkey))
             if sub == "scenarios" and method == "POST":
                 try:
                     b = json.loads(body.decode("utf-8"))
                 except Exception:
                     b = {}
                 return self._ok(planning_scenario.persist_scenario(
-                    self.conn, project_key=pkey, name=b.get("name", "Scenario"),
+                    self.workspace_conn, project_key=pkey, name=b.get("name", "Scenario"),
                     slots=b.get("slots", []), notes=b.get("notes")))
             if sub == "scenarios":
-                return self._ok(planning_repo.list_scenarios(self.conn, pkey))
+                return self._ok(planning_repo.list_scenarios(self.workspace_conn, pkey))
 
         if path.startswith("/api/watchlists/") and method == "POST":
             try:
@@ -290,20 +305,20 @@ class TerminalApp:
             action = body.get("action")
             if action == "add":
                 return self._ok({"added": add_watchlist_item(
-                    self.conn, watchlist_key_value=wl_key,
+                    self.workspace_conn, watchlist_key_value=wl_key,
                     entity_type=body.get("entity_type", ""),
                     entity_key_value=body.get("entity_key", ""),
                     entity_name=body.get("entity_name"),
                     notes=body.get("notes"), tags=body.get("tags"))})
             if action == "remove":
                 return self._ok({"removed": remove_watchlist_item(
-                    self.conn, watchlist_key_value=wl_key,
+                    self.workspace_conn, watchlist_key_value=wl_key,
                     entity_type=body.get("entity_type", ""),
                     entity_key_value=body.get("entity_key", ""))})
-            return self._ok(list_watchlist_items(self.conn, wl_key))
+            return self._ok(list_watchlist_items(self.workspace_conn, wl_key))
         if path.startswith("/api/watchlists/"):
             return self._ok(list_watchlist_items(
-                self.conn, path[len("/api/watchlists/"):]))
+                self.workspace_conn, path[len("/api/watchlists/"):]))
 
         if path == "/api/ask" and method == "POST":
             try:
@@ -439,16 +454,23 @@ class _Handler(BaseHTTPRequestHandler):
         pass  # quiet; the transcript is the UI
 
 
-def make_app(db_path: str = DEFAULT_DB) -> TerminalApp:
+def make_app(
+    serving_db: str = storage.SERVING_DIR,
+    workspace_db: str = storage.WORKSPACE_DEFAULT_DB,
+) -> TerminalApp:
+    """Build the terminal from a serving snapshot + workspace sidecar.
+
+    The canonical warehouse is NEVER opened here: read models read the serving
+    snapshot (read-only) and mutable analyst state writes to the workspace DB.
+    """
     load_local_env()
-    repo = FestivalRepository(db_path)
-    conn = repo.conn
-    FlywheelRepository(conn)   # apply pending migrations (intelligence schema)
-    ResearchRepository(conn)
+    serving_conn = storage.open_serving_snapshot(serving_db)
+    workspace_conn = storage.create_workspace_db(workspace_db)
     deepseek = DeepSeekAskClient(api_key=os.environ.get("DEEPSEEK_API_KEY"))
     llm = NimClient()          # NVIDIA NIM (fail-closed without a key)
-    app = TerminalApp(conn, deepseek=deepseek, llm=llm)
-    app._repo = repo  # keep alive; close on shutdown
+    app = TerminalApp(serving_conn, workspace_conn, deepseek=deepseek, llm=llm)
+    app._serving_conn = serving_conn
+    app._workspace_conn = workspace_conn
     return app
 
 
@@ -467,9 +489,10 @@ def serve(app: TerminalApp, port: int) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Festival Intelligence terminal")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
-    parser.add_argument("--db", default=DEFAULT_DB)
+    parser.add_argument("--serving-db", default=storage.SERVING_DIR)
+    parser.add_argument("--workspace-db", default=storage.WORKSPACE_DEFAULT_DB)
     args = parser.parse_args()
-    serve(make_app(args.db), args.port)
+    serve(make_app(args.serving_db, args.workspace_db), args.port)
 
 
 if __name__ == "__main__":
