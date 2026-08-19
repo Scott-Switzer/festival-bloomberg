@@ -38,14 +38,16 @@ T3 = "2026-08-14T17:20:00+00:00"
 
 
 def _seed_snapshot(conn, *, eid, retrieved_at, price=None, status="onsale",
-                   presales=None, onsale_start=None, promoter=None):
+                   presales=None, onsale_start=None, promoter=None,
+                   acquisition_run_id=None):
     conn.execute(
         """
         INSERT INTO events.provider_event_snapshots
             (snapshot_key, provider, platform_object_id, event_name, event_status,
              onsale_start, presales, price_min, price_max, promoter, retrieved_at,
-             knowledge_time, rights_status, commercial_use_status, ingested_at)
-        VALUES (?, 'ticketmaster', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'research', 'research', now())
+             knowledge_time, rights_status, commercial_use_status, ingested_at,
+             acquisition_run_id)
+        VALUES (?, 'ticketmaster', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'research', 'research', now(), ?)
         """,
         [
             f"snap::{eid}::{retrieved_at}",
@@ -59,6 +61,7 @@ def _seed_snapshot(conn, *, eid, retrieved_at, price=None, status="onsale",
             promoter,
             retrieved_at,
             retrieved_at,
+            acquisition_run_id,
         ],
     )
 
@@ -405,5 +408,134 @@ def test_presale_discovered_and_unchanged_no_duplicate(tmp_path):
         _seed_snapshot(repo.conn, eid="A", retrieved_at=T3, presales=presale)
         generate_event_alerts(repo.conn)
         assert _count_alerts(repo.conn, "PRESALE_DISCOVERED") == 1
+    finally:
+        repo.close()
+
+
+# ---------------------------------------------------------------------------
+# Explicit acquisition runs + alert related-entity graph + personalized TODAY
+# ---------------------------------------------------------------------------
+from festival_bloomberg.product.workflow import (  # noqa: E402
+    build_today,
+    complete_acquisition_run,
+    start_acquisition_run,
+)
+
+
+def _seed_resolution(conn, *, attraction_id, artist_key, artist_mbid="mbid-1"):
+    conn.execute(
+        """
+        INSERT INTO identity.ticketmaster_artist_resolutions
+            (resolution_key, attraction_id, attraction_name, normalized_name,
+             artist_key, artist_mbid, matched_name, resolution_status, match_method,
+             knowledge_time)
+        VALUES (?, ?, 'Test Artist', 'test artist', ?, ?, 'Test Artist',
+                'MATCHED_ARTIST', 'MB_EXACT_NAME', now())
+        """,
+        [f"rk::{attraction_id}", attraction_id, artist_key, artist_mbid],
+    )
+
+
+def test_new_event_with_explicit_runs_creates_alert(tmp_path):
+    repo = FestivalRepository(str(tmp_path / "runs.duckdb"))
+    try:
+        EventRepository(repo.conn)
+        r1 = start_acquisition_run(repo.conn, provider="ticketmaster", operation="refresh")
+        _seed_snapshot(repo.conn, eid="A", retrieved_at=T1, price=50.0,
+                       acquisition_run_id=r1)
+        complete_acquisition_run(repo.conn, run_id=r1, status="COMPLETE", record_count=1)
+        r2 = start_acquisition_run(repo.conn, provider="ticketmaster", operation="refresh")
+        _seed_snapshot(repo.conn, eid="A", retrieved_at=T2, price=50.0,
+                       acquisition_run_id=r2)
+        _seed_snapshot(repo.conn, eid="B", retrieved_at=T2, price=60.0,
+                       acquisition_run_id=r2)
+        complete_acquisition_run(repo.conn, run_id=r2, status="COMPLETE", record_count=2)
+        out = generate_new_event_alerts(repo.conn)
+        assert out["status"] == "COMPLETE"
+        assert _count_alerts(repo.conn, "NEW_EVENT") == 1
+        row = repo.conn.execute(
+            "SELECT entity_key FROM core.alerts WHERE alert_type='NEW_EVENT'"
+        ).fetchone()
+        assert row[0] == "tm::B"
+    finally:
+        repo.close()
+
+
+def test_alert_related_entities_attach_resolved_artist(tmp_path):
+    repo = FestivalRepository(str(tmp_path / "rel.duckdb"))
+    try:
+        EventRepository(repo.conn)
+        _seed_attraction(repo.conn, eid="e1", attraction_id="tm-1", attraction_name="Billie Eilish")
+        _seed_resolution(repo.conn, attraction_id="tm-1", artist_key="mbid::billie")
+        r1 = start_acquisition_run(repo.conn, provider="ticketmaster", operation="refresh")
+        _seed_snapshot(repo.conn, eid="old", retrieved_at=T1, price=50.0,
+                       acquisition_run_id=r1)
+        complete_acquisition_run(repo.conn, run_id=r1, status="COMPLETE")
+        r2 = start_acquisition_run(repo.conn, provider="ticketmaster", operation="refresh")
+        _seed_snapshot(repo.conn, eid="old", retrieved_at=T2, price=50.0,
+                       acquisition_run_id=r2)
+        _seed_snapshot(repo.conn, eid="e1", retrieved_at=T2, price=60.0,
+                       acquisition_run_id=r2)
+        complete_acquisition_run(repo.conn, run_id=r2, status="COMPLETE")
+        generate_new_event_alerts(repo.conn)
+        edges = repo.conn.execute(
+            """
+            SELECT entity_type, entity_key, relationship FROM core.alert_related_entities
+            """
+        ).fetchall()
+        artist_edges = [e for e in edges if e[0] == "ARTIST"]
+        assert artist_edges, "alert should link to the resolved artist"
+        assert artist_edges[0][1] == "mbid::billie"
+        assert artist_edges[0][2] == "EVENT_PRIMARY_ARTIST"
+    finally:
+        repo.close()
+
+
+def test_today_personalized_for_watched_artist(tmp_path):
+    repo = FestivalRepository(str(tmp_path / "today.duckdb"))
+    try:
+        EventRepository(repo.conn)
+        _seed_attraction(repo.conn, eid="e1", attraction_id="tm-1", attraction_name="Billie Eilish")
+        _seed_resolution(repo.conn, attraction_id="tm-1", artist_key="mbid::billie")
+        wl = create_watchlist(repo.conn, name="Talent", entity_type="ARTIST")
+        add_watchlist_item(repo.conn, watchlist_key_value=wl["watchlist_key"],
+                           entity_type="ARTIST", entity_key_value="mbid::billie",
+                           entity_name="Billie Eilish")
+        r1 = start_acquisition_run(repo.conn, provider="ticketmaster", operation="refresh")
+        _seed_snapshot(repo.conn, eid="old", retrieved_at=T1, price=50.0,
+                       acquisition_run_id=r1)
+        complete_acquisition_run(repo.conn, run_id=r1, status="COMPLETE")
+        r2 = start_acquisition_run(repo.conn, provider="ticketmaster", operation="refresh")
+        _seed_snapshot(repo.conn, eid="old", retrieved_at=T2, price=50.0,
+                       acquisition_run_id=r2)
+        _seed_snapshot(repo.conn, eid="e1", retrieved_at=T2, price=60.0,
+                       acquisition_run_id=r2)
+        complete_acquisition_run(repo.conn, run_id=r2, status="COMPLETE")
+        generate_new_event_alerts(repo.conn)
+        today = build_today(repo.conn, limit=10)
+        wl_new = today["sections"]["watchlist"]["new_events"]
+        assert any(x["entity_key"] == "tm::e1" for x in wl_new), \
+            "watched artist must surface the related new-event alert"
+        # contract: flat first_seen_at present
+        assert wl_new[0]["first_seen_at"]
+    finally:
+        repo.close()
+
+
+def test_today_ticketing_contract_flat_fields(tmp_path):
+    repo = FestivalRepository(str(tmp_path / "tc.duckdb"))
+    try:
+        EventRepository(repo.conn)
+        presale = json.dumps([{"name": "Fan", "start": "2026-08-20", "end": "2026-08-21"}])
+        _seed_snapshot(repo.conn, eid="A", retrieved_at=T1, price=50.0)
+        _seed_snapshot(repo.conn, eid="A", retrieved_at=T2, price=70.0, presales=presale)
+        generate_event_alerts(repo.conn)
+        today = build_today(repo.conn, limit=10)
+        tick = today["sections"]["ticketing"]
+        for r in tick["new_presales"]:
+            assert r["event_name"] and r["presale_start"] == "2026-08-20"
+            assert "detail" not in r  # contract: flat, never nested detail
+        for r in tick["status_changes"]:
+            assert r["event_name"]
     finally:
         repo.close()

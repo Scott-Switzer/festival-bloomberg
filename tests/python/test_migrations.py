@@ -23,7 +23,7 @@ def test_apply_pending_migrations_is_idempotent(tmp_path: Path):
 
     connection = duckdb.connect(str(db_path))
     try:
-        assert apply_pending_migrations(connection) == 29
+        assert apply_pending_migrations(connection) == 30
         assert apply_pending_migrations(connection) == 0
         versions = [
             row[0]
@@ -31,7 +31,7 @@ def test_apply_pending_migrations_is_idempotent(tmp_path: Path):
                 "SELECT version FROM schema_migrations ORDER BY version"
             ).fetchall()
         ]
-        assert versions == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
+        assert versions == list(range(1, 31))
         tables = {
             row[0]
             for row in connection.execute(

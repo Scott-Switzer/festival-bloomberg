@@ -13,8 +13,17 @@
       .replace(/"/g, "&quot;");
   }
 
-  async function api(path) {
-    var res = await fetch(path);
+  async function api(path, opts) {
+    opts = opts || {};
+    var init = {};
+    if (opts.method) {
+      init.method = opts.method;
+      if (opts.body) {
+        init.headers = { "Content-Type": "application/json" };
+        init.body = opts.body;
+      }
+    }
+    var res = await fetch(path, init);
     if (res.status === 404) return null;
     return res.json();
   }
@@ -158,6 +167,9 @@
         a.history_count + " historical · " + a.upcoming_count + " upcoming";
       if (a.spotify_id) { html += " · <a href='https://open.spotify.com/artist/" + esc(a.spotify_id) + "' target='_blank' rel='noopener'>Spotify</a>"; }
       html += "</p>";
+      var wlKey = a.canonical && a.canonical.artist_key ? a.canonical.artist_key : id;
+      html += "<div class='panel'><h3>Watchlist</h3><select id='art-wl-select'></select> " +
+        "<button id='art-wl-add' data-key=\"" + esc(wlKey) + "\" data-name=\"" + esc(a.name || "") + "\">Add to watchlist</button></div>";
       if (a.canonical) {
         var c = a.canonical;
         html += "<div class='card'><h3>Identity</h3><table>" +
@@ -206,6 +218,25 @@
         return row([esc(n.title), esc(n.domain), fmt(n.publication_time)]);
       });
       content.innerHTML = html;
+      api("/api/watchlists").then(function (lists) {
+        var sel = document.getElementById("art-wl-select");
+        if (!sel) return;
+        (lists || []).forEach(function (w) {
+          var opt = document.createElement("option");
+          opt.value = w.watchlist_key;
+          opt.textContent = w.name;
+          sel.appendChild(opt);
+        });
+        var btn = document.getElementById("art-wl-add");
+        if (btn) btn.addEventListener("click", function () {
+          if (!sel.value) return;
+          api("/api/watchlists/" + encodeURIComponent(sel.value), { method: "POST", body: JSON.stringify({
+            action: "add", entity_type: "ARTIST",
+            entity_key: btn.getAttribute("data-key"),
+            entity_name: btn.getAttribute("data-name") }) })
+            .then(function () { content.innerHTML = "<div class='none'>Added. Watchlists refresh below — open the Watchlists view.</div>"; });
+        });
+      });
     });
   }
 
@@ -387,22 +418,66 @@
     setNav("watchlists");
     api("/api/watchlists").then(function (lists) {
       var html = "<h1>Watchlists</h1><p class='sub'>Named lists of artists, festivals, tours, events, venues, markets.</p>";
-      if (!lists || !lists.length) { content.innerHTML = html + '<div class="none">No watchlists yet.</div>'; return; }
+      html += "<div class='panel'><h3>Create watchlist</h3>" +
+        "<input id='wl-name' placeholder='Name (e.g. 2027 Talent Targets)' /> " +
+        "<select id='wl-etype'><option value='ARTIST'>Artist</option><option value='FESTIVAL'>Festival</option>" +
+        "<option value='TOUR'>Tour</option><option value='EVENT'>Event</option><option value='VENUE'>Venue</option>" +
+        "<option value='MARKET'>Market</option><option value='PROMOTER'>Promoter</option><option value='COMPANY'>Company</option></select> " +
+        "<button id='wl-create'>Create</button></div>";
+      html += "<div id='wl-list'>";
+      if (!lists || !lists.length) { html += '<div class="none">No watchlists yet.</div>'; }
       lists.forEach(function (w) {
         html += "<h2>" + esc(w.name) + " <span class='muted'>" + esc(w.item_count) + " items" +
           (w.is_system ? " · system" : "") + "</span></h2>";
         html += "<p class='muted'>" + esc(w.description || "") + "</p>";
+        html += "<div class='panel'><input id='add-" + esc(w.watchlist_key) + "-name' placeholder='Entity key (e.g. mbid::f4abc0b5…)' style='width:45%' /> " +
+          "<input id='add-" + esc(w.watchlist_key) + "-label' placeholder='Display name' style='width:25%' /> " +
+          "<select id='add-" + esc(w.watchlist_key) + "-etype'><option value='ARTIST'>Artist</option><option value='FESTIVAL'>Festival</option>" +
+          "<option value='TOUR'>Tour</option><option value='EVENT'>Event</option><option value='VENUE'>Venue</option>" +
+          "<option value='MARKET'>Market</option><option value='PROMOTER'>Promoter</option></select> " +
+          "<button data-wl-add=\"" + esc(w.watchlist_key) + "\">Add</button></div>";
         html += "<div id='wl-" + esc(w.watchlist_key) + "'><div class='muted'>…</div></div>";
       });
+      html += "</div>";
       content.innerHTML = html;
+
+      var createBtn = document.getElementById("wl-create");
+      if (createBtn) createBtn.addEventListener("click", function () {
+        var name = document.getElementById("wl-name").value.trim();
+        if (!name) return;
+        api("/api/watchlists", { method: "POST", body: JSON.stringify({
+          name: name, entity_type: document.getElementById("wl-etype").value, is_system: false }) })
+          .then(function () { viewWatchlists(); });
+      });
+      document.querySelectorAll("[data-wl-add]").forEach(function (b) {
+        b.addEventListener("click", function () {
+          var key = b.getAttribute("data-wl-add");
+          api("/api/watchlists/" + encodeURIComponent(key), { method: "POST", body: JSON.stringify({
+            action: "add",
+            entity_type: document.getElementById("add-" + key + "-etype").value,
+            entity_key: document.getElementById("add-" + key + "-name").value.trim(),
+            entity_name: document.getElementById("add-" + key + "-label").value.trim() || null }) })
+            .then(function () { viewWatchlists(); });
+        });
+      });
+
       lists.forEach(function (w) {
         api("/api/watchlists/" + w.watchlist_key).then(function (items) {
           var el = document.getElementById("wl-" + w.watchlist_key);
           if (!el) return;
-          el.innerHTML = tableOrNone(items, ["Type", "Name"], function (i) {
+          var rows = (items || []).map(function (i) {
             var kind = String(i.entity_type || "").toLowerCase();
             return row(['<span class="pill ok">' + esc(i.entity_type) + "</span>",
-              linkTo(kind + "s", i.entity_key, i.entity_name || i.entity_key)]);
+              linkTo(kind + "s", i.entity_key, i.entity_name || i.entity_key),
+              '<button data-wl-remove="' + esc(w.watchlist_key) + '" data-etype="' + esc(i.entity_type) + '" data-ekey="' + esc(i.entity_key) + '">Remove</button>']);
+          });
+          el.innerHTML = rows.length ? "<table><thead><tr><th>Type</th><th>Name</th><th></th></tr></thead><tbody>" + rows.join("") + "</tbody></table>" : '<div class="none">Empty list.</div>';
+          el.querySelectorAll("[data-wl-remove]").forEach(function (btn) {
+            btn.addEventListener("click", function () {
+              api("/api/watchlists/" + encodeURIComponent(btn.getAttribute("data-wl-remove")), { method: "POST", body: JSON.stringify({
+                action: "remove", entity_type: btn.getAttribute("data-etype"), entity_key: btn.getAttribute("data-ekey") }) })
+                .then(function () { viewWatchlists(); });
+            });
           });
         });
       });

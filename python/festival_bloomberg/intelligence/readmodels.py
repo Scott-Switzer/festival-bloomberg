@@ -11,6 +11,7 @@ event -> venue -> market without a full identity merge.
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -165,35 +166,73 @@ def query_tape(
 # ---------------------------------------------------------------------------
 # Artist
 # ---------------------------------------------------------------------------
+def _artist_name_keys(conn, artist_key: str) -> list[str]:
+    """All lowercase name forms usable for cross-table joins.
+
+    Canonical name + every alias/credit for the artist (core.artist_aliases,
+    reference aliases). Used to link box-office/forward tables that are keyed
+    by artist NAME, never by the canonical key. Returns [] when nothing is
+    known.
+    """
+    name = _artist_name_for_key(conn, artist_key)
+    if not name:
+        return []
+    forms = {_normalize_name(name)}
+    for row in conn.execute(
+        "SELECT alias FROM core.artist_aliases WHERE artist_key = ?",
+        [artist_key],
+    ).fetchall():
+        if row[0]:
+            forms.add(_normalize_name(row[0]))
+    mbid = artist_key.removeprefix("mbid::")
+    if len(mbid) > 8:
+        row = conn.execute(
+            "SELECT aliases FROM reference.musicbrainz_artists WHERE mbid = ?", [mbid],
+        ).fetchone()
+        if row and row[0]:
+            try:
+                for alias in json.loads(row[0]):
+                    aname = (alias or {}).get("name")
+                    if aname:
+                        forms.add(_normalize_name(aname))
+            except (ValueError, TypeError):
+                pass
+    return sorted(forms)
+
+
 def get_artist(conn, artist_key: str) -> dict[str, Any] | None:
     name = _artist_name_for_key(conn, artist_key)
     if name is None:
         return None
-    history = _rows(conn, """
+    name_forms = _artist_name_keys(conn, artist_key)
+    if not name_forms:
+        name_forms = [_normalize_name(name)]
+    placeholders = ",".join("?" for _ in name_forms)
+    history = _rows(conn, f"""
         SELECT canonical_engagement_id, artist, venue, city, market, start_date,
                number_of_shows, is_multi_show
         FROM research.canonical_boxoffice_engagements
-        WHERE lower(artist) = ?
+        WHERE lower(artist) IN ({placeholders})
         ORDER BY start_date
-    """, [artist_key])
-    upcoming = _rows(conn, """
+    """, name_forms)
+    upcoming = _rows(conn, f"""
         SELECT watch_event_id, provider, provider_event_id, venue_name, market,
                event_date, event_status, first_seen_at, source_url
         FROM flywheel.forward_watch_events
-        WHERE lower(artist_name) = ? AND event_date >= CURRENT_DATE
+        WHERE lower(artist_name) IN ({placeholders}) AND event_date >= CURRENT_DATE
         ORDER BY event_date
-    """, [artist_key])
+    """, name_forms)
     # Box-office outcomes are read from the raw boxscore corpus, which carries
     # headcount / gross / price directly and is keyed by artist name (the
     # economics.event_outcome_claims ledger uses a different id space).
-    outcomes = _rows(conn, """
+    outcomes = _rows(conn, f"""
         SELECT engagement_id, start_date, venue, headcount_total, headcount_definition,
                ticket_gross_total, currency, price_min, price_max,
                reporting_source, source_url
         FROM research.boxoffice_engagements
-        WHERE lower(artist) = ?
+        WHERE lower(artist) IN ({placeholders})
         ORDER BY start_date
-    """, [artist_key])
+    """, name_forms)
     identity = _rows(conn, """
         SELECT DISTINCT spotify_id, spotify_name, spotify_url, resolution_status
         FROM identity.spotify_artist_resolutions

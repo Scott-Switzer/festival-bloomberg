@@ -183,12 +183,51 @@ def list_monitors(conn) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# Explicit provider acquisition runs (migration 030)
+# ---------------------------------------------------------------------------
+def start_acquisition_run(conn, *, provider: str, operation: str,
+                          run_id: str | None = None) -> dict[str, Any]:
+    """Open a logical acquisition run; every snapshot gets this run_id.
+
+    Returns the run_id. Idempotent: re-opening the same run_id updates
+    started_at only if the run is still RUNNING.
+    """
+    run_id = run_id or f"{provider}::{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')}"
+    conn.execute(
+        """
+        INSERT INTO audit.provider_acquisition_runs
+            (run_id, provider, operation, started_at, status)
+        VALUES (?, ?, ?, now(), 'RUNNING')
+        ON CONFLICT (run_id) DO NOTHING
+        """,
+        [run_id, provider, operation],
+    )
+    return run_id
+
+
+def complete_acquisition_run(conn, *, run_id: str, status: str = "COMPLETE",
+                             request_count: int = 0, record_count: int = 0,
+                             error_count: int = 0, note: str | None = None) -> None:
+    """Close a run; the alert engine compares latest COMPLETE vs prior."""
+    conn.execute(
+        """
+        UPDATE audit.provider_acquisition_runs
+        SET completed_at = now(), status = ?, request_count = ?,
+            record_count = ?, error_count = ?, note = ?
+        WHERE run_id = ?
+        """,
+        [status, request_count, record_count, error_count, note, run_id],
+    )
+
+
+# ---------------------------------------------------------------------------
 # Deterministic alert engine
 # ---------------------------------------------------------------------------
 def _persist_alert(conn, *, alert_type: str, entity_type: str, entity_key_value: str,
                    entity_name: str | None, provider: str | None, dedupe: str,
                    observed_at: str, detail: dict[str, Any],
-                   source_record_id: str | None = None) -> int:
+                   source_record_id: str | None = None,
+                   related: list[dict[str, Any]] | None = None) -> int:
     key = alert_key(alert_type, entity_type, entity_key_value, provider, dedupe)
     exists = conn.execute(
         "SELECT 1 FROM core.alerts WHERE alert_key = ?", [key]
@@ -206,7 +245,109 @@ def _persist_alert(conn, *, alert_type: str, entity_type: str, entity_key_value:
         [key, alert_type, entity_type, entity_key_value, entity_name, provider,
          observed_at, json.dumps(detail, default=str), dedupe, source_record_id],
     )
+    # Related-entity graph: every alert links to everything it touches, so a
+    # watchlist holding ARTIST mbid::X can surface an EVENT tm::123 alert.
+    if related:
+        _persist_alert_related(conn, alert_key_value=key, related=related)
     return 1
+
+
+def _persist_alert_related(conn, *, alert_key_value: str,
+                           related: list[dict[str, Any]]) -> int:
+    """Persist related-entity edges for an alert (idempotent, source-backed)."""
+    written = 0
+    for r in related:
+        etype = r.get("entity_type")
+        ekey = r.get("entity_key")
+        rel = r.get("relationship")
+        if not etype or not ekey or not rel:
+            continue
+        rel_key = hashlib.sha256(
+            "|".join([alert_key_value, etype, ekey, rel]).encode("utf-8")
+        ).hexdigest()[:32]
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO core.alert_related_entities
+                (relation_key, alert_key, entity_type, entity_key, relationship,
+                 entity_name, source, ingested_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, now())
+            """,
+            [rel_key, alert_key_value, etype, ekey, rel, r.get("entity_name"),
+             r.get("source") or "ticketmaster"],
+        )
+        written += 1
+    return written
+
+
+def _related_entities_for_event(conn, *, eid: str) -> list[dict[str, Any]]:
+    """Source-backed related entities for a Ticketmaster event alert.
+
+    Attaches EVENT (self), resolved ARTISTs (from the resolution ledger),
+    VENUE, MARKET (city), and PROMOTER — only from columns/ledgers that
+    actually exist. No guessed relationships.
+    """
+    row = conn.execute(
+        """
+        SELECT attractions, venue_id, venue_name, city, promoter
+        FROM events.provider_event_snapshots
+        WHERE platform_object_id = ? AND provider = 'ticketmaster'
+        ORDER BY (attractions IS NOT NULL) DESC, retrieved_at DESC LIMIT 1
+        """,
+        [eid],
+    ).fetchone()
+    if not row:
+        return []
+    attractions, venue_id, venue_name, city, promoter = row
+    related: list[dict[str, Any]] = [{
+        "entity_type": "EVENT", "entity_key": f"tm::{eid}",
+        "relationship": "EVENT_SELF", "entity_name": None,
+    }]
+    # Resolved artists: attraction id -> canonical artist via resolution ledger.
+    artist_related: list[dict[str, Any]] = []
+    try:
+        items = json.loads(attractions) if isinstance(attractions, str) else attractions
+    except (ValueError, TypeError):
+        items = []
+    if isinstance(items, list):
+        for it in items:
+            aid = (it or {}).get("ticketmaster_attraction_id")
+            if not aid:
+                continue
+            resolved = conn.execute(
+                """
+                SELECT artist_key, artist_mbid FROM identity.ticketmaster_artist_resolutions
+                WHERE attraction_id = ? AND resolution_status = 'MATCHED_ARTIST'
+                  AND artist_key IS NOT NULL
+                ORDER BY knowledge_time DESC LIMIT 1
+                """,
+                [aid],
+            ).fetchone()
+            if not resolved:
+                continue
+            artist_key, artist_mbid = resolved
+            artist_related.append({
+                "entity_type": "ARTIST", "entity_key": artist_key,
+                "relationship": "EVENT_PRIMARY_ARTIST" if len(artist_related) == 0 else "EVENT_ARTIST",
+                "entity_name": None,
+            })
+    related.extend(artist_related)
+    if venue_id or venue_name:
+        related.append({
+            "entity_type": "VENUE",
+            "entity_key": f"tm-venue::{venue_id}" if venue_id else f"venue-name::{venue_name}",
+            "relationship": "EVENT_VENUE", "entity_name": venue_name,
+        })
+    if city:
+        related.append({
+            "entity_type": "MARKET", "entity_key": f"market::{city}",
+            "relationship": "EVENT_MARKET", "entity_name": city,
+        })
+    if promoter:
+        related.append({
+            "entity_type": "PROMOTER", "entity_key": f"promoter::{promoter}",
+            "relationship": "EVENT_PROMOTER", "entity_name": promoter,
+        })
+    return related
 
 
 def _presale_signature(presales: Any) -> frozenset[tuple[str, str, str]]:
@@ -226,7 +367,8 @@ def _presale_signature(presales: Any) -> frozenset[tuple[str, str, str]]:
 
 
 def _compare_consecutive(conn, *, eid: str, prev: dict[str, Any],
-                         cur: dict[str, Any], knowledge_time: str) -> int:
+                         cur: dict[str, Any], knowledge_time: str,
+                         related: list[dict[str, Any]] | None = None) -> int:
     """Emit alerts for the transition prev -> cur (one logical change each)."""
     written = 0
     entity_key_value = f"tm::{eid}"
@@ -243,14 +385,16 @@ def _compare_consecutive(conn, *, eid: str, prev: dict[str, Any],
             conn, alert_type=alert_type, entity_type="EVENT", entity_key_value=entity_key_value,
             entity_name=name, provider="ticketmaster", dedupe=f"status:{f_status}->{l_status}",
             observed_at=knowledge_time,
-            detail={**base, "old_status": f_status, "new_status": l_status}, source_record_id=eid)
+            detail={**base, "old_status": f_status, "new_status": l_status}, source_record_id=eid,
+            related=related)
 
     if not prev.get("onsale_start") and cur.get("onsale_start"):
         written += _persist_alert(
             conn, alert_type="ONSALE_DISCOVERED", entity_type="EVENT", entity_key_value=entity_key_value,
             entity_name=name, provider="ticketmaster", dedupe=f"onsale:{cur['onsale_start']}",
             observed_at=knowledge_time,
-            detail={**base, "onsale_start": cur["onsale_start"]}, source_record_id=eid)
+            detail={**base, "onsale_start": cur["onsale_start"]}, source_record_id=eid,
+            related=related)
 
     new_presales = _presale_signature(cur.get("presales")) - _presale_signature(prev.get("presales"))
     for pname, pstart, pend in sorted(new_presales):
@@ -259,7 +403,7 @@ def _compare_consecutive(conn, *, eid: str, prev: dict[str, Any],
             entity_name=name, provider="ticketmaster", dedupe=f"presale:{pname}:{pstart}",
             observed_at=knowledge_time,
             detail={**base, "presale_name": pname, "presale_start": pstart, "presale_end": pend},
-            source_record_id=eid)
+            source_record_id=eid, related=related)
 
     f_price = (prev.get("price_min"), prev.get("price_max"))
     l_price = (cur.get("price_min"), cur.get("price_max"))
@@ -270,13 +414,15 @@ def _compare_consecutive(conn, *, eid: str, prev: dict[str, Any],
             entity_name=name, provider="ticketmaster", dedupe=f"price:{l_price[0]}:{l_price[1]}",
             observed_at=knowledge_time,
             detail={**base, "old_price_min": f_price[0], "old_price_max": f_price[1],
-                    "new_price_min": l_price[0], "new_price_max": l_price[1]}, source_record_id=eid)
+                    "new_price_min": l_price[0], "new_price_max": l_price[1]}, source_record_id=eid,
+            related=related)
 
     if not prev.get("promoter") and cur.get("promoter"):
         written += _persist_alert(
             conn, alert_type="PROMOTER_IDENTIFIED", entity_type="EVENT", entity_key_value=entity_key_value,
             entity_name=name, provider="ticketmaster", dedupe=f"promoter:{cur['promoter']}",
-            observed_at=knowledge_time, detail={**base, "promoter": cur["promoter"]}, source_record_id=eid)
+            observed_at=knowledge_time, detail={**base, "promoter": cur["promoter"]}, source_record_id=eid,
+            related=related)
     return written
 
 
@@ -301,13 +447,17 @@ def generate_event_alerts(conn, *, knowledge_time: str | None = None) -> dict[st
     ).fetchall()
     cols = [c[0] for c in conn.description]
     prev: dict[str, dict[str, Any]] = {}
+    related_cache: dict[str, list[dict[str, Any]]] = {}
     for r in rows:
         rec = dict(zip(cols, r))
         eid = rec["platform_object_id"]
         if eid in prev:
             summary["events_compared"] += 1
+            if eid not in related_cache:
+                related_cache[eid] = _related_entities_for_event(conn, eid=eid)
             summary["alerts_written"] += _compare_consecutive(
-                conn, eid=eid, prev=prev[eid], cur=rec, knowledge_time=knowledge_time)
+                conn, eid=eid, prev=prev[eid], cur=rec, knowledge_time=knowledge_time,
+                related=related_cache[eid])
         prev[eid] = rec
     summary["status"] = "COMPLETE"
     return summary
@@ -329,20 +479,50 @@ def generate_new_event_alerts(conn, *, knowledge_time: str | None = None) -> dic
         GROUP BY platform_object_id
         """
     ).fetchall()
-    # NEW_EVENT requires a PRIOR snapshot to compare against: an event first
-    # seen in the LATEST distinct acquisition batch is new. With only one
-    # snapshot there is no prior state, so nothing can legitimately be "new".
-    batches = conn.execute(
-        "SELECT DISTINCT retrieved_at FROM events.provider_event_snapshots "
-        "WHERE provider='ticketmaster' ORDER BY retrieved_at"
+    # NEW_EVENT requires a PRIOR run to compare against. Prefer explicit
+    # acquisition runs (migration 030); fall back to distinct retrieved_at
+    # batches for historical snapshots without acquisition_run_id.
+    runs = conn.execute(
+        """
+        SELECT run_id FROM audit.provider_acquisition_runs
+        WHERE provider = 'ticketmaster' AND status = 'COMPLETE'
+        ORDER BY completed_at
+        """
     ).fetchall()
-    batch_times = [r[0] for r in batches]
-    if len(batch_times) < 2:
-        summary["status"] = "COMPLETE"
-        summary["note"] = "single snapshot corpus: NEW_EVENT requires a prior run"
-        return summary
-    latest_batch = batch_times[-1]
-    new_ids = [r[0] for r in rows if str(r[1]) == str(latest_batch)]
+    if runs:
+        latest_run = runs[-1][0]
+        # New = present in the latest run AND absent from ALL prior runs.
+        new_ids = [r[0] for r in conn.execute(
+            """
+            WITH latest AS (
+                SELECT DISTINCT platform_object_id
+                FROM events.provider_event_snapshots
+                WHERE provider = 'ticketmaster' AND acquisition_run_id = ?
+            ),
+            prior AS (
+                SELECT DISTINCT platform_object_id
+                FROM events.provider_event_snapshots
+                WHERE provider = 'ticketmaster'
+                  AND acquisition_run_id IS NOT NULL
+                  AND acquisition_run_id != ?
+            )
+            SELECT l.platform_object_id FROM latest l
+            ANTI JOIN prior p USING (platform_object_id)
+            """,
+            [latest_run, latest_run],
+        ).fetchall()]
+    else:
+        batches = conn.execute(
+            "SELECT DISTINCT retrieved_at FROM events.provider_event_snapshots "
+            "WHERE provider='ticketmaster' ORDER BY retrieved_at"
+        ).fetchall()
+        batch_times = [r[0] for r in batches]
+        if len(batch_times) < 2:
+            summary["status"] = "COMPLETE"
+            summary["note"] = "single snapshot corpus: NEW_EVENT requires a prior run"
+            return summary
+        latest_batch = batch_times[-1]
+        new_ids = [r[0] for r in rows if str(r[1]) == str(latest_batch)]
     for eid in new_ids:
         info = conn.execute(
             """
@@ -363,6 +543,7 @@ def generate_new_event_alerts(conn, *, knowledge_time: str | None = None) -> dic
             entity_key_value=f"tm::{eid}", entity_name=info[0] or info[1],
             provider="ticketmaster", dedupe="first_seen", observed_at=knowledge_time,
             detail=detail, source_record_id=eid,
+            related=_related_entities_for_event(conn, eid=eid),
         )
     summary["status"] = "COMPLETE"
     return summary
@@ -445,27 +626,53 @@ def build_today(conn, *, limit: int = 50) -> dict[str, Any]:
         """
     ).fetchall()
     watched_keys = {r[0] for r in watched}
-    # NEW_EVENT / NEW_TOUR / NEW_FESTIVAL_APPEARANCE alerts touching
-    # watched entities since the ledger began.
+    # Personalized: alerts whose RELATED-ENTITY graph touches a watched
+    # entity (an EVENT tm::123 alert surfaces for a watched ARTIST mbid::X
+    # via the alert_related_entities edge), plus alerts whose own entity is
+    # watched directly. Global FESTIVAL/TOUR alerts are NOT mixed in here.
     new_events = conn.execute(
         """
-        SELECT alert_key, alert_type, entity_type, entity_key, entity_name,
-               observed_at, detail
-        FROM core.alerts
-        WHERE alert_type IN ('NEW_EVENT', 'NEW_TOUR', 'NEW_FESTIVAL_APPEARANCE')
-          AND status = 'ACTIVE'
-          AND (entity_key IN (SELECT entity_key FROM core.watchlist_items
-                              WHERE removed_at IS NULL)
-               OR entity_type IN ('FESTIVAL', 'TOUR'))
-        ORDER BY observed_at DESC LIMIT ?
+        SELECT DISTINCT a.alert_key, a.alert_type, a.entity_type, a.entity_key,
+               a.entity_name, a.observed_at, a.detail,
+               re.entity_type AS watched_via_type, re.entity_key AS watched_via_key,
+               re.relationship AS watched_via_relationship
+        FROM core.alerts a
+        LEFT JOIN core.alert_related_entities re ON re.alert_key = a.alert_key
+        WHERE a.alert_type IN ('NEW_EVENT', 'NEW_TOUR', 'NEW_FESTIVAL_APPEARANCE')
+          AND a.status = 'ACTIVE'
+          AND (
+                a.entity_key IN (SELECT entity_key FROM core.watchlist_items
+                                 WHERE removed_at IS NULL)
+                OR re.entity_key IN (SELECT entity_key FROM core.watchlist_items
+                                     WHERE removed_at IS NULL)
+              )
+        ORDER BY a.observed_at DESC LIMIT ?
         """,
         [limit],
     ).fetchall()
     new_event_cols = [c[0] for c in conn.description]
+    new_event_rows = []
+    for r in new_events:
+        rec = dict(zip(new_event_cols, r))
+        detail = rec.get("detail") or {}
+        new_event_rows.append({
+            "alert_key": rec.get("alert_key"),
+            "alert_type": rec.get("alert_type"),
+            "entity_type": rec.get("entity_type"),
+            "entity_key": rec.get("entity_key"),
+            "entity_name": rec.get("entity_name") or detail.get("event_name") or detail.get("artist_name"),
+            "event_name": rec.get("entity_name") or detail.get("event_name") or detail.get("artist_name"),
+            "observed_at": rec.get("observed_at"),
+            "first_seen_at": rec.get("observed_at"),
+            "provider": "ticketmaster",
+            "watched_via_type": rec.get("watched_via_type"),
+            "watched_via_key": rec.get("watched_via_key"),
+            "watched_via_relationship": rec.get("watched_via_relationship"),
+        })
     sections["watchlist"] = {
         "watched_entities": len(watched),
         "watched_names": [r[1] for r in watched],
-        "new_events": [dict(zip(new_event_cols, r)) for r in new_events],
+        "new_events": new_event_rows,
     }
 
     # 2. Ticketing — recent presales/onsales/price changes from the alert ledger.
@@ -482,12 +689,50 @@ def build_today(conn, *, limit: int = 50) -> dict[str, Any]:
         [*ticketing_types, limit],
     ).fetchall()
     ticketing_rows = [dict(zip([c[0] for c in conn.description], r)) for r in ticketing]
+
+    def _ticketing_contract(rec: dict[str, Any]) -> dict[str, Any]:
+        """Normalized TODAY contract: flat fields, never nested detail JSON.
+
+        The SPA renders ``event_name / onsale_start / presale_start / status``
+        at top level; every ticketing alert is flattened here once.
+        """
+        detail = rec.get("detail") or {}
+        if isinstance(detail, str):
+            try:
+                detail = json.loads(detail)
+            except (ValueError, TypeError):
+                detail = {}
+        name = rec.get("entity_name") or detail.get("event_name") or detail.get("artist_name")
+        return {
+            "alert_key": rec.get("alert_key"),
+            "alert_type": rec.get("alert_type"),
+            "event_key": rec.get("entity_key"),
+            "event_name": name,
+            "artist_name": detail.get("artist_name"),
+            "observed_at": rec.get("observed_at"),
+            "provider": rec.get("provider"),
+            "onsale_start": detail.get("onsale_start"),
+            "presale_start": detail.get("presale_start"),
+            "presale_name": detail.get("presale_name"),
+            "status": detail.get("new_status") or detail.get("old_status"),
+            "old_status": detail.get("old_status"),
+            "new_status": detail.get("new_status"),
+            "old_price_min": detail.get("old_price_min"),
+            "old_price_max": detail.get("old_price_max"),
+            "new_price_min": detail.get("new_price_min"),
+            "new_price_max": detail.get("new_price_max"),
+            "promoter": detail.get("promoter"),
+            "source_record_id": rec.get("source_record_id"),
+        }
+
     sections["ticketing"] = {
-        "new_onsales": [r for r in ticketing_rows if r["alert_type"] == "ONSALE_DISCOVERED"],
-        "new_presales": [r for r in ticketing_rows if r["alert_type"] == "PRESALE_DISCOVERED"],
-        "status_changes": [r for r in ticketing_rows
-                           if r["alert_type"] in ("EVENT_CANCELLED", "EVENT_POSTPONED",
-                                                   "EVENT_RESCHEDULED", "PRICE_RANGE_CHANGED")],
+        "new_onsales": [_ticketing_contract(r) for r in ticketing_rows
+                         if r["alert_type"] == "ONSALE_DISCOVERED"],
+        "new_presales": [_ticketing_contract(r) for r in ticketing_rows
+                          if r["alert_type"] == "PRESALE_DISCOVERED"],
+        "status_changes": [_ticketing_contract(r) for r in ticketing_rows
+                            if r["alert_type"] in ("EVENT_CANCELLED", "EVENT_POSTPONED",
+                                                    "EVENT_RESCHEDULED", "PRICE_RANGE_CHANGED")],
     }
 
     # 3. Catalysts — recent news mentions (metadata only).
