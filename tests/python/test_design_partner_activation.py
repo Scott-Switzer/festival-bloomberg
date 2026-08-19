@@ -12,10 +12,14 @@ from __future__ import annotations
 import json
 
 from festival_bloomberg.economics.partner_readiness import (
+    SCOPE_MARKET_SPECIFIC,
+    SCOPE_MULTI_MARKET,
+    SCOPE_VENUE_SPECIFIC,
     TIER_ECONOMICS_USABLE,
     TIER_RETROSPECTIVE_RESEARCH,
     TIER_STRUCTURAL_ONLY,
     TIER_UNDERWRITING_RESEARCH,
+    dataset_scope,
     partner_readiness_tier,
     simulate_partner_value,
 )
@@ -228,3 +232,151 @@ def test_partner_preview_isolation_from_public_warehouse(tmp_path):
     # never opened by this command.
     from festival_bloomberg.warehouse.repository import DEFAULT_DB_PATH
     assert db_path != DEFAULT_DB_PATH
+
+
+# ---------------------------------------------------------------------------
+# Scope + generalization gates
+# ---------------------------------------------------------------------------
+def test_dataset_scope_single_venue():
+    assert dataset_scope(1, 1)["scope"] == SCOPE_VENUE_SPECIFIC
+    assert dataset_scope(1, 5)["scope"] == SCOPE_VENUE_SPECIFIC
+
+
+def test_dataset_scope_multi_venue_single_market():
+    s = dataset_scope(8, 1)
+    assert s["scope"] == SCOPE_MARKET_SPECIFIC
+    assert s["multi_venue"] is True
+    assert s["multi_market"] is False
+
+
+def test_dataset_scope_multi_market():
+    s = dataset_scope(8, 4)
+    assert s["scope"] == SCOPE_MULTI_MARKET
+    assert s["multi_venue"] is True
+    assert s["multi_market"] is True
+
+
+def test_single_venue_high_row_count_not_underwriting():
+    """A 1000-event single-venue/single-artist corpus must not be presented
+    as broadly underwriting-research capable."""
+    coverage = {
+        "events": 1000,
+        "distinct_artists": 1,
+        "distinct_venues": 1,
+        "distinct_markets": 1,
+        "events_with_cutoff": 900,
+        "events_with_attendance": 900,
+        "events_with_tickets_sold": 900,
+        "events_with_gross": 500,
+        "events_with_guarantee": 500,
+        "events_with_settlement": 500,
+    }
+    result = partner_readiness_tier(coverage)
+    # Labels are deep but breadth is not: capped below underwriting.
+    assert result["tier"] != TIER_UNDERWRITING_RESEARCH
+    assert result["tier"] == TIER_ECONOMICS_USABLE
+    assert result["generalization"]["status"] == "GENERALIZATION_NOT_READY"
+    assert result["generalization"]["ready"] is False
+    assert result["scope"]["scope"] == SCOPE_VENUE_SPECIFIC
+
+
+def test_low_artist_breadth_caps_underwriting():
+    coverage = {
+        "events": 300,
+        "distinct_artists": 3,  # below MIN_GEN_ARTISTS
+        "distinct_venues": 30,
+        "distinct_markets": 5,
+        "events_with_cutoff": 200,
+        "events_with_attendance": 250,
+        "events_with_tickets_sold": 250,
+        "events_with_gross": 150,
+        "events_with_guarantee": 150,
+        "events_with_settlement": 150,
+    }
+    result = partner_readiness_tier(coverage)
+    assert result["tier"] != TIER_UNDERWRITING_RESEARCH
+    assert result["generalization"]["status"] == "GENERALIZATION_NOT_READY"
+    assert any("GENERALIZATION_NOT_READY" in r for r in result["reasons"])
+
+
+def test_generalization_ready_underwriting_has_scope():
+    coverage = {
+        "events": 300,
+        "distinct_artists": 60,
+        "distinct_venues": 20,
+        "distinct_markets": 8,
+        "events_with_cutoff": 200,
+        "events_with_attendance": 250,
+        "events_with_tickets_sold": 250,
+        "events_with_gross": 150,
+        "events_with_guarantee": 150,
+        "events_with_settlement": 150,
+    }
+    result = partner_readiness_tier(coverage)
+    assert result["tier"] == TIER_UNDERWRITING_RESEARCH
+    assert result["generalization"]["ready"] is True
+    assert result["scope"]["scope"] == SCOPE_MULTI_MARKET
+
+
+# ---------------------------------------------------------------------------
+# Preview DB isolation (unique per invocation, cleaned up by default)
+# ---------------------------------------------------------------------------
+def test_preview_uses_unique_db_and_cleans_up(tmp_path):
+    import os
+
+    from festival_bloomberg.cli.main import build_parser
+
+    csv = tmp_path / "shows.csv"
+    csv.write_text(
+        "customer_event_id,artist_name,venue_name,event_date,tickets_sold\n"
+        "EVT1,A,B,2024-01-01,100\n",
+        encoding="utf-8",
+    )
+
+    def run(customer):
+        out = tmp_path / f"{customer}.json"
+        args = build_parser().parse_args([
+            "partner", "preview",
+            "--files", str(csv),
+            "--customer", customer,
+            "--output", str(out),
+        ])
+        assert args.handler(args) == 0
+        return json.loads(open(out, encoding="utf-8").read())
+
+    a = run("partner_a")
+    b = run("partner_b")
+
+    # Distinct temp DBs — partner B never sees partner A's state.
+    assert a["isolated_db"] != b["isolated_db"]
+    assert a["structural_coverage"]["events"] == 1
+    assert b["structural_coverage"]["events"] == 1
+
+    # Default (no --keep-db) removes the temporary DB after the run.
+    for s in (a, b):
+        assert not os.path.exists(s["isolated_db"])
+
+
+def test_preview_keep_db_persists(tmp_path):
+    import os
+
+    from festival_bloomberg.cli.main import build_parser
+
+    csv = tmp_path / "shows.csv"
+    csv.write_text(
+        "customer_event_id,artist_name,venue_name,event_date,tickets_sold\n"
+        "EVT1,A,B,2024-01-01,100\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "summary.json"
+    args = build_parser().parse_args([
+        "partner", "preview",
+        "--files", str(csv),
+        "--customer", "keeper",
+        "--keep-db",
+        "--output", str(out),
+    ])
+    assert args.handler(args) == 0
+    summary = json.loads(open(out, encoding="utf-8").read())
+    assert os.path.exists(summary["isolated_db"])
+

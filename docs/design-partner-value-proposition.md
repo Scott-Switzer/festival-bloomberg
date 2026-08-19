@@ -71,4 +71,8 @@ your own history benchmarks your own market, venue, and artist decisions.
 
 > The readiness tiers are `STRUCTURAL_ONLY → RETROSPECTIVE_RESEARCH_USABLE →
 > ECONOMICS_USABLE → UNDERWRITING_RESEARCH_CANDIDATE`. Row count alone never
-> advances a tier; label families and PIT cutoffs do.
+> advances a tier; label families, PIT cutoffs, and dataset breadth do.
+>
+> Corpus-size figures (e.g. “250 events”) are **illustrative planning targets**
+> (`SYNTHETIC_STRUCTURAL_SCENARIO`), not guarantees — actual readiness depends
+> on label density, decision-time coverage, repeat structure and breadth.

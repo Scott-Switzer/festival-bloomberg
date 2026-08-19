@@ -63,4 +63,8 @@ predictions. No private data leaves your machine.
 | `ECONOMICS_USABLE` | tickets + gross + deal/settlement evidence for benchmarking |
 | `UNDERWRITING_RESEARCH_CANDIDATE` | enough labelled outcomes for underwriting *research* (not a recommendation) |
 
-Row count alone never advances a tier.
+Row count alone never advances a tier. Readiness also depends on dataset
+**breadth** (distinct artists/venues/markets), so a single-venue dataset is
+scoped `VENUE_SPECIFIC` and is never presented as broadly generalizable. The
+`partner value` curves are `SYNTHETIC_STRUCTURAL_SCENARIO` — illustrative
+planning targets, not guarantees.

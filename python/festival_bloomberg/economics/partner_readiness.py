@@ -46,6 +46,18 @@ MIN_ECON_DEAL = 10
 MIN_UNDERWRITE_EVENTS = 250
 MIN_UNDERWRITE_ECON = 100
 
+# Generalization floors: an underwriting-research claim needs enough distinct
+# entities that it is not merely describing one venue/artist. Below these, the
+# dataset is still useful, but the tier is capped at ECONOMICS_USABLE with an
+# explicit GENERALIZATION_NOT_READY marker.
+MIN_GEN_ARTISTS = 20
+MIN_GEN_VENUES = 5
+
+# Scope labels: the narrowest generalization boundary the dataset can support.
+SCOPE_VENUE_SPECIFIC = "VENUE_SPECIFIC"
+SCOPE_MARKET_SPECIFIC = "MARKET_SPECIFIC"
+SCOPE_MULTI_MARKET = "MULTI_MARKET"
+
 
 def structural_coverage(economics_repo, events_repo) -> dict[str, Any]:
     """Structural coverage from the persisted ledger (no prediction).
@@ -109,8 +121,33 @@ def structural_coverage(economics_repo, events_repo) -> dict[str, Any]:
     }
 
 
+def dataset_scope(distinct_venues: int, distinct_markets: int) -> dict[str, Any]:
+    """Narrowest generalization boundary a dataset can support.
+
+    ``MULTI_VENUE`` (multiple venues inside a single market) is expressed as
+    ``scope == MARKET_SPECIFIC`` with ``multi_venue == True``.
+    """
+    if distinct_venues <= 1:
+        scope = SCOPE_VENUE_SPECIFIC
+    elif distinct_markets <= 1:
+        scope = SCOPE_MARKET_SPECIFIC
+    else:
+        scope = SCOPE_MULTI_MARKET
+    return {
+        "scope": scope,
+        "multi_venue": distinct_venues > 1,
+        "multi_market": distinct_markets > 1,
+    }
+
+
 def partner_readiness_tier(coverage: dict[str, Any]) -> dict[str, Any]:
-    """Deterministic tier from structural coverage. Row count alone never wins."""
+    """Deterministic tier from structural coverage. Row count alone never wins.
+
+    Generalization breadth is part of the gate: a dataset can reach
+    ``UNDERWRITING_RESEARCH_CANDIDATE`` only if it also clears distinct
+    artist/venue floors. Otherwise it is capped at ``ECONOMICS_USABLE`` and
+    marked ``GENERALIZATION_NOT_READY``.
+    """
     events = int(coverage.get("events", 0) or 0)
     attendance = int(coverage.get("events_with_attendance", 0) or 0)
     tickets = int(coverage.get("events_with_tickets_sold", 0) or 0)
@@ -120,31 +157,50 @@ def partner_readiness_tier(coverage: dict[str, Any]) -> dict[str, Any]:
     cutoff = int(coverage.get("events_with_cutoff", 0) or 0)
     distinct_artists = int(coverage.get("distinct_artists", 0) or 0)
     distinct_venues = int(coverage.get("distinct_venues", 0) or 0)
+    distinct_markets = int(coverage.get("distinct_markets", 0) or 0)
 
     reasons: list[str] = []
     tier = TIER_STRUCTURAL_ONLY
 
-    if events == 0:
-        reasons.append("no events imported")
-    elif (
+    generalization_ready = (
+        distinct_artists >= MIN_GEN_ARTISTS
+        and distinct_venues >= MIN_GEN_VENUES
+    )
+    scope = dataset_scope(distinct_venues, distinct_markets)
+
+    underwriting_labels_met = (
         events >= MIN_UNDERWRITE_EVENTS
         and gross >= MIN_UNDERWRITE_ECON
         and guarantee >= MIN_UNDERWRITE_ECON
         and settlement >= MIN_UNDERWRITE_ECON
         and cutoff >= MIN_UNDERWRITE_ECON
-    ):
-        tier = TIER_UNDERWRITING_RESEARCH
-        reasons.append(
-            "gross + guarantee + settlement + PIT cutoffs all above the "
-            "underwriting-research floor (candidate only, not a claim of readiness)"
-        )
-    elif (
+    )
+    economics_labels_met = (
         events >= MIN_ECON_EVENTS
         and attendance >= MIN_ECON_ATTENDANCE
         and tickets >= MIN_ECON_TICKETS
         and gross >= MIN_ECON_GROSS
         and (guarantee >= MIN_ECON_DEAL or settlement >= MIN_ECON_DEAL)
-    ):
+    )
+
+    if events == 0:
+        reasons.append("no events imported")
+    elif underwriting_labels_met and generalization_ready:
+        tier = TIER_UNDERWRITING_RESEARCH
+        reasons.append(
+            "gross + guarantee + settlement + PIT cutoffs all above the "
+            "underwriting-research floor, with sufficient artist/venue breadth "
+            "(candidate only, not a claim of readiness)"
+        )
+    elif underwriting_labels_met and not generalization_ready:
+        # Labels are deep enough, but the corpus is too narrow to generalize.
+        tier = TIER_ECONOMICS_USABLE if economics_labels_met else TIER_RETROSPECTIVE_RESEARCH
+        reasons.append(
+            f"GENERALIZATION_NOT_READY: underwriting labels present but distinct "
+            f"artists={distinct_artists} (< {MIN_GEN_ARTISTS}) or venues="
+            f"{distinct_venues} (< {MIN_GEN_VENUES}); capped below underwriting-research"
+        )
+    elif economics_labels_met:
         tier = TIER_ECONOMICS_USABLE
         reasons.append(
             "attendance + tickets + gross + deal/settlement evidence above the economics floor"
@@ -159,16 +215,27 @@ def partner_readiness_tier(coverage: dict[str, Any]) -> dict[str, Any]:
     else:
         reasons.append("below the retrospective baseline floor (structural only)")
 
-    if distinct_venues < 3:
-        reasons.append("venue diversity too low for generalization")
-    if distinct_artists < 5:
-        reasons.append("artist diversity too low for generalization")
     if events and cutoff < events // 2:
         reasons.append("PIT cutoff coverage below half of events")
 
     return {
         "tier": tier,
         "reasons": reasons,
+        "scope": scope,
+        "generalization": {
+            "ready": generalization_ready,
+            "status": "READY" if generalization_ready else "GENERALIZATION_NOT_READY",
+            "distinct_artists": distinct_artists,
+            "distinct_venues": distinct_venues,
+            "min_artists": MIN_GEN_ARTISTS,
+            "min_venues": MIN_GEN_VENUES,
+        },
+        "breadth": {
+            "venue_specific": distinct_venues <= 1,
+            "market_specific": distinct_markets <= 1,
+            "multi_venue": distinct_venues > 1,
+            "multi_market": distinct_markets > 1,
+        },
         "thresholds": {
             "min_retrospective_events": MIN_RETRO_EVENTS,
             "min_retrospective_attendance": MIN_RETRO_ATTENDANCE,
@@ -179,6 +246,8 @@ def partner_readiness_tier(coverage: dict[str, Any]) -> dict[str, Any]:
             "min_economics_gross": MIN_ECON_GROSS,
             "min_underwriting_events": MIN_UNDERWRITE_EVENTS,
             "min_underwriting_econ": MIN_UNDERWRITE_ECON,
+            "min_generalization_artists": MIN_GEN_ARTISTS,
+            "min_generalization_venues": MIN_GEN_VENUES,
         },
     }
 
@@ -253,5 +322,7 @@ def simulate_partner_value(
                 "guarantee_coverage": coverage["events_with_guarantee"],
                 "settlement_coverage": coverage["events_with_settlement"],
                 "readiness_tier": tier["tier"],
+                "scope": tier["scope"]["scope"],
+                "generalization_ready": tier["generalization"]["ready"],
             })
     return rows

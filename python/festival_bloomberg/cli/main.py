@@ -994,7 +994,9 @@ def cmd_partner_preview(args: argparse.Namespace) -> int:
     """
     import json
     import os
+    import shutil
     import tempfile
+    import uuid
     from collections import Counter
 
     from ..economics.partner_import import ingest_partner_files
@@ -1002,9 +1004,17 @@ def cmd_partner_preview(args: argparse.Namespace) -> int:
     from ..economics.repository import EconomicsRepository
     from ..events.repository import EventRepository
 
-    db_path = args.db or os.path.join(
-        tempfile.gettempdir(), "festival_bloomberg_partner_preview.duckdb"
-    )
+    # Isolation: each preview invocation gets its OWN private DB. Two partners
+    # must never silently share events/claims/PII/mapping state.
+    tmp_dir: str | None = None
+    if args.db:
+        db_path = args.db
+    else:
+        tmp_dir = tempfile.mkdtemp(
+            prefix=f"festival_bloomberg_partner_{uuid.uuid4().hex[:8]}_"
+        )
+        db_path = os.path.join(tmp_dir, "preview.duckdb")
+
     repo = FestivalRepository(db_path)
     try:
         econ = EconomicsRepository(repo.conn)
@@ -1066,6 +1076,9 @@ def cmd_partner_preview(args: argparse.Namespace) -> int:
         return 0
     finally:
         repo.close()
+        # Clean up the private temporary DB unless the user asked to keep it.
+        if tmp_dir is not None and not getattr(args, "keep_db", False):
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def cmd_partner_value(args: argparse.Namespace) -> int:
@@ -1075,8 +1088,16 @@ def cmd_partner_value(args: argparse.Namespace) -> int:
     from ..economics.partner_readiness import simulate_partner_value
 
     rows = simulate_partner_value()
-    print(json.dumps(rows, indent=2, default=str))
-    print("SYNTHETIC STRUCTURAL VALUE CURVES ONLY — no forecast accuracy simulated.")
+    payload = {
+        "kind": "SYNTHETIC_STRUCTURAL_SCENARIO",
+        "note": (
+            "Illustrative planning targets only. Readiness depends on label "
+            "density, decision-time coverage, repeat structure and dataset breadth; "
+            "a row count never guarantees a tier."
+        ),
+        "curves": rows,
+    }
+    print(json.dumps(payload, indent=2, default=str))
     return 0
 
 
@@ -1278,7 +1299,8 @@ def build_parser() -> argparse.ArgumentParser:
     preview.add_argument("--dataset", default=None)
     preview.add_argument("--sharing-policy", default="PRIVATE_ONLY",
                          choices=["PRIVATE_ONLY", "ANONYMIZED_POOL_OPT_IN", "AGGREGATE_BENCHMARK_OPT_IN"])
-    preview.add_argument("--db", default=None)
+    preview.add_argument("--db", default=None, help="explicit persistent DB path (default: unique auto-cleaned temp DB)")
+    preview.add_argument("--keep-db", action="store_true", help="keep the generated temp DB after the preview")
     preview.add_argument("--output", default=None)
     preview.set_defaults(handler=cmd_partner_preview)
 
