@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
+import duckdb
+
 from festival_bloomberg.attention.listenbrainz import observation_key
 from festival_bloomberg.events.repository import EventRepository
 from festival_bloomberg.identity.ticketmaster_resolution import (
@@ -208,6 +210,76 @@ def test_external_id_collisions_persist_as_conflicts(tmp_path):
         assert "Q12345" in rows[0][1]
     finally:
         repo.close()
+
+
+# ---------------------------------------------------------------------------
+# Artist search index (materialized terms, exact-first, FTS candidate layer)
+# ---------------------------------------------------------------------------
+from festival_bloomberg.intelligence.readmodels import search_entities  # noqa: E402
+from festival_bloomberg.oa.music_terminal_productization import build_artist_search_index  # noqa: E402
+
+
+def _seed_reference_artist(conn, *, mbid, name, sort_name=None, aliases=None):
+    conn.execute(
+        """
+        INSERT INTO reference.musicbrainz_artists
+            (mbid, name, normalized_name, sort_name, aliases, knowledge_time, ingested_at)
+        VALUES (?, ?, ?, ?, ?, now(), now())
+        """,
+        [mbid, name, name.lower(), sort_name or name,
+         json.dumps(aliases or []), ],
+    )
+
+
+def test_search_index_exact_first_and_fallback(tmp_path):
+    repo = FestivalRepository(str(tmp_path / "si.duckdb"))
+    try:
+        EventRepository(repo.conn)
+        _seed_reference_artist(repo.conn, mbid="m1", name="Billie Eilish",
+                               aliases=[{"name": "Billie Eilish Pirate Baird O'Connell"}])
+        _seed_reference_artist(repo.conn, mbid="m2", name="Bad Bunny")
+        _seed_reference_artist(repo.conn, mbid="m3", name="Fred again..")
+        repo.conn.execute(
+            """
+            INSERT INTO core.artists (artist_key, musicbrainz_id, name, normalized_name)
+            VALUES ('mbid::m1', 'm1', 'Billie Eilish', 'billie eilish')
+            """
+        )
+        res = build_artist_search_index(repo.conn)
+        assert res["terms_after"] >= 3
+        # exact canonical surfaces first
+        hits = search_entities(repo.conn, "Billie Eilish", limit=5)
+        assert hits and hits[0]["entity_id"] == "mbid::m1"
+        # alias match resolves to the same artist
+        hits2 = search_entities(repo.conn, "Pirate Baird", limit=5)
+        assert any(h["entity_id"] == "mbid::m1" for h in hits2)
+        # no-match returns empty, not an error
+        assert search_entities(repo.conn, "zzzz not an artist") == []
+    finally:
+        repo.close()
+
+
+# ---------------------------------------------------------------------------
+# Pipeline phase ledger (resumability)
+# ---------------------------------------------------------------------------
+def test_pipeline_phase_ledger_records_runs(tmp_path):
+    from festival_bloomberg.oa.music_terminal_productization import run_music_terminal_productization_oa
+    db = tmp_path / "ledger.duckdb"
+    out = run_music_terminal_productization_oa(
+        db_path=str(db), report_path=str(tmp_path / "r1.json"),
+        phases=("artist_master_bootstrap",),
+    )
+    conn = duckdb.connect(str(db))
+    try:
+        rows = conn.execute(
+            "SELECT milestone, phase, status FROM audit.pipeline_phase_runs"
+        ).fetchall()
+        assert rows, "phase ledger should record the bootstrap phase"
+        assert rows[0][0] == "music_terminal_productization_v1"
+        assert rows[0][1] == "artist_master_bootstrap"
+        assert rows[0][2] == "COMPLETE"
+    finally:
+        conn.close()
 
 
 def test_tribute_act_not_merged_into_real_band(tmp_path):

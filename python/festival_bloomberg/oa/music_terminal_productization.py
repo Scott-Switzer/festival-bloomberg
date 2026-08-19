@@ -266,6 +266,72 @@ def extract_industry_identifiers(conn, *, knowledge_time: str | None = None) -> 
     return summary
 
 
+def build_artist_search_index(conn) -> dict[str, Any]:
+    """Materialize reference.artist_search_terms + DuckDB FTS index.
+
+    One row per (artist, term) — canonical name, sort name, and every
+    alias from the reference estate — so interactive search never scans
+    the 2.2M-row JSON alias column per query. The FTS index (if the
+    extension is available) is rebuilt after the materialization; search
+    always runs exact-first and FTS is only a candidate-retrieval layer.
+    """
+    terms_before = conn.execute(
+        "SELECT COUNT(*) FROM reference.artist_search_terms"
+    ).fetchone()[0]
+    # Set-based rebuild: canonical name + sort name + aliases (json_each).
+    conn.execute("DELETE FROM reference.artist_search_terms")
+    conn.execute(
+        """
+        INSERT INTO reference.artist_search_terms (artist_mbid, term, normalized_term, term_type)
+        SELECT mbid, name, lower(trim(name)), 'CANONICAL_NAME'
+        FROM reference.musicbrainz_artists WHERE name IS NOT NULL AND name != ''
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO reference.artist_search_terms (artist_mbid, term, normalized_term, term_type)
+        SELECT mbid, sort_name, lower(trim(sort_name)), 'SORT_NAME'
+        FROM reference.musicbrainz_artists WHERE sort_name IS NOT NULL AND sort_name != ''
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO reference.artist_search_terms (artist_mbid, term, normalized_term, term_type)
+        SELECT r.mbid,
+               COALESCE(json_extract_string(a.value, '$.name'), CAST(a.value AS VARCHAR)) AS term,
+               lower(trim(COALESCE(json_extract_string(a.value, '$.name'), CAST(a.value AS VARCHAR)))) AS nterm,
+               'ALIAS'
+        FROM reference.musicbrainz_artists r, json_each(r.aliases) a
+        WHERE term IS NOT NULL AND term != ''
+        """
+    )
+    terms_after = conn.execute(
+        "SELECT COUNT(*) FROM reference.artist_search_terms"
+    ).fetchone()[0]
+    fts_status = "UNAVAILABLE"
+    try:
+        conn.execute("INSTALL fts")
+        conn.execute("LOAD fts")
+        conn.execute("PRAGMA drop_fts_index('reference_artist_search_terms')")
+    except Exception:
+        pass
+    try:
+        conn.execute(
+            "PRAGMA create_fts_index('reference.artist_search_terms', 'artist_mbid', 'term')"
+        )
+        fts_status = "CREATED"
+    except Exception as exc:  # extension missing: deterministic search still works
+        fts_status = f"UNAVAILABLE: {type(exc).__name__}"
+    return {
+        "terms_before": terms_before,
+        "terms_after": terms_after,
+        "distinct_artists": conn.execute(
+            "SELECT COUNT(DISTINCT artist_mbid) FROM reference.artist_search_terms"
+        ).fetchone()[0],
+        "fts_status": fts_status,
+    }
+
+
 def audit_external_id_collisions(conn, *, knowledge_time: str | None = None) -> dict[str, Any]:
     """Persist GENUINE provider-ID collisions as identity conflicts.
 
@@ -453,13 +519,44 @@ def run_music_terminal_productization_oa(
         "phases": {},
     }
 
+    ledger_milestone = "music_terminal_productization_v1"
+    ledger_run_id = started.strftime("%Y%m%dT%H%M%S%f")
+
     def _run(phase: str, fn, **kwargs) -> None:
         if phases is not None and phase not in phases:
             return
+        phase_started = datetime.now(timezone.utc)
+        ledger_status = "COMPLETE"
+        error_code = None
+        error_message = None
         try:
             report["phases"][phase] = fn(**kwargs)
         except Exception as exc:  # noqa: BLE001
+            ledger_status = "ERROR"
+            error_code = type(exc).__name__
+            error_message = str(exc)[:1000]
             report["phases"][phase] = {"status": "ERROR", "detail": str(exc)}
+        # Record the phase in the durable ledger (resumability + reporting).
+        try:
+            duration = (datetime.now(timezone.utc) - phase_started).total_seconds()
+            conn.execute(
+                """
+                INSERT INTO audit.pipeline_phase_runs
+                    (run_id, milestone, phase, software_version, started_at,
+                     completed_at, status, duration_seconds, error_code, error_message)
+                VALUES (?, ?, ?, ?, ?, now(), ?, ?, ?, ?)
+                ON CONFLICT (run_id, milestone, phase) DO UPDATE SET
+                    completed_at = now(), status = excluded.status,
+                    duration_seconds = excluded.duration_seconds,
+                    error_code = excluded.error_code,
+                    error_message = excluded.error_message
+                """,
+                [ledger_run_id, ledger_milestone, phase, SOFTWARE_VERSION,
+                 phase_started, ledger_status, duration, error_code, error_message],
+            )
+            conn.commit()
+        except Exception:  # noqa: BLE001 - ledger must never break the OA
+            pass
         # Persist incrementally so a long-running/timed-out OA never loses
         # completed phase results.
         try:
@@ -658,6 +755,20 @@ def run_music_terminal_productization_oa(
             conn.commit()
             return out
         _run("identity_qa", _qa)
+
+        # ---- Phase 8b: external-ID collision ledger ----
+        def _collisions():
+            out = audit_external_id_collisions(conn)
+            conn.commit()
+            return out
+        _run("external_id_collisions", _collisions)
+
+        # ---- Phase 8c: artist search index (terms + FTS) ----
+        def _search_index():
+            out = build_artist_search_index(conn)
+            conn.commit()
+            return out
+        _run("artist_search_index", _search_index)
 
         # ---- Phase 9: festival/tour read models ----
         def _festival_models():

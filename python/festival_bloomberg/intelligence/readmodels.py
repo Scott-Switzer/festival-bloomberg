@@ -54,44 +54,106 @@ def _market_of(row: dict[str, Any]) -> str | None:
 # Search
 # ---------------------------------------------------------------------------
 def search_entities(conn, query: str, limit: int = 25) -> list[dict[str, Any]]:
-    """Search artists, venues, markets, and festivals by name."""
-    q = f"%{query.strip().lower()}%"
-    results: list[dict[str, Any]] = []
+    """Search artists, venues, markets, and festivals by name.
 
-    artists = _rows(conn, """
+    Artist search hierarchy (identity never defined by fuzzy similarity):
+      1. exact canonical name (core.artists)
+      2. exact alias/sort name (reference.artist_search_terms, normalized)
+      3. prefix/substring over the indexed search terms
+      4. FTS candidate retrieval when the fts extension is available
+    """
+    q_raw = query.strip()
+    q = f"%{q_raw.lower()}%"
+    results: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+
+    def _add_artist(name: str | None, artist_key: str | None, mbid: str | None = None,
+                    priority: int = 0) -> None:
+        if not name:
+            return
+        eid = artist_key or (f"mbid::{mbid}" if mbid else entity_key(name))
+        if eid in seen_ids:
+            return
+        seen_ids.add(eid)
+        results.append({"entity_type": "ARTIST", "entity_id": eid, "name": name,
+                        "_priority": priority})
+
+    # 1. exact canonical name first (identity-backed).
+    exact = _rows(conn, """
+        SELECT name, artist_key FROM core.artists
+        WHERE lower(name) = ? AND name IS NOT NULL
+        LIMIT ?
+    """, [q_raw.lower(), limit])
+    for r in exact:
+        _add_artist(r["name"], r["artist_key"], priority=0)
+
+    # 2. exact alias / sort name from the indexed search terms.
+    alias_exact = _rows(conn, """
+        SELECT DISTINCT st.artist_mbid, r.name
+        FROM reference.artist_search_terms st
+        JOIN reference.musicbrainz_artists r ON r.mbid = st.artist_mbid
+        WHERE st.normalized_term = ? AND st.term_type IN ('ALIAS', 'SORT_NAME')
+        LIMIT ?
+    """, [q_raw.lower(), limit])
+    for r in alias_exact:
+        _add_artist(r["name"], None, r["artist_mbid"], priority=1)
+
+    # 3. substring over the INDEXED terms (not the 2.2M JSON column).
+    sub_hits = _rows(conn, """
+        SELECT DISTINCT st.artist_mbid, r.name
+        FROM reference.artist_search_terms st
+        JOIN reference.musicbrainz_artists r ON r.mbid = st.artist_mbid
+        WHERE st.normalized_term LIKE ?
+        ORDER BY length(st.normalized_term) ASC
+        LIMIT ?
+    """, [q, limit])
+    for r in sub_hits:
+        _add_artist(r["name"], None, r["artist_mbid"], priority=2)
+
+    # Also surface canonical-artist substring hits (core.artists first).
+    canon_sub = _rows(conn, """
         SELECT name, artist_key FROM core.artists
         WHERE lower(name) LIKE ? AND name IS NOT NULL
-        UNION
-        SELECT DISTINCT artist AS name, NULL AS artist_key
-        FROM research.canonical_boxoffice_engagements
+        LIMIT ?
+    """, [q, limit])
+    for r in canon_sub:
+        _add_artist(r["name"], r["artist_key"], priority=3)
+
+    # 4. FTS candidate retrieval (BM25) — candidates only, never identity.
+    #    Deduplicated per artist: the terms table has one row per (artist,
+    #    term), and the FTS score function needs a unique key per row.
+    fts_hits: list[tuple[Any, ...]] = []
+    try:
+        fts_hits = _rows(conn, """
+            SELECT MAX(fts_reference_artist_search_terms.match_bm25(artist_mbid, ?)) AS score,
+                   artist_mbid
+            FROM reference.artist_search_terms
+            WHERE score IS NOT NULL
+            GROUP BY artist_mbid
+            ORDER BY score DESC
+            LIMIT ?
+        """, [q_raw, limit])
+    except Exception:
+        pass  # fts extension unavailable: deterministic layers still work
+    for r in fts_hits:
+        _add_artist(str(r[1]), None, str(r[1]), priority=4)
+
+    # Box-office / forward-watch names as fallback artist candidates.
+    legacy = _rows(conn, """
+        SELECT DISTINCT artist AS name FROM research.canonical_boxoffice_engagements
         WHERE lower(artist) LIKE ? AND artist IS NOT NULL
         UNION
-        SELECT DISTINCT artist_name AS name, NULL AS artist_key
-        FROM flywheel.forward_watch_events
+        SELECT DISTINCT artist_name AS name FROM flywheel.forward_watch_events
         WHERE lower(artist_name) LIKE ? AND artist_name IS NOT NULL
         LIMIT ?
-    """, [q, q, q, limit])
-    for r in artists:
-        results.append({"entity_type": "ARTIST", "entity_id": r["artist_key"] or entity_key(r["name"]),
-                        "name": r["name"]})
-
-    # Alias matches from the reference layer (MB aliases / sort names).
-    alias_hits = _rows(conn, """
-        SELECT r.name, r.mbid, r.aliases FROM reference.musicbrainz_artists r
-        WHERE json_array_length(r.aliases) > 0
-          AND EXISTS (
-              SELECT 1 FROM json_each(r.aliases) e
-              WHERE lower(e.value ->> 'name') LIKE ?
-                 OR lower(r.sort_name) LIKE ?)
-        LIMIT ?
     """, [q, q, limit])
-    seen_names = {r["name"].lower() for r in results}
-    for r in alias_hits:
-        if r["name"].lower() in seen_names:
-            continue
-        seen_names.add(r["name"].lower())
-        results.append({"entity_type": "ARTIST", "entity_id": f"mbid::{r['mbid']}",
-                        "name": r["name"]})
+    for r in legacy:
+        _add_artist(r["name"], None, priority=5)
+
+    # Priority-stable ordering (exact canonical beats alias beats FTS).
+    artists_sorted = sorted(results, key=lambda x: (x.pop("_priority", 99), x["name"].lower()))
+    results = artists_sorted[:limit]
+    results = [{k: v for k, v in r.items() if k != "_priority"} for r in results]
 
     venues = _rows(conn, """
         SELECT DISTINCT venue AS name FROM research.canonical_boxoffice_engagements
