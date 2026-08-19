@@ -7,7 +7,11 @@ missingness/completeness, and target-population coverage denominators.
 
 from __future__ import annotations
 
+import json
 from datetime import date
+from pathlib import Path
+
+import pytest
 
 from festival_bloomberg.attention.historical_pit import calendar_window
 from festival_bloomberg.events.repository import EventRepository
@@ -228,6 +232,37 @@ def test_calendar_window_unavailable_days():
 # ---------------------------------------------------------------------------
 # PART 6 — target-population coverage
 # ---------------------------------------------------------------------------
+def _write_corpus(path: Path, rows: list[dict]) -> str:
+    path.write_text(json.dumps({"corpus_version": "test", "rows": rows}))
+    return str(path)
+
+
+def _synthetic_corpus(tmp_path) -> str:
+    rows = [
+        {"engagement_id": "e1", "artist": "Deep Sea Arcade", "venue": "The Corner Hotel",
+         "folds": {"TIME": "TRAIN"}},
+        {"engagement_id": "e2", "artist": "Someone Else", "venue": "Other Venue",
+         "folds": {"TIME": "TEST"}},
+        {"engagement_id": "e3", "artist": "Deep Sea Arcade", "venue": "Other Venue",
+         "folds": {"TIME": "TEST"}},
+    ]
+    return _write_corpus(tmp_path / "corpus.json", rows)
+
+
+def test_load_baseline_targets_synthetic(tmp_path):
+    t = load_baseline_targets(_synthetic_corpus(tmp_path))
+    assert t["events_all"] == 3
+    assert t["events_time"] == 2
+    assert "deep sea arcade" in t["artists_all"]
+    assert "the corner hotel" in t["venues_all"]
+    assert "someone else" in t["artists_time"]
+    assert "other venue" in t["venues_time"]
+
+
+@pytest.mark.skipif(
+    not Path("reports/baseline_research_v1/corpus_v1_manifest.json").exists(),
+    reason="frozen corpus artifact is local-only (reports/ is gitignored)",
+)
 def test_load_baseline_targets_real_corpus():
     t = load_baseline_targets()
     assert t["events_all"] == 657
@@ -248,18 +283,20 @@ def test_venue_and_artist_coverage_by_target(tmp_path):
             "INSERT INTO core.artists (artist_key, name, normalized_name) "
             "VALUES ('a1', 'Deep Sea Arcade', 'deep sea arcade')"
         )
-        v = venue_coverage_by_target(repo.conn)
+        cp = _synthetic_corpus(tmp_path)
+        v = venue_coverage_by_target(repo.conn, corpus_path=cp)
         assert v["GLOBAL_CANONICAL_VENUES"]["total"] == 1
         assert v["GLOBAL_CANONICAL_VENUES"]["capacity_pct"] == 1.0
-        assert v["BASELINE_ALL_TARGETS"]["matched"] >= 1   # "The Corner Hotel" is in the corpus
-        assert v["BASELINE_ALL_TARGETS"]["match_pct"] > 0.0
+        assert v["BASELINE_ALL_TARGETS"]["total"] == 2     # corner hotel + other venue
+        assert v["BASELINE_ALL_TARGETS"]["matched"] == 1   # only corner hotel seeded
 
-        a = artist_coverage_by_target(repo.conn)
+        a = artist_coverage_by_target(repo.conn, corpus_path=cp)
         assert a["GLOBAL_CANONICAL_ARTISTS"]["total"] == 1
-        assert a["BASELINE_ARTISTS"]["matched"] >= 1       # "Deep Sea Arcade" is in the corpus
+        assert a["BASELINE_ARTISTS"]["total"] == 2
+        assert a["BASELINE_ARTISTS"]["matched"] == 1       # only deep sea arcade seeded
 
-        e = event_coverage_by_target(repo.conn)
-        assert e["BASELINE_EVENTS"] == 657
-        assert e["TIME_HOLD_EVENTS"] > 0
+        e = event_coverage_by_target(repo.conn, corpus_path=cp)
+        assert e["BASELINE_EVENTS"] == 3
+        assert e["TIME_HOLD_EVENTS"] == 2
     finally:
         repo.close()
