@@ -3,9 +3,9 @@
 -- ===========================================================================
 -- The terminal WORKSPACE holds ONLY user/analyst state. It must NOT contain
 -- canonical evidence schemas (raw.*, reference.*, metrics.*, economics.*,
--- events.*). This keeps accidental evidence writes structurally impossible.
+-- events.*).  This keeps accidental evidence writes structurally impossible.
 --
--- This file is applied by terminal/storage.create_workspace_db(). It is a
+-- This file is applied by terminal/storage.create_workspace_db().  It is a
 -- deliberately narrow subset of the table definitions also present in the
 -- canonical migration stack (029 + 033); drift is guarded by workspace_meta.
 -- ===========================================================================
@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS terminal.saved_monitors (
 
 -- ---------------------------------------------------------------------------
 -- Planning workspace (projects / stages / candidates / shortlists /
--- constraints / scenarios). Non-optimizing; UNKNOWN != 0.
+-- constraints / scenarios).  Non-optimizing; UNKNOWN != 0.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS planning.festival_projects (
     project_key         VARCHAR PRIMARY KEY,
@@ -154,11 +154,17 @@ CREATE INDEX IF NOT EXISTS idx_planning_scenarios_project ON planning.festival_s
 
 -- ---------------------------------------------------------------------------
 -- Workspace metadata (schema version + provenance).
+--
+-- created_at    — first-ever workspace creation (INSERT OR IGNORE, never overwritten)
+-- schema_version — always set on open (INSERT OR REPLACE)
+-- last_migrated_at — set by migrate_workspace_state(), NULL until first migration
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS workspace_meta (
     key                 VARCHAR PRIMARY KEY,
     value               VARCHAR
 );
+-- NOTE: created_at is handled by storage._ensure_workspace_meta() using
+-- INSERT OR IGNORE so it is stable across terminal restarts.  The schema
+-- here only sets schema_version.
 INSERT OR REPLACE INTO workspace_meta (key, value) VALUES
-    ('schema_version', 'terminal_workspace_v1'),
-    ('created_at', CURRENT_TIMESTAMP::VARCHAR);
+    ('schema_version', 'terminal_workspace_v1');

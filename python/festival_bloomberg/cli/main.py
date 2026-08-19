@@ -1115,7 +1115,7 @@ def cmd_terminal_publish(args: argparse.Namespace) -> int:
     )
     print(json.dumps(manifest, indent=2, default=str))
     print(f"Serving snapshot published: {manifest['snapshot_path']}")
-    print(f"  tables={manifest['table_count']} rows={manifest['total_rows']}")
+    print(f"  tables={manifest['table_count']} rows={manifest['estimated_total_rows']}")
     return 0
 
 

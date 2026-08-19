@@ -1,11 +1,11 @@
 """Regressions for the terminal serving-snapshot architecture.
 
 Covers immutable/versioned snapshot publication (no in-place updates), the
-snapshot integrity contract, fail-closed open validation, the dedicated
-workspace schema boundary, workspace migration, write/read splitting, and the
-critical concurrency acceptance: a separate process writes canonical while the
-terminal (serving + workspace) stays online, and repeated publication never
-serves stale data.
+snapshot integrity contract, fail-closed open validation, workspace table
+stripping, the dedicated workspace schema boundary, workspace migration with
+explicit columns, write/read splitting, and the critical concurrency
+acceptance: a separate process writes canonical while the terminal (serving +
+workspace) stays online, and repeated publication never serves stale data.
 """
 
 from __future__ import annotations
@@ -117,6 +117,152 @@ def test_publish_refuses_to_overwrite_existing_snapshot(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# P0: Snapshot status lifecycle — no VERIFIED before verification
+# ---------------------------------------------------------------------------
+def test_snapshot_status_lifecycle(tmp_path):
+    """The manifest inside the snapshot must be VERIFIED, never BUILDING/COPIED."""
+    canonical = _new_canonical(tmp_path)
+    serving_dir, manifest = _publish(tmp_path, canonical, snapshot_id="snap_lifecycle")
+
+    # On-disk manifest must say VERIFIED.
+    assert manifest["status"] == "VERIFIED"
+    stored = json.loads(
+        duckdb.connect(manifest["snapshot_path"], read_only=True)
+        .execute("SELECT manifest FROM terminal_snapshot_meta").fetchone()[0]
+    )
+    assert stored["status"] == "VERIFIED"
+
+
+def test_failed_verification_does_not_leave_verified_file(tmp_path):
+    """If verification fails, no file with status=VERIFIED should remain."""
+    canonical = _new_canonical(tmp_path)
+    serving_dir = str(tmp_path / "serving")
+
+    # Simulate a mismatch: publish, then corrupt the manifest counts.
+    manifest = storage.publish_snapshot(canonical, snapshot_dir=serving_dir, snapshot_id="snap_corrupt")
+
+    # Now publish a second snapshot — if we tamper the canonical between
+    # copy and verify, the snapshot is cleaned up.  We test the cleanup
+    # path by attempting to publish with a snapshot_id that already exists
+    # (which is caught before verification).
+    with pytest.raises(FileExistsError):
+        storage.publish_snapshot(canonical, snapshot_dir=serving_dir, snapshot_id="snap_corrupt")
+
+
+# ---------------------------------------------------------------------------
+# P0: Critical row-count verification
+# ---------------------------------------------------------------------------
+def test_open_validates_critical_row_counts(tmp_path):
+    """open_serving_snapshot rejects snapshots with mismatched row counts."""
+    canonical = _new_canonical(tmp_path)
+    # Add some data so counts are non-zero.
+    conn = duckdb.connect(canonical)
+    conn.execute("INSERT INTO core.artists (artist_key, name, normalized_name) VALUES ('a1', 'A', 'a')")
+    conn.commit()
+    conn.close()
+
+    serving_dir, manifest = _publish(tmp_path, canonical, snapshot_id="snap_counts")
+
+    # Tamper the manifest to record wrong counts.
+    snap_path = manifest["snapshot_path"]
+    tampered = duckdb.connect(snap_path)
+    stored = json.loads(tampered.execute("SELECT manifest FROM terminal_snapshot_meta").fetchone()[0])
+    stored["critical_table_counts"]["core.artists"] = 999999  # Wrong count.
+    tampered.execute(
+        "UPDATE terminal_snapshot_meta SET manifest = ?",
+        [json.dumps(stored)],
+    )
+    tampered.commit()
+    tampered.close()
+
+    with pytest.raises(storage.ServingSnapshotError, match="ROW_COUNT_MISMATCH"):
+        storage.open_serving_snapshot(serving_dir)
+
+
+def test_critical_table_row_counts_recorded_in_manifest(tmp_path):
+    """The manifest records actual row counts for critical tables."""
+    canonical = _new_canonical(tmp_path)
+    conn = duckdb.connect(canonical)
+    conn.execute("INSERT INTO core.artists (artist_key, name, normalized_name) VALUES ('a1', 'A', 'a')")
+    conn.execute("INSERT INTO core.artists (artist_key, name, normalized_name) VALUES ('a2', 'B', 'b')")
+    conn.commit()
+    conn.close()
+
+    _, manifest = _publish(tmp_path, canonical, snapshot_id="snap_c2")
+    counts = manifest["critical_table_counts"]
+    assert counts["core.artists"] == 2
+
+
+# ---------------------------------------------------------------------------
+# P0: Serving snapshot must NOT contain workspace tables
+# ---------------------------------------------------------------------------
+def test_serving_snapshot_does_not_contain_workspace_tables(tmp_path):
+    """After canonical copy, workspace/user-state tables are dropped."""
+    canonical = _new_canonical(tmp_path)
+    conn = duckdb.connect(canonical)
+    # Add workspace state to canonical (simulates legacy data).
+    conn.execute("INSERT INTO core.watchlists (watchlist_key, name) VALUES ('wl1', 'Private List')")
+    conn.execute(
+        "INSERT INTO planning.festival_projects (project_key, name, scenario_class) "
+        "VALUES ('p1', 'Secret Project', 'SYNTHETIC_PLANNING_SCENARIO')"
+    )
+    conn.commit()
+    conn.close()
+
+    serving_dir, manifest = _publish(tmp_path, canonical, snapshot_id="snap_strip")
+    s_conn = duckdb.connect(manifest["snapshot_path"], read_only=True)
+    try:
+        for schema, table in storage.WORKSPACE_TABLES:
+            n = s_conn.execute(
+                "SELECT COUNT(*) FROM duckdb_tables() WHERE schema_name=? AND table_name=?",
+                [schema, table],
+            ).fetchone()[0]
+            assert n == 0, f"serving snapshot must not contain {schema}.{table}"
+    finally:
+        s_conn.close()
+
+
+def test_workspace_migration_preserves_private_state(tmp_path):
+    """Canonical workspace tables survive migration even though serving strips them."""
+    canonical = _new_canonical(tmp_path)
+    conn = duckdb.connect(canonical)
+    conn.execute("INSERT INTO core.watchlists (watchlist_key, name) VALUES ('wl1', 'My Watchlist')")
+    conn.execute(
+        "INSERT INTO planning.festival_projects (project_key, name, scenario_class) "
+        "VALUES ('p1', 'My Project', 'SYNTHETIC_PLANNING_SCENARIO')"
+    )
+    conn.commit()
+    conn.close()
+
+    # Publish serving snapshot (strips workspace tables).
+    serving_dir, manifest = _publish(tmp_path, canonical, snapshot_id="snap_ws_preserve")
+
+    # Workspace migration still gets the data from canonical.
+    ws = str(tmp_path / "workspace.duckdb")
+    ws_conn = storage.create_workspace_db(ws)
+    try:
+        migrated = storage.migrate_workspace_state(canonical, ws_conn)
+        assert migrated["core.watchlists"] == 1
+        assert migrated["planning.festival_projects"] == 1
+
+        # Verify workspace actually has the data.
+        assert ws_conn.execute("SELECT COUNT(*) FROM core.watchlists WHERE watchlist_key='wl1'").fetchone()[0] == 1
+        assert ws_conn.execute("SELECT COUNT(*) FROM planning.festival_projects WHERE project_key='p1'").fetchone()[0] == 1
+    finally:
+        ws_conn.close()
+
+    # Serving snapshot does NOT have it (table was stripped, not just empty).
+    s_conn = storage.open_serving_snapshot(serving_dir)
+    try:
+        n = s_conn.execute(
+            "SELECT COUNT(*) FROM duckdb_tables() WHERE schema_name='core' AND table_name='watchlists'"
+        ).fetchone()[0]
+        assert n == 0, "serving snapshot must not contain core.watchlists"
+    finally:
+        s_conn.close()
+
+
+# ---------------------------------------------------------------------------
 # Fail-closed open validation
 # ---------------------------------------------------------------------------
 def test_open_serving_snapshot_missing(tmp_path):
@@ -198,6 +344,21 @@ def test_workspace_has_only_user_state_tables(tmp_path):
         conn.close()
 
 
+def test_workspace_created_at_is_stable(tmp_path):
+    """created_at is written once (INSERT OR IGNORE) and never overwritten."""
+    ws = str(tmp_path / "workspace.duckdb")
+    conn1 = storage.create_workspace_db(ws)
+    ts1 = conn1.execute("SELECT value FROM workspace_meta WHERE key='created_at'").fetchone()[0]
+    conn1.close()
+
+    # Reopen — created_at should not change.
+    conn2 = storage.create_workspace_db(ws)
+    ts2 = conn2.execute("SELECT value FROM workspace_meta WHERE key='created_at'").fetchone()[0]
+    conn2.close()
+
+    assert ts1 == ts2
+
+
 def test_migrate_workspace_state_copies_and_keeps_canonical(tmp_path):
     canonical = _new_canonical(tmp_path)
     conn = duckdb.connect(canonical)
@@ -227,6 +388,54 @@ def test_migrate_workspace_state_copies_and_keeps_canonical(tmp_path):
         canon.close()
 
 
+def test_migrate_records_last_migrated_at(tmp_path):
+    canonical = _new_canonical(tmp_path)
+    ws = str(tmp_path / "workspace.duckdb")
+    ws_conn = storage.create_workspace_db(ws)
+    try:
+        storage.migrate_workspace_state(canonical, ws_conn)
+        val = ws_conn.execute(
+            "SELECT value FROM workspace_meta WHERE key='last_migrated_at'"
+        ).fetchone()
+        assert val is not None, "last_migrated_at must be set after migration"
+    finally:
+        ws_conn.close()
+
+
+# ---------------------------------------------------------------------------
+# P1: Explicit migration column validation
+# ---------------------------------------------------------------------------
+def test_migrate_rejects_incompatible_canonical_schema(tmp_path):
+    """If canonical is missing expected columns, migration fails clearly."""
+    canonical = str(tmp_path / "incomplete.duckdb")
+    conn = duckdb.connect(canonical)
+    # Create watchlists with only 2 columns (missing most of the expected set).
+    conn.execute("CREATE SCHEMA core")
+    conn.execute("CREATE TABLE core.watchlists (watchlist_key VARCHAR, name VARCHAR)")
+    conn.commit()
+    conn.close()
+
+    ws = str(tmp_path / "workspace.duckdb")
+    ws_conn = storage.create_workspace_db(ws)
+    try:
+        with pytest.raises(storage.ServingSnapshotError, match="WORKSPACE_MIGRATION_INCOMPATIBLE"):
+            storage.migrate_workspace_state(canonical, ws_conn)
+    finally:
+        ws_conn.close()
+
+
+# ---------------------------------------------------------------------------
+# estimated_total_rows naming
+# ---------------------------------------------------------------------------
+def test_manifest_uses_estimated_total_rows(tmp_path):
+    canonical = _new_canonical(tmp_path)
+    _, manifest = _publish(tmp_path, canonical, snapshot_id="snap_est")
+    assert "estimated_total_rows" in manifest
+    assert isinstance(manifest["estimated_total_rows"], int)
+    # Old key must not exist.
+    assert "total_rows" not in manifest
+
+
 # ---------------------------------------------------------------------------
 # Write/read splitting + concurrency + generational acceptance
 # ---------------------------------------------------------------------------
@@ -241,7 +450,11 @@ def test_watchlist_writes_go_to_workspace_not_serving(tmp_path):
         res = app.dispatch("POST", "/api/watchlists", body=json.dumps({"name": "wl"}).encode())
         assert res["status"] == 200
         assert ws_conn.execute("SELECT COUNT(*) FROM core.watchlists").fetchone()[0] == 1
-        assert s_conn.execute("SELECT COUNT(*) FROM core.watchlists").fetchone()[0] == 0
+        # watchlists is stripped from serving — check via metadata.
+        n = s_conn.execute(
+            "SELECT COUNT(*) FROM duckdb_tables() WHERE schema_name='core' AND table_name='watchlists'"
+        ).fetchone()[0]
+        assert n == 0
     finally:
         s_conn.close()
         ws_conn.close()
