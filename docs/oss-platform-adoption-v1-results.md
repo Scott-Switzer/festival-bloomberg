@@ -57,7 +57,7 @@ regressions.
 
 ---
 
-## 2. Splink — SHADOW QA complete → NOT_ADOPTED
+## 2. Splink — SHADOW QA complete → NAME-ONLY NOT_ADOPTED
 
 Dependency added (experiment-only): `splink==4.0.16` (+ igraph, altair, narwhals).
 
@@ -91,49 +91,81 @@ Metallica        ↔  Metallica Tribute Band
 Coldplay         ↔  Coldplay Cover Band
 ```
 
-**Verdict: `SPLINK_SHADOW = NOT_ADOPTED`.**
+**Verdict: `SPLINK_NAME_ONLY = NOT_ADOPTED`.**
 
-Why this matters: fuzzy string similarity *cannot* distinguish
+This is a scoped negative result, NOT a verdict on Splink as a tool. Splink's
+own documentation states it is designed for linkage over multiple independent
+fields and is not intended for single name/bag-of-words columns. The result
+here confirms exactly that: fuzzy string similarity *cannot* distinguish
 "Beyoncé"→"Beyonce" (same person, must merge) from "The Killers"→"The
 Kellers" (different people, must not merge). That is precisely the
 zero-false-positive doctrine the deterministic resolver enforces via
 exact external ID → exact name → exact alias → normalized exact → AMBIGUOUS.
 
-Splink could only become useful as a candidate generator if blocked on
-**multi-signal** keys (external IDs, area, disambiguation) — which the
-deterministic resolver already handles explicitly. Name-only probabilistic
-linkage is a false-merge risk and is rejected. This is a successful
-experimental outcome (a negative result that protects the product).
+Re-evaluation remains open: if a future panel provides name + geography +
+external IDs + artist type + lifespan + disambiguation + label metadata,
+Splink could be retried as a **shadow** candidate generator. It would still
+never be an auto-merge authority. For the current name-only problem it is
+rejected.
 
 ---
 
-## 3. Dagster — PILOT DEFERRED (plan in inventory §8)
+## 3. Dagster — OFFLINE PARITY PASS → REJECTED_FOR_NOW
 
-Not installed. A genuine pilot requires:
+Dependency added (experiment-only): `dagster==1.13.18` (+ transitive).
 
-1. write access to the live warehouse (currently write-locked by the running
-   terminal server), and
-2. a second real Ticketmaster acquisition for the A/B equivalence test
-   (additional provider quota).
+A real offline A/B was run via `scripts/oss_dagster_parity.py`:
 
-The inventory documents the exact contract: Dagster may own scheduling/retry/
-dependency execution/freshness; Festival stays authoritative for
-`audit.provider_acquisition_runs`, `audit.pipeline_phase_runs`, observations,
-claims, `knowledge_time`, PIT, rights, canonical entities, and alerts, with
-`Dagster run ID ↔ provider_acquisition_runs.run_id` mapping. The A/B gate is
-`SEMANTIC_EQUIVALENCE = PASS` before any expansion.
+- One frozen, realistic Ticketmaster Discovery search fixture (2 markets,
+  1 event each).
+- Two fresh temporary DuckDB warehouses from identical migrations.
+- **Legacy** `oa.live_data_activation._run_ticketmaster` (now injectable
+  transport) vs a **Dagster asset** calling the SAME function, both fed an
+  identical scripted `FakeTransport`. **No network, no live warehouse, no
+  quota.**
+- Semantic content compared by deterministic SHA-256 digest (event fields,
+  acquisition-run fields; wall-clock `retrieved_at`/`knowledge_time`/`run_id`
+  are correctly excluded because retrieval time IS when you fetched it).
 
-**Status: `DAGSTER_PILOT = DEFERRED`** (blocker is a write-locked DB + quota,
-not a semantic failure). Do not claim parity until the A/B test runs.
+Result:
+
+```
+legacy  digest = 7aae197b841587b30578bf6db2e13d24eae4b5d19144922c2ad693c09b79fdb5
+dagster digest = 7aae197b841587b30578bf6db2e13d24eae4b5d19144922c2ad693c09b79fdb5
+SEMANTIC_EQUIVALENCE = PASS
+idempotency: 2nd run adds 2 snapshots (new retrieval), 0 new distinct events
+```
+
+**Verdict: `DAGSTER_PILOT = REJECTED_FOR_NOW`** (parity PASS, adoption deferred).
+
+Parity proves the wrapper is *semantically safe*. But adoption is judged on
+whether Dagster "meaningfully improves orchestration" — and for a single-user
+local product with exactly one recurring workflow, it does not. The Festival
+run/phase ledgers (`audit.provider_acquisition_runs`, `audit.pipeline_phase_runs`)
+already provide idempotency, provenance, and freshness. Dagster would add a
+scheduler + event log + IO-manager layer (~200 MB of dependencies) that
+*duplicates* those ledgers without replacing any bespoke orchestration burden.
+Revisit only when the system has multiple interdependent recurring jobs and a
+real scheduling/retry problem.
 
 ---
 
-## 4. OpenLineage — DEFERRED (after Dagster parity)
+## 4. OpenLineage — FILE PROOF PASS → REJECTED_FOR_NOW
 
-Not installed. Per inventory §9, it is gated on Dagster equivalence. It emits
-lineage *in addition to* the audit/evidence model, never instead of it.
+Dependency added (experiment-only): `openlineage-python==1.52.0`.
 
----
+`scripts/oss_openlineage_proof.py` emits START + COMPLETE RunEvents via the
+local `FileTransport` (no deployed backend) with Festival facets:
+`sourcePolicyStatus`, `commercialUseStatus`, `evidenceClass`,
+`knowledgeTimeSemantics`, `pitCutoff`, `parserVersion`, `softwareVersion`,
+`identityResolutionVersion`, `inputFingerprint`,
+`providerAcquisitionRunId`. Output verified: 2 events, facets survive
+serialization.
+
+**Verdict: `OPENLINEAGE = REJECTED_FOR_NOW`** — the mechanism works and is
+spec-compliant, but there is no orchestrator to instrument (Dagster deferred).
+The audit/evidence model already records lineage; OpenLineage becomes valuable
+only if/when a multi-job orchestrator is adopted.
 
 ## 5. Crawlee — REJECTED FOR NOW (no target source)
 
@@ -170,21 +202,33 @@ local demand. Deferred until after the platform pilots; the design is ready.
 | PR #31 merged, post-merge main CI green | ✅ |
 | OSS inventory (moat/commodity/mixed) | ✅ (`oss-platform-adoption-v1.md`) |
 | Memray profiling | ✅ real measurements, no hotspot to fix |
-| Splink shadow QA | ✅ decisive `NOT_ADOPTED` |
-| Dagster pilot | ⏸ DEFERRED (locked DB + quota) |
-| OpenLineage | ⏸ DEFERRED (gated on Dagster) |
+| Splink shadow QA | ✅ decisive `SPLINK_NAME_ONLY = NOT_ADOPTED` |
+| Dagster offline parity | ✅ parity PASS → **REJECTED_FOR_NOW** (no orchestration win) |
+| OpenLineage file proof | ✅ proof PASS → **REJECTED_FOR_NOW** (no orchestrator to instrument) |
 | Crawlee | ❌ REJECT_FOR_NOW (no target source) |
 | dlt | ❌ REJECT_FOR_NOW (no custom LOC to remove) |
 | H3 | ⏸ DEFERRED (design documented) |
 
-New dependencies (experiment/dev): `memray==1.20.0` (profiling only),
-`splink==4.0.16` + transitive (shadow experiment only). Neither is imported by
-production code. The inventory recommends the only *production* adoption that
-is currently justified: **`tenacity` for bounded, opt-in retry/backoff**, and
-that only after Dagster parity.
+New dependencies (experiment/dev only, NOT in `requirements.txt`):
+`memray==1.20.0` (profiling), `splink==4.0.16` (shadow experiment),
+`dagster==1.13.18`, `openlineage-python==1.52.0` (parity/proof experiments).
+None is imported by production code.
+
+One durable production change: `_run_ticketmaster` now accepts an injectable
+transport (mirrors the existing `HttpTransport` injection contract), enabling
+offline parity/experiment runs. This is a genuine testability improvement, not
+an OSS adoption.
+
+**Milestone outcome: this was an EVALUATION, not an adoption.** No commodity
+custom code was replaced, because the audit found that (a) the bespoke
+infrastructure is thin and already correct, and (b) the two most plausible
+adoptions (Splink name linkage, Dagster orchestration) would each add
+complexity without reducing a real burden. The correct next label is
+**`OSS_PLATFORM_EVALUATION_V1`**: evaluation complete, zero forced adoption.
 
 Standard applied: "less bespoke infrastructure, stronger operational quality,
-identical Festival Intelligence semantics." The two honest rejections (Crawlee,
-dlt) and the Splink negative result are themselves the correct outcome — they
-prevent replacing explicit domain semantics with probabilistic/black-box
-plumbing.
+identical Festival Intelligence semantics." The honest rejections (Crawlee,
+dlt, Dagster-for-now, OpenLineage-for-now) and the scoped Splink negative
+result are themselves the correct outcome — they prevent replacing explicit
+domain semantics with probabilistic/black-box plumbing before the scale
+justifies it.

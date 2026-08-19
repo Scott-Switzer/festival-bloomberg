@@ -36,6 +36,8 @@ milestones:
   NATIONAL_COVERAGE_ENTITY_MASTER_AND_FESTIVAL_HISTORY_V1: "PARTIAL (Ticketmaster recursive date-window subdivision -> 14,023 events / 0 truncated leaves; promoter + resolution-ledger schema; ListenBrainz provider operational; MBID spine + festival-history scale remain)"
   MUSIC_SECURITY_MASTER_AND_MONITORING_V1: "PARTIAL (music entity master + relationship graph + external-ID master schema; MusicBrainz CC0 bulk series ingest -> 6,228 festival/tour/residency series; MBID resolution + catalog + monitoring remain)"
   MUSIC_REFERENCE_GRAPH_AND_PRO_WORKFLOW_V1: "PARTIAL (event + place dumps turn series spine into a connected graph; artist-dump MBID resolution, ListenBrainz live coverage, and monitoring remain)"
+  MUSIC_TERMINAL_PRODUCTIZATION_V1: "PASS (PR #31 merged; identity + ListenBrainz + watchlists + monitors + alerts + TODAY + search + ART/FEST/TOUR/MKT/DATA/ASK; 537 tests)"
+  OSS_PLATFORM_EVALUATION_V1: "PASS (evaluation, not adoption: Memray profiling + Splink_NAME_ONLY=NOT_ADOPTED + Dagster offline parity PASS but REJECTED_FOR_NOW + OpenLineage file proof PASS but REJECTED_FOR_NOW + Crawlee/dlt rejected; no forced adoption)"
 
 providers:
   # status taxonomy: PUBLIC_NO_AUTH | AUTH_CONFIGURED | AUTH_MISSING |
