@@ -47,12 +47,46 @@ A separate process can open canonical read-write and insert while the terminal
 (serving snapshot + workspace) is online. This is covered by
 `tests/python/test_terminal_serving_snapshot.py::test_concurrency_canonical_writer_while_terminal_online`.
 
+## Operational acceptance (2026-08-19)
+
+Real production cutover on `boxoffice_research_v2.duckdb` (4.93 GiB, 33
+migrations, 155 tables, ~24M rows).
+
+| gate | result |
+| --- | --- |
+| 23 serving snapshot tests | 23/23 passed |
+| full Python suite | 608 passed, 1 skipped |
+| Node suite | 76/76 passed |
+| typecheck | clean |
+| real snapshot publication (N) | VERIFIED, 306.8s, 4.79 GiB |
+| snapshot privacy boundary | 9 workspace tables ABSENT |
+| critical row-count verification | 8/8 exact match |
+| terminal hard gate | 0 canonical file handles |
+| C3 buyer-morning acceptance | 22-step workflow PASS |
+| performance benchmark | SEARCH 109ms p50 (baseline ~141ms), no regression |
+| concurrent canonical write | separate RW transaction succeeded, terminal stayed online |
+| N→N+1 generational publication | VERIFIED, audit record in N+1, CURRENT updated |
+| post-restart resolution | terminal resolved N+1, workspace persisted |
+
+Performance baseline (serving snapshot, warm cache):
+
+| endpoint | p50 | p95 |
+| --- | --- | --- |
+| SEARCH | 109ms | 162ms |
+| ART (artist page) | 25ms | 42ms |
+| TODAY | 14ms | 16ms |
+| DATA | 27ms | 28ms |
+| TAPE | 20ms | 77ms |
+| ASK | 8ms | 8ms |
+
 ## Known limits
 
-- Snapshot publishing is a full copy; a terminal-subset optimization is future
-  work (benchmark before optimizing).
+- Snapshot publishing is a full copy (4.93 GiB → 4.79 GiB after workspace strip,
+  ~5 min on M-series); a terminal-subset optimization is future work.
 - Publish requires canonical to not be actively writing at copy time (DuckDB
   single-writer model). The operator sequence is: stop ingestion → publish →
   resume ingestion.
+- Temp files (`.snapshot_id.hash.tmp.duckdb`) may linger if the process is
+  killed mid-copy; they are safe to delete.
 - Existing canonical watchlists/planning are **deprecated, not deleted**: they
   are copied into workspace once via `migrate-workspace`.

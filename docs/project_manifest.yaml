@@ -42,7 +42,7 @@ milestones:
   TALENT_BUYER_WORKBENCH_V1: "PASS_WORKFLOW_RESEARCH_ONLY (PR #34 merged; BUILD/COMPARE SPA + scorecards + shortlists + scenario board + conflict warnings; dense data panel and comparable V2 remain)"
   DENSE_PRE_EVENT_DATA_PANEL_V1: "IN_PROGRESS (PR #35 draft; feature registry + PIT attention + competition + coverage/VOI semantics hardened; live venue/Wikimedia/competition pilots pending warehouse unlock)"
   DESIGN_PARTNER_DATA_ACTIVATION_V1: "PASS_ONBOARDING_INFRASTRUCTURE (PR #36 merged; one-command isolated partner preview CLI + breadth-gated readiness tiers + synthetic value curves + onboarding package)"
-  TERMINAL_SERVING_SNAPSHOT_V1: "IN_PROGRESS (PR #37 draft; immutable versioned snapshots + integrity contract + dedicated workspace schema + concurrency/generational acceptance tested; real 5.3GB publish pending)"
+  TERMINAL_SERVING_SNAPSHOT_V1: "PASS (PR #37; real 4.93 GiB canonical -> immutable serving snapshot VERIFIED; 23/23 serving tests + 608 Python + 76 Node; C3 buyer-morning acceptance PASS; concurrent canonical write + N→N+1 generational PASS; terminal zero canonical file handles")
   SHOW_ECONOMICS_WORKBENCH_V1: "SPEC_ONLY (deterministic show/offer economics research; not implemented)"
 
 providers:
