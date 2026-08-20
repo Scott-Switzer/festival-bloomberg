@@ -1,0 +1,210 @@
+"""Point-in-time historical attention panels.
+
+Derives PIT features (7d / 30d / 90d / 365d windows, growth, trend,
+volatility, spike) from time-indexed daily observations, respecting a hard
+cutoff: only observations whose observation day < cutoff may enter ANY window.
+This is pure computation over already-frozen rows (no I/O, no network).
+
+Three distinct timestamps are distinguished so that "a value existed before
+the cutoff" is never confused with "a value was knowable before the cutoff":
+
+* observation_time  — the day the value refers to (``day_fn``);
+* available_at      — when the value became knowable (``available_fn``), e.g.
+                      ListenBrainz ``inserted_at`` or a daily aggregate's
+                      publication time; a row whose available_at is not
+                      strictly before the cutoff is excluded;
+* retrieved_at      — when WE fetched it (caller provenance), which is NEVER
+                      an admissibility gate (a late retrieval does not make a
+                      value unknowable at the cutoff, and an early retrieval
+                      does not make a future value knowable).
+
+Critical rule for ListenBrainz-style sources: a row is admissible only if
+listened_at (observation) < cutoff AND inserted_at (available_at) < cutoff —
+late-imported historical listens must never leak backward.
+
+Three missingness states are distinguished (see ``calendar_window``):
+
+* TRUE_ZERO     a day in-range with a value (or a filled absent day when the
+                source window is known-complete);
+* MISSING       an expected day absent from an incomplete series (NEVER zero);
+* UNAVAILABLE   a day outside the source's existence (e.g. Wikimedia pageviews
+                before 2015-07-01) — not expected, not missing, not zero.
+"""
+
+from __future__ import annotations
+
+import math
+from collections import defaultdict
+from datetime import date, timedelta
+from typing import Any, Callable
+
+
+def _d(value: Any) -> date | None:
+    if value is None:
+        return None
+    s = str(value)[:10]
+    try:
+        return date.fromisoformat(s)
+    except ValueError:
+        return None
+
+
+def _mean(vals: list[float]) -> float | None:
+    return sum(vals) / len(vals) if vals else None
+
+
+def _std(vals: list[float]) -> float | None:
+    if len(vals) < 2:
+        return None
+    m = sum(vals) / len(vals)
+    return math.sqrt(sum((v - m) ** 2 for v in vals) / (len(vals) - 1))
+
+
+def daily_series(rows: list[dict[str, Any]], *, value_fn: Callable[[dict[str, Any]], float | None],
+                 day_fn: Callable[[dict[str, Any]], Any],
+                 available_fn: Callable[[dict[str, Any]], Any] | None = None,
+                 cutoff: str | None = None) -> dict[date, float]:
+    """Aggregate rows into a daily sum series, strictly before the cutoff.
+
+    ``day_fn`` is observation_time; ``available_fn`` (when given) is the
+    available_at / inserted_at gate: a row whose available_at is not strictly
+    before the cutoff is excluded even if its observation day is.
+    """
+    cutoff_d = _d(cutoff)
+    daily: dict[date, float] = defaultdict(float)
+    for row in rows:
+        day = _d(day_fn(row))
+        if day is None:
+            continue
+        if cutoff_d is not None and not (day < cutoff_d):
+            continue
+        if available_fn is not None:
+            avail = _d(available_fn(row))
+            if cutoff_d is not None and (avail is None or not (avail < cutoff_d)):
+                continue
+        v = value_fn(row)
+        if v is None:
+            continue
+        daily[day] += v
+    return dict(daily)
+
+
+def pit_features(
+    daily: dict[date, float],
+    *,
+    cutoff: str,
+    windows: tuple[int, ...] = (7, 30, 90, 365),
+) -> dict[str, Any]:
+    """PIT window sums + growth/trend/volatility/spike from a daily series.
+
+    Windows are trailing (cutoff-1, cutoff-1-window]. Only days strictly
+    before the cutoff are eligible.
+    """
+    cutoff_d = _d(cutoff)
+    if cutoff_d is None:
+        return {"status": "NO_CUTOFF"}
+    out: dict[str, Any] = {"status": "OK", "cutoff": cutoff}
+    for w in windows:
+        lo = cutoff_d - timedelta(days=w)
+        vals = [v for d, v in sorted(daily.items()) if lo <= d < cutoff_d]
+        out[f"{w}d"] = round(sum(vals), 4) if vals else None
+    # 30d growth: (most recent 30d) / (30d ending 60d before cutoff)
+    recent = [v for d, v in sorted(daily.items()) if cutoff_d - timedelta(days=30) <= d < cutoff_d]
+    prior = [v for d, v in sorted(daily.items()) if cutoff_d - timedelta(days=60) <= d < cutoff_d - timedelta(days=30)]
+    s_recent, s_prior = sum(recent), sum(prior)
+    if s_prior and s_recent is not None:
+        out["growth_30d"] = round(s_recent / s_prior - 1.0, 4)
+    else:
+        out["growth_30d"] = None
+    # 90d trend: (last 30d) vs (first 30d of the 90d window)
+    tail = [v for d, v in sorted(daily.items()) if cutoff_d - timedelta(days=30) <= d < cutoff_d]
+    head = [v for d, v in sorted(daily.items()) if cutoff_d - timedelta(days=90) <= d < cutoff_d - timedelta(days=60)]
+    s_tail, s_head = sum(tail), sum(head)
+    if s_head and s_tail is not None:
+        out["trend_90d"] = round(s_tail / s_head - 1.0, 4)
+    else:
+        out["trend_90d"] = None
+    # volatility: cv of the trailing 90d daily values
+    vals90 = [v for d, v in sorted(daily.items()) if cutoff_d - timedelta(days=90) <= d < cutoff_d]
+    m90, sd90 = _mean(vals90), _std(vals90)
+    out["volatility_90d"] = round(sd90 / m90, 4) if (m90 and sd90 is not None) else None
+    # spike: max single day in trailing 30d / mean of trailing 90d
+    m90b = _mean(vals90)
+    if vals90 and m90b:
+        out["spike_30d"] = round(max(v for d, v in sorted(daily.items())
+                                      if cutoff_d - timedelta(days=30) <= d < cutoff_d) / m90b, 4)
+    else:
+        out["spike_30d"] = None
+    out["days_observed"] = len([d for d in daily if d < cutoff_d])
+    return out
+
+
+DAY_OBSERVED = "OBSERVED"
+DAY_TRUE_ZERO = "TRUE_ZERO"
+DAY_MISSING = "MISSING"
+DAY_UNAVAILABLE = "UNAVAILABLE"
+
+
+def calendar_window(
+    daily: dict[date, float],
+    *,
+    start: str,
+    end: str,
+    complete: bool = False,
+    unavailable: set[str] | frozenset[str] | None = None,
+) -> dict[str, Any]:
+    """Materialize a calendar window over a daily series.
+
+    Distinguishes TRUE ZERO (a day in-range with a value, or a filled absent
+    day when ``complete=True``), MISSING (an expected day absent from an
+    incomplete series), and UNAVAILABLE (a day outside the source's existence,
+    passed explicitly).
+
+    ``complete=True`` asserts the source returned every expected day, so absent
+    days are true zero and may be filled with 0.0. ``complete=False`` returns
+    only observed days and reports the gap as MISSING — never fabricated zero.
+    """
+    start_d = _d(start)
+    end_d = _d(end)
+    if start_d is None or end_d is None or end_d < start_d:
+        return {"status": "INVALID_WINDOW"}
+    unavailable_days = {_d(u) for u in (unavailable or set())}
+    unavailable_days.discard(None)
+    expected = 0
+    observed: dict[date, float] = {}
+    d = start_d
+    while d <= end_d:
+        if d in unavailable_days:
+            d += timedelta(days=1)
+            continue
+        expected += 1
+        if d in daily:
+            observed[d] = daily[d]
+        d += timedelta(days=1)
+    missing = expected - len(observed)
+    series: dict[str, float] = {}
+    true_zero = 0
+    if complete:
+        d = start_d
+        while d <= end_d:
+            if d in unavailable_days:
+                d += timedelta(days=1)
+                continue
+            v = observed.get(d, 0.0)
+            series[d.isoformat()] = v
+            if v == 0.0:
+                true_zero += 1
+            d += timedelta(days=1)
+    else:
+        series = {d.isoformat(): v for d, v in sorted(observed.items())}
+        true_zero = sum(1 for v in observed.values() if v == 0.0)
+    return {
+        "status": "OK",
+        "series": series,
+        "expected_days": expected,
+        "observed_days": len(observed),
+        "true_zero_days": true_zero,
+        "missing_days": missing,
+        "unavailable_days": len(unavailable_days),
+        "completeness_pct": round(len(observed) / expected, 4) if expected else None,
+    }
