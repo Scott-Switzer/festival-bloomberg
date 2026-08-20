@@ -17,10 +17,11 @@ PHASE 2 — competition PIT gate
     Can event-level competition that was genuinely knowable at each corpus
     event's cutoff be reconstructed from the warehouse?
 
-PHASE 3 — Wikimedia attention PIT gate
-    Does the stored Wikimedia attention support a window that ends strictly
-    before each corpus event's cutoff, or is it a trailing "now" window that
-    would leak current attention backward?
+PHASE 3 — Wikimedia attention coverage gate
+    Is the STORED Wikimedia panel a historical per-cutoff panel, or a trailing
+    "now" window? Separately: is the SOURCE capable of supplying historical
+    windows (it is, from 2015-07-01)? retrieved_at is provenance and is NEVER
+    an admissibility gate.
 
 Run:  PYTHONPATH=python .venv/bin/python scripts/comparable_v2_closure.py
 """
@@ -40,9 +41,11 @@ OUT_PATH = Path("reports/comparable_engine_v2_closure.json")
 
 VERDICT_PROMOTED = "PROMOTED"
 VERDICT_NO_PROMOTION = "NO_PROMOTION"
-VERDICT_PARTIAL = "PARTIAL_COMPETITION_NOT_EVALUABLE"
+VERDICT_ATTENTION_ONLY = "PARTIAL_ATTENTION_EVALUABLE_COMPETITION_NOT_EVALUABLE"
 
 NOT_EVALUABLE = "NOT_EVALUABLE_ON_CURRENT_CORPUS"
+WIKIMEDIA_ACQUISITION_REQUIRED = "EVALUABLE_AFTER_HISTORICAL_ACQUISITION"
+STORED_PANEL_INSUFFICIENT = "INSUFFICIENT_FOR_COMPARABLE_V2"
 
 
 def _iso10(value) -> str | None:
@@ -179,14 +182,20 @@ def phase2_competition_gate(rows: list[dict], conn: duckdb.DuckDBPyConnection) -
 
 
 def phase3_wikimedia_gate(rows: list[dict], conn: duckdb.DuckDBPyConnection) -> dict:
-    """Determine whether stored Wikimedia attention is PIT-safe for the corpus.
+    """Distinguish stored-panel coverage from source capability.
 
-    The admitted feature is a 30d pageview window ending before the cutoff. The
-    stored Wikimedia data is a trailing window collected in August 2026
-    (period 2025-08-19 .. 2026-08-20), NOT per-cutoff historical windows. For
-    any corpus event whose cutoff precedes ~2025-09, no window ending before
-    that cutoff exists in the warehouse; using the trailing window would leak
-    current attention backward.
+    Three separate facts, which the first revision collapsed:
+
+    1. STORED PANEL — what we have locally is a trailing window whose
+       observation days are 2025-08-19 .. 2026-08-20. That cannot supply a
+       30d window ending before a 2019/2024 cutoff, so it is INSUFFICIENT for
+       Comparable V2 as-is.
+    2. RETRIEVAL TIME — when we downloaded it (Aug 2026) is provenance and is
+       NEVER an admissibility gate. A 2019 pageview fetched in 2026 was still
+       knowable in 2019, because its available_at is observation_day + 1.
+    3. SOURCE CAPABILITY — the Wikimedia Analytics API serves historical
+       pageviews from 2015-07-01, so per-cutoff historical acquisition is
+       possible for the eligible (post-2015-07-01) corpus tail.
     """
     windows = conn.execute(
         """
@@ -203,33 +212,36 @@ def phase3_wikimedia_gate(rows: list[dict], conn: duckdb.DuckDBPyConnection) -> 
     retrieved_max = _iso10(windows[4])
 
     dated = [r for r in rows if r.get("start_date")]
-    corpus_max_cutoff = max(_iso10(r.get("start_date")) for r in dated)
-
-    # The strict PIT gate is availability: the feature's knowledge_time rule
-    # requires every contributing day's available_at < cutoff, which implies
-    # retrieved_at < cutoff for the stored aggregate. The stored rows were all
-    # retrieved Aug 2026, after the latest corpus cutoff.
-    all_retrieved_after_cutoff = retrieved_min > corpus_max_cutoff
+    from datetime import date as _date
+    series_start = _date(2015, 7, 1).isoformat()
+    pre_series = sum(1 for r in dated if _iso10(r.get("start_date")) < series_start)
+    eligible = sum(1 for r in dated if _iso10(r.get("start_date")) >= series_start)
 
     return {
-        "population": "CORPUS target artists",
-        "stored_wikimedia_window": [trailing_start, trailing_end],
+        "population": "CORPUS target events (dated)",
+        "stored_wikimedia_observation_window": [trailing_start, trailing_end],
         "stored_wikimedia_distinct_ok_artists": distinct_ok_artists,
-        "stored_wikimedia_retrieved_range": [retrieved_min, retrieved_max],
+        "stored_wikimedia_retrieved_range_provenance_only": [retrieved_min, retrieved_max],
+        "wikimedia_series_start": series_start,
         "corpus_dated_events": len(dated),
-        "corpus_max_cutoff": corpus_max_cutoff,
-        "every_stored_observation_retrieved_after_corpus_cutoff": all_retrieved_after_cutoff,
-        "verdict": NOT_EVALUABLE,
+        "pre_wikimedia_series_events": pre_series,
+        "wikimedia_series_eligible_events": eligible,
+        "stored_panel_verdict": STORED_PANEL_INSUFFICIENT,
+        "source_verdict": WIKIMEDIA_ACQUISITION_REQUIRED,
+        "retrieved_at_is_admissibility_gate": False,
         "reason": (
-            "Stored Wikimedia pageviews are a single trailing window "
-            f"{trailing_start}..{trailing_end} with retrieved_at "
-            f"{retrieved_min}..{retrieved_max}. The latest corpus cutoff is "
-            f"{corpus_max_cutoff}, so EVERY stored observation was retrieved "
-            "after every corpus cutoff — the PIT availability rule "
-            "(available_at < cutoff) fails for the entire corpus. Using the "
-            "trailing window would leak current attention into a historical "
-            "comparable set. Page resolution (does the artist have ANY "
-            "pageview row) is not the same as PIT window availability at the "
+            f"The STORED panel's observation days span {trailing_start}.."
+            f"{trailing_end}, a single trailing window, so it cannot supply a "
+            "per-cutoff historical window for the 2012-2026 corpus — it is "
+            f"{STORED_PANEL_INSUFFICIENT}. That is a COVERAGE fact, not a "
+            "PIT-admissibility fact: retrieved_at "
+            f"({retrieved_min}..{retrieved_max}) is provenance and is NEVER an "
+            "admissibility gate. The source itself serves historical pageviews "
+            f"from {series_start}, so {eligible} of {len(dated)} dated corpus "
+            "events are eligible for a real per-cutoff historical backfill; "
+            f"{pre_series} predate the series and are UNAVAILABLE (not missing, "
+            "not zero). Page resolution (does the artist have ANY pageview row) "
+            "is still not the same as historical window completeness at the "
             "cutoff."
         ),
     }
@@ -245,24 +257,31 @@ def main() -> None:
     finally:
         conn.close()
 
-    # Overall verdict: neither admitted family is evaluable on the current
-    # corpus. The closest allowed label is PARTIAL_COMPETITION_NOT_EVALUABLE,
-    # but the honest statement is that BOTH families are not evaluable here.
+    # Overall verdict: competition is not evaluable on the current corpus;
+    # Wikimedia is not evaluable from the STORED panel but IS evaluable after a
+    # historical acquisition for the post-2015-07-01 corpus tail. Whether that
+    # acquisition actually delivers is decided by the bounded pilot
+    # (scripts/wikimedia_historical_pilot.py), not by this static audit.
     overall = {
-        "verdict": VERDICT_PARTIAL,
+        "verdict": VERDICT_ATTENTION_ONLY,
         "sub_verdicts": {
             "competition": NOT_EVALUABLE,
-            "wikimedia_attention": NOT_EVALUABLE,
+            "wikimedia_stored_panel": STORED_PANEL_INSUFFICIENT,
+            "wikimedia_source": WIKIMEDIA_ACQUISITION_REQUIRED,
         },
+        "retrieved_at_is_admissibility_gate": False,
         "statement": (
-            "Comparable V2 cannot be validly run against the current frozen "
-            "corpus: historical PIT competition has no historical event source, "
-            "and stored Wikimedia attention is a trailing 2025-2026 window "
-            "rather than per-cutoff historical windows. The earlier local "
-            "experiment that reported a negative result used an invalid "
-            "city-density competition proxy and trailing attention, so its "
-            "numbers are not evidence about the admitted features. This is "
-            "'not evaluable', NOT 'evaluated and found useless'."
+            "Competition is NOT_EVALUABLE_ON_CURRENT_CORPUS (no historical "
+            "event source). Wikimedia is not evaluable from the STORED "
+            "trailing panel (INSUFFICIENT_FOR_COMPARABLE_V2), but the source "
+            "serves historical pageviews from 2015-07-01, so it is "
+            "EVALUABLE_AFTER_HISTORICAL_ACQUISITION for the eligible corpus "
+            "tail. retrieved_at is provenance, never a gate. The earlier local "
+            "experiment's 'attention hurts' claim is invalid because it used a "
+            "trailing window as a historical window — not because late "
+            "retrieval leaked. The historical pilot determines whether "
+            "Comparable V2 becomes ATTENTION_ONLY_EVALUABLE or Wikimedia is "
+            "genuinely not evaluable."
         ),
     }
 

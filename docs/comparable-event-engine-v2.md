@@ -8,12 +8,15 @@ Objective: determine whether the two families admitted by PR #35 —
 incremental predictive value over the hierarchical champion (A) and
 Comparable V1 (B), without changing the methodology to force a win.
 
-Verdict: `COMPARABLE_EVENT_ENGINE_V2 = PARTIAL_COMPETITION_NOT_EVALUABLE`
+Verdict: `COMPARABLE_EVENT_ENGINE_V2 = PARTIAL_ATTENTION_EVALUABLE_COMPETITION_NOT_EVALUABLE`
 
-Neither admitted family is evaluable on the current frozen corpus. This is a
-**valid negative research result**, but it is *not* "the features were tested
-and found useless" — it is "the features could not be tested at all with the
-data that actually exists."
+- **Competition** is `NOT_EVALUABLE_ON_CURRENT_CORPUS` (no historical event
+  source exists).
+- **Wikimedia attention** is not evaluable from the *stored* trailing panel
+  (`INSUFFICIENT_FOR_COMPARABLE_V2`) but **is** `EVALUABLE_AFTER_HISTORICAL_ACQUISITION`:
+  the source serves historical pageviews from 2015-07-01, and a bounded real
+  pilot retrieved complete per-cutoff 30d windows for both 2024 and 2026
+  events (see below).
 
 ## What happened before this pass
 
@@ -69,48 +72,72 @@ which 2012/2013/2024/2025 competition could be reconstructed.
 The correct statement is *not* "competition adds no signal" — it is
 "competition signal could not be evaluated on the current historical corpus."
 
-## PHASE 3 — Wikimedia attention PIT gate
+## PHASE 3 — Wikimedia attention coverage gate
 
-The admitted feature is a **30d pageview window ending before the cutoff**,
-knowable only when `available_at < cutoff`. The stored Wikimedia data is a
-single trailing window:
+Three facts that an earlier revision conflated:
 
-- period 2025-08-19 → 2026-08-20,
-- `retrieved_at` 2026-08-15 → 2026-08-20,
-- 157 distinct artists with `status='ok'`.
+1. **Stored panel is insufficient.** The locally stored Wikimedia rows are a
+   single trailing window (observation days 2025-08-19 → 2026-08-20). They
+   cannot supply a 30d window ending before a 2019 or 2024 cutoff.
+2. **Retrieval time is not a gate.** The rows were downloaded in Aug 2026, but
+   `retrieved_at` is provenance and is **never** an admissibility gate. A 2019
+   pageview fetched in 2026 was still knowable in 2019 because its
+   `available_at = observation_day + 1`. This matches
+   `attention.historical_pit` and the feature registry's
+   `artist_attention_wikimedia_30d_at_cutoff` knowledge-time rule.
+3. **The source is capable.** The Wikimedia Analytics API serves historical
+   pageviews from **2015-07-01**, so per-cutoff historical acquisition is
+   possible for the eligible corpus tail.
 
-The latest corpus cutoff is **2026-07-03**, so **every** stored Wikimedia
-observation was retrieved after **every** corpus cutoff. The PIT availability
-rule fails for the entire corpus. Using the trailing window would leak current
-(2026) attention into historical (2012-2026) comparable sets.
+### Corpus split at the source boundary
 
-**Wikimedia verdict: `NOT_EVALUABLE_ON_CURRENT_CORPUS`.**
+| Split | Cutoff | Dated events |
+|---|---|---:|
+| PRE_WIKIMEDIA_SERIES (UNAVAILABLE) | < 2015-07-01 | 232 |
+| WIKIMEDIA_SERIES_ELIGIBLE | ≥ 2015-07-01 | 240 |
 
-Page resolution (does the artist have *any* pageview row) is not the same as
-PIT window availability at the cutoff. The PR #35 "45.6% coverage" figure
-measured page resolution, not PIT-available historical windows.
+Days before 2015-07-01 are **UNAVAILABLE** (the source did not exist) — never
+MISSING, never ZERO.
+
+### Bounded real historical pilot
+
+`scripts/wikimedia_historical_pilot.py` fetched real per-cutoff 30d windows for
+30 stratified eligible events (TIME-hold first, then year-spread):
+
+| Metric | Value |
+|---|---:|
+| Targets attempted | 30 |
+| Page resolved | 27 |
+| 404 (missing) | 3 |
+| Errors | 0 |
+| Full PIT-admissible 30d window | 26 |
+
+The 3 missing are genuine article-resolution failures (including a corpus
+name typo, "Bruce Sprigsteen"). Every resolved artist had a complete,
+PIT-admissible 30d window with `available_at = observation_day + 1 < cutoff`,
+for both 2024 and 2026 cutoffs. `retrieved_at` (Aug 2026) is recorded as
+provenance and changes nothing.
 
 ## Overall verdict
 
 ```
-COMPARABLE_EVENT_ENGINE_V2 = PARTIAL_COMPETITION_NOT_EVALUABLE
-  competition        = NOT_EVALUABLE_ON_CURRENT_CORPUS
-  wikimedia_attention = NOT_EVALUABLE_ON_CURRENT_CORPUS
+COMPARABLE_EVENT_ENGINE_V2 = PARTIAL_ATTENTION_EVALUABLE_COMPETITION_NOT_EVALUABLE
+  competition              = NOT_EVALUABLE_ON_CURRENT_CORPUS
+  wikimedia_stored_panel   = INSUFFICIENT_FOR_COMPARABLE_V2
+  wikimedia_source         = EVALUABLE_AFTER_HISTORICAL_ACQUISITION
 ```
 
-Both admitted families are not evaluable on the current frozen corpus. The
-strict PIT / UNKNOWN!=0 rules held; the result is honest.
+`retrieved_at` is NEVER an admissibility gate.
 
-## What would be required to actually test these families
+## What remains to actually run Comparable V2
 
-1. **Wikimedia attention** — a real *historical* acquisition: for each corpus
-   event, fetch the pageview window ending strictly before that event's cutoff
-   and persist `available_at`/`retrieved_at` semantics. That is new
-   acquisition work, not a modeling pass, and only the ~2025-2026 tail of the
-   corpus is even in range of the trailing data already collected.
-2. **Competition** — a historical event source (archival event data with
-   knowledge_time) covering the 2012-2026 corpus. None exists in the current
-   warehouse.
+1. **Wikimedia attention** — the pilot proved acquisition works; the next step
+   is a bounded historical backfill of per-cutoff windows for the 240 eligible
+   (post-2015-07-01) corpus events, then the frozen attention-only V2
+   experiment. This is acquisition, not a modeling pass.
+2. **Competition** — requires a historical event source (archival event data
+   with knowledge_time) covering 2012-2026. None exists in the warehouse; it
+   stays `NOT_EVALUABLE_ON_CURRENT_CORPUS` until one is acquired.
 
 ## Next milestone decision
 
@@ -133,4 +160,7 @@ information source.
 ```
 PYTHONPATH=python .venv/bin/python scripts/comparable_v2_closure.py
 # writes reports/comparable_engine_v2_closure.json
+
+PYTHONPATH=python .venv/bin/python scripts/wikimedia_historical_pilot.py
+# writes reports/wikimedia_historical_pilot.json (real network fetch)
 ```
