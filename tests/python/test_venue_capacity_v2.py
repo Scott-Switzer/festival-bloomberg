@@ -225,3 +225,33 @@ def test_br_separated_figures_never_concatenated():
 
 def test_claim_from_wikipedia_requires_value():
     assert claim_from_wikipedia_infobox({"capacity_value": None}, venue_id="v") is None
+
+
+def test_migration_035_preserves_index_and_allows_delete(tmp_path):
+    """Adding raw_value/parser_version columns must not break deletes on the
+    ART index (regression for the DuckDB 'Failed to delete all rows from index'
+    fatal caused by ADD COLUMN on an indexed table)."""
+    import duckdb
+    from festival_bloomberg.migrations import apply_pending_migrations
+
+    db = duckdb.connect(str(tmp_path / "cap.duckdb"))
+    try:
+        apply_pending_migrations(db)
+        db.execute(
+            "INSERT INTO economics.venue_capacity_claims "
+            "(claim_id, canonical_venue_id, capacity_value, capacity_kind, "
+            "provider, source, retrieved_at, knowledge_time, claim_status) "
+            "VALUES ('cap_x','v1',100,'SEATED','t','t',"
+            "'2026-08-24T00:00:00','2026-08-24T00:00:00','OBSERVED')"
+        )
+        idx = db.execute(
+            "SELECT count(*) FROM duckdb_indexes() "
+            "WHERE table_name='venue_capacity_claims' "
+            "AND index_name='idx_econ_capacity_venue'"
+        ).fetchone()[0]
+        assert idx == 1
+        db.execute("DELETE FROM economics.venue_capacity_claims WHERE claim_id='cap_x'")
+        left = db.execute("SELECT count(*) FROM economics.venue_capacity_claims").fetchone()[0]
+        assert left == 0
+    finally:
+        db.close()

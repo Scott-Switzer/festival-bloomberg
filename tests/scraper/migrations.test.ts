@@ -35,11 +35,11 @@ describe("schema migrations", () => {
 
     const db = await createDuckDbWarehouse({ path: temp.path });
     const versions = migrationCatalog().map((migration) => migration.version);
-    assert.deepEqual(versions, Array.from({ length: 34 }, (_, i) => i + 1));
+    assert.deepEqual(versions, Array.from({ length: 35 }, (_, i) => i + 1));
     await db.close();
 
     const rows = await queryMigrations(temp.path);
-    assert.equal(rows.length, 34);
+    assert.equal(rows.length, 35);
     assert.equal(rows[1]?.name, "published_at_point_in_time_v2");
     assert.equal(rows[2]?.name, "intelligence_metrics_v1");
     assert.equal(rows[3]?.name, "canonical_entity_resolution_v1");
