@@ -25,7 +25,7 @@ import hashlib
 import json
 import time
 import urllib.parse
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from ..identity.spotify import normalize_name
@@ -33,6 +33,33 @@ from ..identity.spotify import normalize_name
 WIKIMEDIA_PAGEVIEWS_BASE = "https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article"
 METRIC_VERSION = "wikimedia_pageviews_v1"
 SOURCE_SYSTEM = "wikimedia"
+
+#: The Analytics API serves pageview data starting on this day. Days before
+#: this are OUTSIDE the source's existence and are therefore UNAVAILABLE —
+#: never MISSING, never ZERO. See the Wikimedia Analytics API reference:
+#: "These endpoints serve data starting on July 1, 2015."
+WIKIMEDIA_SERIES_START = date(2015, 7, 1)
+
+#: Availability policy version for the daily pageview aggregate. Bump when the
+#: availability semantics below change.
+WIKIMEDIA_AVAILABILITY_POLICY_VERSION = "wikimedia_pageviews_availability_v1"
+
+
+def wikimedia_available_at(observation_day: date) -> date:
+    """Day-level publication bound for a Wikimedia daily pageview aggregate.
+
+    Wikimedia loads a day's pageview data at the end of the relevant period:
+    the aggregate for ``observation_day`` D becomes knowable from the source at
+    D+1 (00:00 UTC). This is a conservative availability bound derived from the
+    source's documented load semantics — it is NOT the retrieval time, and it
+    is NOT the observation day itself.
+
+    PIT admissibility for a window ending at cutoff therefore requires
+    ``observation_day < cutoff AND wikimedia_available_at(observation_day) <
+    cutoff``. ``retrieved_at`` (when Festival Bloomberg happened to download
+    the value) is provenance and is NEVER an admissibility gate.
+    """
+    return observation_day + timedelta(days=1)
 
 
 def artist_key_for(name: str) -> str:
