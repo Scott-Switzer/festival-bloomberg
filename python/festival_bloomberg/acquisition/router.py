@@ -25,6 +25,7 @@ from .contracts import (
     AcquisitionStatus,
     utc_now,
 )
+from .automation import automation_status, AutomationStatus
 from .costs import SessionBudget
 from .health import ProviderHealthRegistry
 from .policy import PolicyGate
@@ -76,6 +77,19 @@ class AcquisitionRouter:
     # -- public ------------------------------------------------------------- #
     def route(self, request: AcquisitionRequest) -> AcquisitionResult:
         """Execute a request through the first viable provider."""
+        disposition = automation_status(request.platform)
+        if disposition == AutomationStatus.DISABLED:
+            result = self._result(
+                request,
+                status=AcquisitionStatus.POLICY_DENIED,
+                error_category="automation_disabled",
+                provider_metadata={
+                    "automation_status": disposition.value,
+                    "rationale": "automated acquisition is disabled for this provider",
+                },
+            )
+            self._emit(request, result)
+            return result
         # coarse policy gate (API mechanism) before any provider work
         decision = self.policy_gate.evaluate(
             request.platform, request.commercial_context, mechanism="api"

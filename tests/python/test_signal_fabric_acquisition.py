@@ -285,6 +285,18 @@ class _StubProvider:
 
 
 class TestRouter:
+    def test_automation_disabled_provider_is_never_invoked(self):
+        provider = _StubProvider("seatgeek", AcquisitionStatus.SUCCESS, records=({"id": "x"},))
+        router = AcquisitionRouter(
+            providers={"seatgeek": provider},
+            priority=("seatgeek",),
+        )
+        result = router.route(make_request(platform="seatgeek"))
+        assert result.status == AcquisitionStatus.POLICY_DENIED
+        assert result.error_category == "automation_disabled"
+        assert result.provider_metadata["automation_status"] == "AUTOMATION_DISABLED"
+        assert provider.calls == 0
+
     def test_unknown_platform_fails_closed_in_commercial_mode(self):
         router = AcquisitionRouter(providers={}, policy_gate=PolicyGate(profiles={}))
         result = router.route(

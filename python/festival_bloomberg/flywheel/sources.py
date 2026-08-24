@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Any
 
 from ..acquisition.contracts import utc_now
+from ..acquisition.automation import automation_status
 
 SOURCE_REGISTRY_V1: list[dict[str, Any]] = [
     # ---- EVENT_GRAPH -----------------------------------------------------
@@ -331,6 +332,7 @@ def source_rows(*, registered_at: datetime | None = None) -> list[dict[str, Any]
             "documented_quota": row.get("documented_quota"),
             "rights_status": row["rights_status"],
             "commercial_use_status": row["commercial_use_status"],
+            "automation_status": automation_status(row.get("provider") or row["source_id"]).value,
             "license": row.get("license"),
             "coverage_contribution": row.get("coverage_contribution"),
             "notes": row.get("notes"),

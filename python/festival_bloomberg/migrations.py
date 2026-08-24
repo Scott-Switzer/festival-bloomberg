@@ -25,15 +25,18 @@ def apply_pending_migrations(connection: duckdb.DuckDBPyConnection) -> int:
             continue
         sql = path.read_text(encoding="utf-8")
         try:
+            connection.execute("BEGIN TRANSACTION")
             for statement in split_sql_statements(sql):
                 connection.execute(statement)
             connection.execute(
                 "INSERT INTO schema_migrations (version, name) VALUES (?, ?)",
                 [version, name],
             )
+            connection.execute("COMMIT")
             applied.add(version)
             applied_now += 1
         except Exception:
+            connection.execute("ROLLBACK")
             raise
 
     return applied_now

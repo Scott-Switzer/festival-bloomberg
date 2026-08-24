@@ -12,6 +12,7 @@ from typing import Any
 
 from ...evidence.semantics import ContentRole
 from ...markets.chicago import chicago_from_structured_geo
+from ..automation import AutomationStatus, automation_status
 from ..base import BaseProvider
 from ..contracts import (
     AcquisitionRequest,
@@ -70,6 +71,17 @@ class SeatGeekProvider(BaseProvider):
         return CostEstimate(provider=self.name, estimated_cost_usd=0.0, free_quota=True, source="free_open_api")
 
     def acquire(self, request: AcquisitionRequest) -> AcquisitionResult:
+        disposition = automation_status("seatgeek")
+        if disposition == AutomationStatus.DISABLED:
+            return self._result(
+                request,
+                status=AcquisitionStatus.POLICY_DENIED,
+                error_category="automation_disabled",
+                provider_metadata={
+                    "automation_status": disposition.value,
+                    "rationale": "automated acquisition is disabled for this provider",
+                },
+            )
         if not self.configured():
             return self._not_configured(request, "SEATGEEK_CLIENT_ID not set")
 

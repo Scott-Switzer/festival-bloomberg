@@ -98,6 +98,18 @@ def _tm_event(status="onsale"):
     }
 
 
+@pytest.fixture
+def seatgeek_automation_enabled(monkeypatch):
+    """Provider contract tests may run only after changing canonical disposition."""
+    from festival_bloomberg.acquisition import automation
+
+    monkeypatch.setitem(
+        automation._DISPOSITIONS,
+        "seatgeek",
+        automation.AutomationStatus.ENABLED,
+    )
+
+
 def test_legacy_seatgeek_adapter_is_not_official_api():
     assert ADAPTER_OFFICIAL is False
     assert ADAPTER_STATUS == "LEGACY_EXTERNAL_LISTING_ADAPTER"
@@ -108,10 +120,13 @@ def test_legacy_seatgeek_adapter_is_not_official_api():
 def test_official_seatgeek_absent_key_not_configured():
     provider = SeatGeekProvider(transport=FakeTransport([]), env={})
     result = provider.acquire(make_request(platform="seatgeek", operation="SEARCH_EVENTS"))
-    assert result.status == AcquisitionStatus.NOT_CONFIGURED
+    assert result.status == AcquisitionStatus.POLICY_DENIED
+    assert result.error_category == "automation_disabled"
+    assert result.provider_metadata["automation_status"] == "AUTOMATION_DISABLED"
+    assert provider.transport.requests == []
 
 
-def test_official_seatgeek_event_stats_normalize():
+def test_official_seatgeek_event_stats_normalize(seatgeek_automation_enabled):
     payload = {"events": [_sg_event()], "meta": {"total": 1, "page": 1, "per_page": 20}}
     provider = SeatGeekProvider(
         transport=FakeTransport([(200, payload)]),
@@ -131,7 +146,7 @@ def test_official_seatgeek_event_stats_normalize():
     assert event.get("median_price") is None
 
 
-def test_seatgeek_pagination_and_api_failure():
+def test_seatgeek_pagination_and_api_failure(seatgeek_automation_enabled):
     page1 = {"events": [_sg_event(id=1)], "meta": {"total": 2, "page": 1, "per_page": 1}}
     page2 = {"events": [_sg_event(id=2)], "meta": {"total": 2, "page": 2, "per_page": 1}}
     provider = SeatGeekProvider(

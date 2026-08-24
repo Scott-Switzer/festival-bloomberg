@@ -26,6 +26,8 @@ from festival_bloomberg.research.baselines import (
     spearman,
 )
 from festival_bloomberg.research.experiment import (
+    _bootstrap_group_labels,
+    _cluster_bootstrap_indices,
     evaluate_split,
     model_card,
     shuffled_target_control,
@@ -282,6 +284,23 @@ def test_shuffled_target_control_reports_metrics():
     assert "shuffled_train_target_metric" in out
     # shuffled-target metrics should exist for the statistical models
     assert "log_linear" in out["shuffled_train_target_metric"]
+
+
+def test_cluster_bootstrap_preserves_repeated_cluster_draws():
+    groups = np.asarray(["artist-a", "artist-a", "artist-b"])
+    sampled = np.asarray(["artist-a", "artist-a", "artist-b"])
+    indices = _cluster_bootstrap_indices(groups, sampled)
+    assert indices.tolist() == [0, 1, 0, 1, 2]
+
+
+def test_tour_bootstrap_falls_back_to_artist_identity():
+    items = [
+        {"row": {"tour": "tour-1", "artist": "artist-a"}},
+        {"row": {"tour": None, "artist": "artist-b"}},
+    ]
+    assert _bootstrap_group_labels(items, "tour").tolist() == ["tour-1", "artist-b"]
+    with pytest.raises(ValueError, match="cluster_by"):
+        _bootstrap_group_labels(items, "venue")
 
 
 def test_model_card_marks_prohibited_use():
