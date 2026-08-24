@@ -8,11 +8,18 @@ VENUE_CONFIGURATION_CAPACITY_V2 = PASS
 
 V1 had **0 configuration-specific** claims and **0 workbench-safe prefills**.
 V2 delivered **10 venues** with configuration-specific capacity evidence and
-**9 workbench-safe prefills** — a material, real improvement from free/open
-sources (Wikipedia + Wikidata). OSM contributed 0 capacity claims in this
-bounded pass but was exercised.
+**8 workbench-safe venue-configuration prefills** — a material, real
+improvement from free/open sources (Wikipedia + Wikidata). OSM contributed 0
+capacity claims in this bounded pass but was exercised.
 
 This is a genuine advance over V1's `MAX_PERSONS`-only result.
+
+**Correction vs the initial V2 report:** the earlier claim of *9* safe
+prefills included Madison Square Garden CONCERT 22,000 as safe. Under the
+production reconciliation contract (below) MSG is **review-required**:
+CONCERT 22,000 exceeds the venue's claimed MAX_PERSONS 20,789, which is a
+`CROSS_KIND_CONTRADICTION` and blocks automatic prefill. The corrected safe
+set is the 8 SEATED venues listed in the acceptance table.
 
 ---
 
@@ -75,8 +82,8 @@ claim produced by an earlier parser defect (see below).
 | CONCERT claims | 0 | **1** |
 | SPORTS claims | 0 | **6** (2 venues) |
 | Configuration-specific venues | 0 | **10** |
-| Conflicting claims (coexist) | 5 | 5 |
-| Workbench-safe prefill | 0 | **9** |
+| Blocked claims (conflicts + contradictions) | 5 | **20** |
+| Workbench-safe prefill | 0 | **8** |
 | Wikipedia claims | 0 | **28** |
 | Wikidata claims | 9 | 24 |
 
@@ -85,7 +92,7 @@ claim produced by an earlier parser defect (see below).
 | Venue | Source | Kind | Value | Workbench-safe |
 |---|---|---|---|---|
 | United Center | Wikidata | MAX_PERSONS | 23,500 | Upper bound only |
-| Madison Square Garden | Wikipedia `ubl` | **CONCERT** | **22,000** | ✓ safe (CONCERT) |
+| Madison Square Garden | Wikipedia `ubl` | CONCERT | 22,000 | Review required (`CROSS_KIND_CONTRADICTION`) |
 | Madison Square Garden | Wikipedia `ubl` | SPORTS | 18,006/19,812/20,789 | separate claims |
 | Hollywood Bowl | Wikipedia | **SEATED** | **17,500** | ✓ safe (SEATED) |
 | Mercury Lounge | Wikipedia | **SEATED** | **250** | ✓ safe (SEATED) |
@@ -96,9 +103,55 @@ claim produced by an earlier parser defect (see below).
 | 9:30 Club | Wikidata | MAX_PERSONS | 1,200 | Upper bound only |
 | Grant Park / Zilker / Empire Polo | — | — | — | None |
 
-The outmost value of the ASG example: MSG + Hollywood Bowl + Mercury Lounge
+The outmost value: Hollywood Bowl + Mercury Lounge + the other SEATED venues
 now let a buyer apply a **configuration-compatible** capacity that is a real
 `OBSERVED_PUBLIC` claim rather than a bare `USER_ASSUMPTION`.
+
+## One semantic reconciliation / prefill contract
+
+The V1-style `mark_conflicts` treated *any* two differing `(value, kind)`
+pairs as a conflict, which collapsed legitimate configurations (SEATED 17,500
++ CONCERT 18,000), collapsed SPORTS subtypes, and never caught a
+configuration value that contradicts a claimed maximum. V2 replaces it with
+one deterministic contract — `assess_venue_claims` — used identically by the
+production workbench `capacity_prefill`, acquisition acceptance/reporting
+(`repo.reconcile_capacity_claims`) and tests:
+
+1. Same configuration + same value from different sources -> `CORROBORATED`
+   (rows stay separate; never collapsed).
+2. Same configuration + different values -> `SAME_CONFIGURATION_CONFLICT` /
+   review required; no automatic prefill.
+3. Different explicit configurations (SEATED vs CONCERT) -> **no** conflict
+   solely because values differ.
+4. `MAX_PERSONS` remains upper-bound evidence only; never usable/sellable.
+5. Explicit configuration value above a MAX_PERSONS claim ->
+   `CROSS_KIND_CONTRADICTION` on both claims; automatic prefill blocked.
+6. SPORTS subtypes (basketball, hockey, boxing, ...) are assessed by a
+   normalized subtype key, never collapsed by the broad kind.
+
+Reconciliation mutates only `claim_status`; raw source claims are never
+overwritten or deleted, and the report is regenerated from the persisted
+state (idempotent). The acquisition script's duplicated safe-prefill logic
+was removed — there is no second implementation.
+
+### Real result over the persisted estate (52 claims, 28 venues)
+
+- **8 workbench-safe venue-configuration pairs** (all SEATED): Hollywood Bowl
+  17,500; Mercury Lounge 250; Orpheum Theatre 2,672; Empty Bottle 400;
+  David Geffen Hall 2,200; The Van Buren 1,800; Bowery Ballroom 575;
+  The Fillmore 1,315.
+- **MSG under generic rules**: CONCERT 22,000 -> `CROSS_KIND_CONTRADICTION`
+  (contradicted max 20,789); its 6 Wikidata MAX claims are internally
+  conflicting and (being below CONCERT 22,000) contradicted; SPORTS claims
+  share one `{{ubl}}` description string so their subtypes are not
+  structurally distinguishable in the current parse — the raw text preserves
+  them (`[[Basketball]]: 19,812` etc.), but the structured rows collapse to a
+  same-configuration conflict. MSG = **review required**, nothing prefilled.
+- 6 same-configuration conflict groups (MSG SPORTS, Ball Arena MAX, CFG Bank
+  SPORTS, Auditorio Nacional MAX, Stage AE MAX) + 10 blocked claims;
+  10 cross-kind contradiction claims; 12 corroborated MAX claims
+  (e.g. Red Rocks 9,525 x2 sources).
+- 14 upper-bound-only venues (United Center, Chase Center, ...); 0 unknown.
 
 ## Defects found and fixed during this milestone
 
@@ -129,10 +182,12 @@ three sources:
 > Did Wikipedia/Wikidata/OSM materially reduce the configuration-capacity
 > UNKNOWN problem?
 
-**Yes for Wikipedia + Wikidata.** We now have 9 workbench-safe
-configuration-specific capacity claims from real infoboxes (e.g. MSG concert
-22,000, Hollywood Bowl seated 17,500, Mercury Lounge 250). OSM contributed
-nothing in this bounded pass. Public structured data is **not** the full
+**Yes for Wikipedia + Wikidata.** We now have 8 workbench-safe
+configuration-specific capacity pairs from real infoboxes (Hollywood Bowl
+seated 17,500, Mercury Lounge 250, and six more SEATED venues). MSG concert
+22,000 is real evidence but is correctly **not** prefilled because it
+contradicts the venue's claimed maximum — that is the contract working, not a
+missed claim. OSM contributed nothing in this bounded pass. Public structured data is **not** the full
 answer — the majority of the frozen universe still resolves only to an upper
 bound (`MAX_PERSONS`) or nothing. But for the highest-value arena/theatre
 venues it substantially reduces `USER_ASSUMPTION`.
@@ -156,12 +211,13 @@ improves.
 
 ```
 python/festival_bloomberg/economics/wikipedia_capacity.py   (new — mwparserfromhell parser)
-python/festival_bloomberg/economics/capacity.py             (raw_value + parser_version on claims)
-python/festival_bloomberg/economics/repository.py           (persist new columns)
+python/festival_bloomberg/economics/capacity.py             (raw_value + parser_version; semantic mark_conflicts + assess_venue_claims contract)
+python/festival_bloomberg/economics/repository.py           (persist new columns; reconcile_capacity_claims)
+python/festival_bloomberg/economics/show_economics_product.py (capacity_prefill delegates to the shared contract)
 schema/migrations/035_venue_capacity_claim_metadata_v1.sql  (index-safe ADD COLUMN)
 requirements.txt                                            (mwparserfromhell)
-tests/python/test_venue_capacity_v2.py                      (20 regression tests)
-scripts/venue_capacity_v2_acquisition.py                    (bounded V2 acquisition)
+tests/python/test_venue_capacity_v2.py                      (33 regression tests incl. semantic rules A-J + one-contract test G)
+scripts/venue_capacity_v2_acquisition.py                    (bounded V2 acquisition; reports via shared contract)
 docs/venue-configuration-capacity-v2.md                     (this file)
 docs/project_manifest.yaml                                  (milestone status)
 reports/venue_capacity_v2_report.json                       (machine-readable)

@@ -8,7 +8,7 @@ from typing import Any
 
 from ..acquisition.contracts import utc_now
 from ..migrations import apply_pending_migrations
-from .capacity import CapacityClaim
+from .capacity import CapacityClaim, assess_venue_claims, mark_conflicts
 from .outcome_claims import OutcomeClaim
 from .outcomes import EventOutcome
 from .snapshots import PrimaryTicketSnapshot, SecondaryTicketSnapshot
@@ -237,6 +237,96 @@ class EconomicsRepository:
             params.append(cutoff.isoformat() if isinstance(cutoff, datetime) else str(cutoff))
         sql += " ORDER BY knowledge_time, claim_id"
         return _rows(self.conn.execute(sql, params), self.conn)
+
+    def load_capacity_claims(self, *, venue_id: str | None = None) -> list[CapacityClaim]:
+        """Reconstitute CapacityClaim objects (including v2 metadata columns)."""
+        rows = self.query_capacity_claims(venue_id=venue_id)
+        objects: list[CapacityClaim] = []
+        for row in rows:
+            objects.append(
+                CapacityClaim(
+                    claim_id=row["claim_id"],
+                    canonical_venue_id=row["canonical_venue_id"],
+                    capacity_value=row.get("capacity_value"),
+                    capacity_kind=row["capacity_kind"],
+                    configuration_description=row.get("configuration_description"),
+                    effective_from=row.get("effective_from"),
+                    effective_to=row.get("effective_to"),
+                    provider=row["provider"],
+                    source=row["source"],
+                    source_url=row.get("source_url"),
+                    source_publication_time=row.get("source_publication_time"),
+                    retrieved_at=str(row["retrieved_at"]),
+                    knowledge_time=str(row["knowledge_time"]),
+                    source_observation_id=row.get("source_observation_id"),
+                    claim_status=row["claim_status"],
+                    wikidata_qid=row.get("wikidata_qid"),
+                    wikidata_rank=row.get("wikidata_rank"),
+                    wikidata_unit=row.get("wikidata_unit"),
+                    wikidata_qualifiers_json=row.get("wikidata_qualifiers_json"),
+                    osm_type=row.get("osm_type"),
+                    osm_id=row.get("osm_id"),
+                    osm_tags_json=row.get("osm_tags_json"),
+                    usage_label=row.get("usage_label"),
+                    raw_value=row.get("raw_value"),
+                    parser_version=row.get("parser_version"),
+                )
+            )
+        return objects
+
+    def update_capacity_claim_status(self, claim_id: str, claim_status: str) -> None:
+        self.conn.execute(
+            "UPDATE economics.venue_capacity_claims SET claim_status = ? WHERE claim_id = ?",
+            [claim_status, claim_id],
+        )
+        self.conn.commit()
+
+    def reconcile_capacity_claims(self) -> dict[str, Any]:
+        """Persist semantic reconciliation across all capacity claims.
+
+        Only ``claim_status`` mutates; raw source claims are never deleted or
+        overwritten. Returns the shared venue x configuration assessment (the
+        same contract production ``capacity_prefill`` uses), aggregated across
+        venues.
+        """
+        claims = self.load_capacity_claims()
+        mark_conflicts(claims)
+        for claim in claims:
+            self.update_capacity_claim_status(claim.claim_id, claim.claim_status)
+        by_venue: dict[str, list[CapacityClaim]] = {}
+        for claim in claims:
+            by_venue.setdefault(claim.canonical_venue_id, []).append(claim)
+        assessments = [assess_venue_claims(group) for group in by_venue.values()]
+        safe_pairs: list[dict[str, Any]] = []
+        review_required_pairs: list[dict[str, Any]] = []
+        same_configuration_conflicts: list[dict[str, Any]] = []
+        cross_kind_contradictions: list[dict[str, Any]] = []
+        upper_bound_only: list[str] = []
+        unknown: list[str] = []
+        for assessment in assessments:
+            venue_id = assessment["venue_id"]
+            for pair in assessment["safe_pairs"]:
+                safe_pairs.append({**pair, "venue_id": venue_id})
+            for pair in assessment["review_required_pairs"]:
+                review_required_pairs.append({**pair, "venue_id": venue_id})
+            for conflict in assessment["same_configuration_conflicts"]:
+                same_configuration_conflicts.append({**conflict, "venue_id": venue_id})
+            for contradiction in assessment["cross_kind_contradictions"]:
+                cross_kind_contradictions.append({**contradiction, "venue_id": venue_id})
+            if assessment["status"] == "UPPER_BOUND_ONLY":
+                upper_bound_only.append(venue_id)
+            if assessment["status"] == "UNKNOWN":
+                unknown.append(venue_id)
+        return {
+            "venues_assessed": len(assessments),
+            "safe_pairs": safe_pairs,
+            "venues_with_ge1_safe_pair": sorted({p["venue_id"] for p in safe_pairs}),
+            "review_required_pairs": review_required_pairs,
+            "same_configuration_conflicts": same_configuration_conflicts,
+            "cross_kind_contradictions": cross_kind_contradictions,
+            "upper_bound_only_venues": sorted(upper_bound_only),
+            "unknown_venues": sorted(unknown),
+        }
 
     def query_primary_snapshots(self, *, event_id: str | None = None, cutoff: datetime | str | None = None) -> list[dict[str, Any]]:
         sql = "SELECT * FROM economics.primary_ticket_snapshots WHERE 1=1"

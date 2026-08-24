@@ -291,7 +291,9 @@ def test_capacity_claims_append_only_and_conflicts_preserved(tmp_path):
             for row in stored
         ]
         marked = mark_conflicts(objects)
-        assert {c.claim_status for c in marked} == {"CONFLICTING"}
+        # MAX_PERSONS 23,500 above CONCERT 20,917 is NOT a contradiction; the
+        # configuration value respects the claimed maximum, so no conflict.
+        assert {c.claim_status for c in marked} == {"OBSERVED"}
         with pytest.raises(RuntimeError):
             average_capacity(marked)
         selected = select_applicable_capacity(marked, event_configuration="CONCERT")

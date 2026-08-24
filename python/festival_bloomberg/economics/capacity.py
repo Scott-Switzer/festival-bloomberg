@@ -22,6 +22,19 @@ GA = "GA"
 UNKNOWN = "UNKNOWN"
 UPPER_BOUND = "MAXIMUM_CAPACITY_UPPER_BOUND"
 
+OBSERVED = "OBSERVED"
+CORROBORATED = "CORROBORATED"
+CONFLICTING = "CONFLICTING"  # legacy status; new reconciliation never assigns it
+SAME_CONFIGURATION_CONFLICT = "SAME_CONFIGURATION_CONFLICT"
+CROSS_KIND_CONTRADICTION = "CROSS_KIND_CONTRADICTION"
+
+# Claim statuses that must never be the basis of an automatic prefill.
+BLOCKED_STATUSES = frozenset({CONFLICTING, SAME_CONFIGURATION_CONFLICT, CROSS_KIND_CONTRADICTION})
+
+# Configurations the workbench may offer as usable capacity. SPORTS/GA/MAX
+# are never prefilled: SPORTS subtypes are evidence, not workbench inputs.
+PREFILL_KINDS = (CONCERT, SEATED, STANDING)
+
 
 @dataclass
 class CapacityClaim:
@@ -171,17 +184,195 @@ def claims_from_osm(record: dict[str, Any], *, venue_id: str) -> list[CapacityCl
     return out
 
 
+def _assessment_key(claim: CapacityClaim) -> tuple:
+    """Group key for comparing claims of the same configuration.
+
+    SPORTS subtypes (basketball vs hockey) are distinct configurations and must
+    never be collapsed into false conflicts merely because the broad kind is
+    SPORTS. Every other kind is assessed at the kind level.
+    """
+    if claim.capacity_kind == SPORTS:
+        subtype = (claim.configuration_description or "").strip().lower()
+        return (SPORTS, subtype)
+    return (claim.capacity_kind, None)
+
+
 def mark_conflicts(claims: list[CapacityClaim]) -> list[CapacityClaim]:
+    """Reconcile claims per venue without collapsing legitimate configurations.
+
+    - Different explicit configurations never conflict merely because values
+      differ (SEATED 17,500 + CONCERT 18,000 is not a conflict).
+    - Same configuration with different values -> SAME_CONFIGURATION_CONFLICT.
+    - Same configuration, same value from >=2 evidence rows -> CORROBORATED.
+    - MAX_PERSONS remains upper-bound evidence only.
+    - A configuration-specific value that exceeds a MAX_PERSONS claim ->
+      CROSS_KIND_CONTRADICTION on both claims; automatic prefill is blocked.
+    - SPORTS subtypes (basketball, hockey, boxing, ...) stay distinguishable.
+
+    Raw claims are never deleted or overwritten; only claim_status mutates.
+    """
     by_venue: dict[str, list[CapacityClaim]] = {}
     for claim in claims:
         by_venue.setdefault(claim.canonical_venue_id, []).append(claim)
     for group in by_venue.values():
-        values = {(c.capacity_value, c.capacity_kind) for c in group if c.capacity_value is not None}
-        if len(values) > 1:
-            for claim in group:
-                if claim.claim_status == "OBSERVED":
-                    claim.claim_status = "CONFLICTING"
+        _reconcile_venue_group(group)
     return claims
+
+
+def _reconcile_venue_group(group: list[CapacityClaim]) -> None:
+    """Apply the semantic reconciliation rules to one venue's claims."""
+    # 1. Same-configuration comparison (keyed by kind + SPORTS subtype).
+    by_key: dict[tuple, list[CapacityClaim]] = {}
+    for claim in group:
+        by_key.setdefault(_assessment_key(claim), []).append(claim)
+    for key_group in by_key.values():
+        valued = [c for c in key_group if c.capacity_value is not None]
+        distinct = {c.capacity_value for c in valued}
+        if len(distinct) > 1:
+            for claim in valued:
+                claim.claim_status = SAME_CONFIGURATION_CONFLICT
+        elif len(distinct) == 1 and len(valued) >= 2:
+            for claim in valued:
+                claim.claim_status = CORROBORATED
+
+    # 2. Cross-kind contradiction: an explicit configuration value above a
+    #    MAX_PERSONS claim contradicts the claimed maximum.
+    maxima = [
+        c for c in group
+        if c.capacity_kind == MAX_PERSONS and c.capacity_value is not None
+    ]
+    if not maxima:
+        return
+    for claim in group:
+        if claim.capacity_kind in (MAX_PERSONS, UNKNOWN) or claim.capacity_value is None:
+            continue
+        if any(m.capacity_value < claim.capacity_value for m in maxima):
+            claim.claim_status = CROSS_KIND_CONTRADICTION
+            for m in maxima:
+                if m.capacity_value < claim.capacity_value:
+                    m.claim_status = CROSS_KIND_CONTRADICTION
+
+
+def assess_venue_claims(claims: list[CapacityClaim]) -> dict[str, Any]:
+    """The single deterministic venue x configuration assessment contract.
+
+    Used by production ``capacity_prefill``, acquisition acceptance/reporting
+    and tests. Returns safe pairs, review-required pairs, same-configuration
+    conflicts and cross-kind contradictions without averaging or overwriting
+    any raw claim. A safe pair requires exactly one integral value for the
+    configuration and no blocked statuses on its claims.
+    """
+    claims = list(claims)
+    if not claims:
+        return {
+            "venue_id": None,
+            "status": "UNKNOWN",
+            "safe_pairs": [],
+            "review_required_pairs": [],
+            "same_configuration_conflicts": [],
+            "cross_kind_contradictions": [],
+            "upper_bound_only": False,
+        }
+    venue_id = claims[0].canonical_venue_id
+    mark_conflicts(claims)
+
+    by_key: dict[tuple, list[CapacityClaim]] = {}
+    for claim in claims:
+        by_key.setdefault(_assessment_key(claim), []).append(claim)
+
+    same_configuration_conflicts: list[dict[str, Any]] = []
+    for (kind, subtype), key_group in by_key.items():
+        valued = [c for c in key_group if c.capacity_value is not None]
+        distinct = {c.capacity_value for c in valued}
+        if len(distinct) > 1:
+            same_configuration_conflicts.append(
+                {
+                    "configuration": kind,
+                    "subtype": subtype,
+                    "values": sorted(distinct),
+                    "claim_ids": [c.claim_id for c in valued],
+                }
+            )
+
+    maxima = [
+        c for c in claims
+        if c.capacity_kind == MAX_PERSONS and c.capacity_value is not None
+    ]
+    cross_kind_contradictions: list[dict[str, Any]] = []
+    for claim in claims:
+        if claim.capacity_kind in (MAX_PERSONS, UNKNOWN) or claim.capacity_value is None:
+            continue
+        violated = [m for m in maxima if m.capacity_value < claim.capacity_value]
+        if not violated:
+            continue
+        max_value = max(m.capacity_value for m in violated)
+        cross_kind_contradictions.append(
+            {
+                "configuration": claim.capacity_kind,
+                "value": claim.capacity_value,
+                "contradicted_max_value": max_value,
+                "claim_ids": [claim.claim_id]
+                + [m.claim_id for m in violated if m.capacity_value == max_value],
+            }
+        )
+
+    safe_pairs: list[dict[str, Any]] = []
+    review_required_pairs: list[dict[str, Any]] = []
+    for kind in PREFILL_KINDS:
+        kind_claims = [
+            c for c in claims
+            if c.capacity_kind == kind and c.capacity_value is not None
+        ]
+        if not kind_claims:
+            continue
+        clean = [
+            c for c in kind_claims
+            if c.claim_status not in BLOCKED_STATUSES
+            and float(c.capacity_value).is_integer()
+        ]
+        distinct = {c.capacity_value for c in clean}
+        if len(distinct) == 1 and clean:
+            safe_pairs.append(
+                {
+                    "configuration": kind,
+                    "value": int(clean[0].capacity_value),
+                    "supporting_claim_ids": [c.claim_id for c in clean],
+                }
+            )
+        else:
+            blocked = [c for c in kind_claims if c.claim_status in BLOCKED_STATUSES]
+            reason = (
+                "|".join(sorted({c.claim_status for c in blocked}))
+                if blocked
+                else "REVIEW_REQUIRED"
+            )
+            review_required_pairs.append(
+                {
+                    "configuration": kind,
+                    "values": sorted({c.capacity_value for c in kind_claims}),
+                    "claim_ids": [c.claim_id for c in kind_claims],
+                    "reason": reason,
+                }
+            )
+
+    if safe_pairs:
+        status = "CONFIGURATION_COMPATIBLE"
+    elif same_configuration_conflicts or cross_kind_contradictions or review_required_pairs:
+        status = "REVIEW_REQUIRED"
+    elif maxima:
+        status = "UPPER_BOUND_ONLY"
+    else:
+        status = "UNKNOWN"
+
+    return {
+        "venue_id": venue_id,
+        "status": status,
+        "safe_pairs": safe_pairs,
+        "review_required_pairs": review_required_pairs,
+        "same_configuration_conflicts": same_configuration_conflicts,
+        "cross_kind_contradictions": cross_kind_contradictions,
+        "upper_bound_only": status == "UPPER_BOUND_ONLY",
+    }
 
 
 def average_capacity(claims: list[CapacityClaim]) -> None:
@@ -198,7 +389,11 @@ def select_applicable_capacity(
     if not claims:
         return {"status": "UNKNOWN", "claim_id": None, "capacity_value": None, "usage_label": None}
     wanted = (event_configuration or "").upper()
-    explicit = [c for c in claims if wanted and c.capacity_kind == wanted]
+    explicit = [
+        c for c in claims
+        if wanted and c.capacity_kind == wanted
+        and c.claim_status not in BLOCKED_STATUSES
+    ]
     if explicit:
         return {
             "status": "CONFIGURATION_COMPATIBLE",

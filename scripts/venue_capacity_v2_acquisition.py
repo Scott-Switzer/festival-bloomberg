@@ -31,7 +31,6 @@ from festival_bloomberg.economics.capacity import (
     claim_from_wikidata,
     claim_from_wikipedia_infobox,
     claims_from_osm,
-    mark_conflicts,
 )
 from festival_bloomberg.economics.repository import EconomicsRepository
 from festival_bloomberg.economics.wikipedia_capacity import (
@@ -466,34 +465,21 @@ def run_pipeline(canonical_path: str, *, limit: int | None = None) -> dict:
             [kind],
         ).fetchone()[0]
 
-    def _conflicting_count(conn) -> int:
+    def _blocked_count(conn) -> int:
         return conn.execute(
-            "SELECT count(*) FROM economics.venue_capacity_claims WHERE claim_status = 'CONFLICTING'"
+            "SELECT count(*) FROM economics.venue_capacity_claims "
+            "WHERE claim_status IN "
+            "('CONFLICTING', 'SAME_CONFIGURATION_CONFLICT', 'CROSS_KIND_CONTRADICTION')"
         ).fetchone()[0]
 
-    # Workbench-safe prefill (same contract as capacity_prefill)
-    safe_prefill = 0
-    config_safe: list[str] = []
-    for t in targets:
-        if not t.venue_key:
-            continue
-        rows = conn.execute(
-            """SELECT c.capacity_value, c.capacity_kind, c.claim_status
-               FROM economics.venue_capacity_claims c WHERE c.canonical_venue_id = ?""",
-            [t.venue_key],
-        ).fetchall()
-        compatible = [
-            r for r in rows
-            if r[1] in ("SEATED", "STANDING", "CONCERT") and r[2] != "CONFLICTING"
-        ]
-        distinct = {r[0] for r in compatible if r[0] is not None}
-        integral = all(
-            r[0] is not None and float(r[0]).is_integer()
-            for r in compatible
-        )
-        if len(distinct) == 1 and integral and distinct:
-            safe_prefill += 1
-            config_safe.append(t.venue_name)
+    # One shared reconciliation/prefill contract (same as production
+    # capacity_prefill); persists reconciled claim_status, never overwrites
+    # raw claims.
+    reconciliation = repo.reconcile_capacity_claims()
+    venue_name_by_key = {t.venue_key: t.venue_name for t in targets if t.venue_key}
+
+    def _name(venue_id: str) -> str:
+        return venue_name_by_key.get(venue_id, venue_id)
 
     coverage_after = {
         "claims": after["claims"],
@@ -503,9 +489,36 @@ def run_pipeline(canonical_path: str, *, limit: int | None = None) -> dict:
         "standing_venues": _kind_count(conn, "STANDING"),
         "concert_venues": _kind_count(conn, "CONCERT"),
         "sports_venues": _kind_count(conn, "SPORTS"),
-        "conflicting_claims": _conflicting_count(conn),
-        "workbench_safe_prefill": safe_prefill,
-        "workbench_safe_venues": config_safe,
+        "conflicting_claims": _blocked_count(conn),
+        "workbench_safe_prefill": len(reconciliation["venues_with_ge1_safe_pair"]),
+        "workbench_safe_venues": [
+            _name(v) for v in reconciliation["venues_with_ge1_safe_pair"]
+        ],
+        "reconciliation": {
+            "venues_assessed": reconciliation["venues_assessed"],
+            "safe_pairs": [
+                {**p, "venue_name": _name(p["venue_id"])}
+                for p in reconciliation["safe_pairs"]
+            ],
+            "review_required_pairs": [
+                {**p, "venue_name": _name(p["venue_id"])}
+                for p in reconciliation["review_required_pairs"]
+            ],
+            "same_configuration_conflicts": [
+                {**c, "venue_name": _name(c["venue_id"])}
+                for c in reconciliation["same_configuration_conflicts"]
+            ],
+            "cross_kind_contradictions": [
+                {**c, "venue_name": _name(c["venue_id"])}
+                for c in reconciliation["cross_kind_contradictions"]
+            ],
+            "upper_bound_only_venues": [
+                _name(v) for v in reconciliation["upper_bound_only_venues"]
+            ],
+            "unknown_venues": [
+                _name(v) for v in reconciliation["unknown_venues"]
+            ],
+        },
     }
 
     report = {
