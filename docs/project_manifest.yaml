@@ -45,6 +45,7 @@ milestones:
   DESIGN_PARTNER_DATA_ACTIVATION_V1: "PASS_ONBOARDING_INFRASTRUCTURE (PR #36 merged; one-command isolated partner preview CLI + breadth-gated readiness tiers + synthetic value curves + onboarding package)"
   TERMINAL_SERVING_SNAPSHOT_V1: "PASS (PR #37; real 4.93 GiB canonical -> immutable serving snapshot VERIFIED; 23/23 serving tests + 608 Python + 76 Node; C3 buyer-morning acceptance PASS; concurrent canonical write + N→N+1 generational PASS; terminal zero canonical file handles")
   SHOW_ECONOMICS_WORKBENCH_V1: "PASS_DETERMINISTIC_V1 (Decimal equations + explicit provenance/bases + UNKNOWN propagation + inverse boundaries + sensitivity + workspace replay; no prediction or recommendation)"
+  VENUE_CONFIGURATION_AND_CAPACITY_EVIDENCE_V1: "PARTIAL (5 venues enriched from Wikidata P1083; 9 MAX_PERSONS claims; 0 configuration-specific capacity; workbench-safe prefill = 0; MSG has 5 conflicting claims preserved; Wikipedia infobox + OSM deferred)"
 
 providers:
   # status taxonomy: PUBLIC_NO_AUTH | AUTH_CONFIGURED | AUTH_MISSING |
@@ -88,6 +89,7 @@ docs:
   - terminal-storage-role-audit-v1.md
   - show-economics-workbench-v1-spec.md
   - show-economics-workbench-v1.md
+  - venue-configuration-capacity-evidence-v1.md
 
 key_commands:
   context: "PYTHONPATH=python .venv/bin/python -m festival_bloomberg.ops.context_snapshot"
