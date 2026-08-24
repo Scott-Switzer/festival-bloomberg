@@ -48,6 +48,9 @@ class CapacityClaim:
     osm_id: str | None = None
     osm_tags_json: str | None = None
     usage_label: str | None = None
+    # VCN v2 metadata: complete original source field value + parser identity.
+    raw_value: str | None = None
+    parser_version: str | None = None
 
     def to_row(self) -> dict[str, Any]:
         return self.__dict__.copy()
@@ -93,8 +96,17 @@ def claim_from_wikipedia_infobox(record: dict[str, Any], *, venue_id: str) -> Ca
     if value is None:
         return None
     retrieved = str(record.get("retrieved_at") or "")
+    source_field = record.get("source_field")
+    configuration = record.get("configuration_description")
+    # Prefer the dedicated config description; fall back to the field name.
+    description = configuration or source_field
     payload_hash = content_hash_of(
-        {"page": record.get("page_title"), "field": record.get("source_field"), "value": value}
+        {
+            "page": record.get("page_title"),
+            "field": source_field,
+            "value": value,
+            "raw": record.get("raw_value"),
+        }
     )
     kind = record.get("capacity_kind") or UNKNOWN
     usage = UPPER_BOUND if kind in {MAX_PERSONS, UNKNOWN} else None
@@ -103,19 +115,21 @@ def claim_from_wikipedia_infobox(record: dict[str, Any], *, venue_id: str) -> Ca
         canonical_venue_id=venue_id,
         capacity_value=float(value),
         capacity_kind=kind,
-        configuration_description=record.get("source_field"),
+        configuration_description=description,
         effective_from=None,
         effective_to=None,
         provider="wikipedia_mediawiki_api",
         source="wikipedia_infobox",
         source_url=record.get("source_url"),
-        source_publication_time=None,
+        source_publication_time=record.get("source_revision_time"),
         retrieved_at=retrieved,
         knowledge_time=retrieved,
         source_observation_id=record.get("page_title"),
         claim_status="OBSERVED",
         wikidata_qid=record.get("wikidata_qid"),
         usage_label=usage,
+        raw_value=record.get("raw_value"),
+        parser_version=record.get("parser_version"),
     )
 
 

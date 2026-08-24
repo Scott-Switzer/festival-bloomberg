@@ -35,8 +35,8 @@ class EconomicsRepository:
                  source_url, source_publication_time, retrieved_at, knowledge_time,
                  source_observation_id, claim_status, wikidata_qid, wikidata_rank,
                  wikidata_unit, wikidata_qualifiers_json, osm_type, osm_id, osm_tags_json,
-                 usage_label)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 usage_label, raw_value, parser_version)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 row["claim_id"],
@@ -62,6 +62,8 @@ class EconomicsRepository:
                 row["osm_id"],
                 row["osm_tags_json"],
                 row["usage_label"],
+                row["raw_value"],
+                row["parser_version"],
             ],
         )
         self.conn.commit()
