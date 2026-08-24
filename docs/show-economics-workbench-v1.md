@@ -15,7 +15,8 @@ Every input is a `TypedInput` with one provenance value:
 - `UNKNOWN`
 
 `UNKNOWN` carries no value. Known values cannot carry `UNKNOWN` provenance.
-An optional `evidence_ref` identifies the source without changing the equation.
+Optional `evidence_ref`, `as_of`, and `entered_by` metadata identify the source
+and audit context without changing the equation or provenance class.
 Outputs are `DERIVED` when calculable and retain the leaf input names in their
 lineage. Uncalculable outputs carry a distinct `UNKNOWN`, `NOT_ACHIEVABLE`, or
 `NOT_COMPARABLE` status and no numeric value.
@@ -133,7 +134,10 @@ independent of an unknown input, such as ticket revenue at zero paid tickets.
 `planning.show_economics_scenarios` exists only in the mutable WORKSPACE schema.
 It stores scenario identity, optional planning project identity, currency,
 engine version, lossless inputs with provenance/evidence references, derived
-outputs, and timestamps. Decimal values serialize as strings. Loading the input
+outputs, identity context, parent-scenario lineage, revision number, and
+timestamps. Every save also appends a full replayable row to
+`planning.show_economics_scenario_revisions`, including leaf fields changed
+from the prior revision. Decimal values serialize as strings. Loading the input
 payload reconstructs the domain object for deterministic replay. No analyst
 assumption is written to canonical evidence or a serving snapshot.
 

@@ -555,6 +555,8 @@
         "<button id='scen-build' data-project='" + esc(p.project_key) + "'>Build board from shortlist</button></div>" +
         "<div id='scen-board'></div>" +
         "<div id='scen-list'></div>";
+      html += "<h2>Show economics</h2><p class='sub'>Deterministic underwrites attached to this project. Scenario labels do not imply probability.</p>" +
+        "<div id='econ-list'></div><div id='econ-compare'></div>";
       content.innerHTML = html;
 
       var stAdd = document.getElementById("st-add");
@@ -587,6 +589,7 @@
       loadCandidates(p.project_key);
       loadShortlist(p.project_key);
       loadScenarios(p.project_key);
+      loadEconomicsScenarios(p.project_key);
     });
   }
 
@@ -595,7 +598,7 @@
       var el = document.getElementById("cand-list");
       if (!el) return;
       if (!items || !items.length) { el.innerHTML = '<div class="none">No candidates yet — generate the universe or add artists.</div>'; return; }
-      el.innerHTML = "<table><thead><tr><th>Artist</th><th>Reasons</th><th>Availability</th><th>Shortlist</th></tr></thead><tbody>" +
+      el.innerHTML = "<table><thead><tr><th>Artist</th><th>Reasons</th><th>Availability</th><th>Shortlist</th><th>Economics</th></tr></thead><tbody>" +
         items.map(function (c) {
           var reasons = (c.inclusion_reasons || []).map(function (r) { return '<span class="pill ok">' + esc(r.reason) + "</span>"; }).join(" ");
           var av = String(c.availability_status || "UNKNOWN");
@@ -606,7 +609,8 @@
             "<td>" + (reasons || '<span class="muted">—</span>') + "</td>" +
             "<td><span class='pill " + cls + "'>" + esc(av) + "</span></td>" +
             "<td><select data-cand-sl='" + esc(projectKey) + "' data-key='" + esc(c.artist_key || "") + "' data-name='" + esc(c.artist_name) + "'>" + opts + "</select> " +
-            "<button data-cand-sl-go='" + esc(projectKey) + "'>Add</button></td></tr>";
+            "<button data-cand-sl-go='" + esc(projectKey) + "'>Add</button></td>" +
+            "<td><button data-econ-open='" + esc(projectKey) + "' data-artist='" + esc(c.artist_key || c.artist_name) + "'>Underwrite</button></td></tr>";
         }).join("") + "</tbody></table>";
       el.querySelectorAll("[data-cand-sl-go]").forEach(function (btn) {
         btn.addEventListener("click", function () {
@@ -619,6 +623,12 @@
             .then(function () { loadShortlist(key); });
         });
       });
+      el.querySelectorAll("[data-econ-open]").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          location.hash = "#/build/" + encodeURIComponent(projectKey) + "/economics/" +
+            encodeURIComponent(btn.getAttribute("data-artist"));
+        });
+      });
     });
   }
 
@@ -628,14 +638,15 @@
       if (!el) return;
       var statuses = ["DISCOVERED", "RESEARCHING", "INTEREST", "HOLD", "CONTACTED", "PASSED", "SHORTLIST", "UNKNOWN"];
       if (!items || !items.length) { el.innerHTML = '<div class="none">Shortlist empty — set a status from the candidate list or add directly.</div>'; return; }
-      el.innerHTML = "<table><thead><tr><th>Artist</th><th>Status</th><th>Day</th><th>Stage</th><th>Billing</th></tr></thead><tbody>" +
+      el.innerHTML = "<table><thead><tr><th>Artist</th><th>Status</th><th>Day</th><th>Stage</th><th>Billing</th><th>Economics</th></tr></thead><tbody>" +
         items.map(function (s) {
           var opts = statuses.map(function (st) {
             return '<option value="' + st + '"' + (s.status === st ? " selected" : "") + ">" + st + "</option>";
           }).join("");
           return "<tr><td>" + esc(s.artist_name) + "</td>" +
             "<td><select data-sl-status='" + esc(projectKey) + "' data-key='" + esc(s.artist_key || "") + "' data-name='" + esc(s.artist_name) + "'>" + opts + "</select></td>" +
-            "<td>" + fmt(s.candidate_day) + "</td><td>" + fmt(s.candidate_stage) + "</td><td>" + fmt(s.candidate_billing_tier) + "</td></tr>";
+            "<td>" + fmt(s.candidate_day) + "</td><td>" + fmt(s.candidate_stage) + "</td><td>" + fmt(s.candidate_billing_tier) + "</td>" +
+            "<td><button data-econ-open='" + esc(projectKey) + "' data-artist='" + esc(s.artist_key || s.artist_name) + "'>Underwrite</button></td></tr>";
         }).join("") + "</tbody></table>";
       el.querySelectorAll("[data-sl-status]").forEach(function (sel) {
         sel.addEventListener("change", function () {
@@ -644,6 +655,12 @@
               artist_key: sel.getAttribute("data-key") || null,
               artist_name: sel.getAttribute("data-name"), status: sel.value }) })
             .then(function () { loadShortlist(projectKey); });
+        });
+      });
+      el.querySelectorAll("[data-econ-open]").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          location.hash = "#/build/" + encodeURIComponent(projectKey) + "/economics/" +
+            encodeURIComponent(btn.getAttribute("data-artist"));
         });
       });
     });
@@ -702,6 +719,364 @@
             loadScenarios(projectKey);
           });
       });
+    });
+  }
+
+  /* ---- BUILD / show economics --------------------------------------- */
+
+  function unknownInput() {
+    return { value: null, provenance: "UNKNOWN", evidence_ref: null, as_of: null, entered_by: null };
+  }
+
+  function assumptionInput(value) {
+    return { value: value, provenance: "USER_ASSUMPTION", evidence_ref: null, as_of: null, entered_by: null };
+  }
+
+  function defaultEconomicsInputs() {
+    return {
+      currency: assumptionInput("USD"),
+      usable_capacity: unknownInput(),
+      sellable_capacity: unknownInput(),
+      ticket_scale: [{ name: "Scenario / GA", price: unknownInput(), quantity: unknownInput() }],
+      sell_through: unknownInput(),
+      ticketing_deduction_per_paid_ticket: unknownInput(),
+      tax_rate_on_gross: unknownInput(),
+      deal: {
+        deal_type: assumptionInput("FLAT_GUARANTEE"), guarantee: unknownInput(),
+        backend_percentage: unknownInput(), backend_basis: unknownInput(),
+        artist_expenses: unknownInput(), approved_expense_names: unknownInput(),
+      },
+      costs: {
+        marketing: unknownInput(), production: unknownInput(), venue: unknownInput(),
+        labor: unknownInput(), insurance: unknownInput(), other: unknownInput(),
+      },
+      ancillary_revenue: unknownInput(), sponsorship_allocation: unknownInput(),
+    };
+  }
+
+  function provenanceOptions(selected) {
+    return ["USER_ASSUMPTION", "OBSERVED_PUBLIC", "OBSERVED_PRIVATE", "UNKNOWN"].map(function (value) {
+      return '<option value="' + value + '"' + (selected === value ? " selected" : "") + ">" + value + "</option>";
+    }).join("");
+  }
+
+  function econTypedField(id, label, item, type, choices) {
+    item = item || unknownInput();
+    var value = item.value == null ? "" : item.value;
+    var input;
+    if (choices) {
+      input = '<select id="' + id + '"><option value="">UNKNOWN</option>' + choices.map(function (choice) {
+        return '<option value="' + esc(choice) + '"' + (String(value) === choice ? " selected" : "") + ">" + esc(choice) + "</option>";
+      }).join("") + "</select>";
+    } else {
+      input = '<input id="' + id + '" type="' + (type === "date" ? "date" : type === "text" || type === "tuple" ? "text" : "number") + '"' +
+        (type === "decimal" ? ' step="any"' : "") + ' value="' + esc(value) + '" placeholder="UNKNOWN" />';
+    }
+    return '<div class="econ-field"><label for="' + id + '">' + esc(label) + "</label>" + input +
+      '<select id="' + id + '-prov" class="prov prov-' + esc(item.provenance) + '">' + provenanceOptions(item.provenance) + "</select>" +
+      '<details><summary>Evidence / audit</summary><input id="' + id + '-evidence" value="' + esc(item.evidence_ref || "") + '" placeholder="source or evidence reference" />' +
+      '<input id="' + id + '-asof" value="' + esc(item.as_of || "") + '" placeholder="as-of time" />' +
+      '<input id="' + id + '-entered" value="' + esc(item.entered_by || "") + '" placeholder="entered by" /></details></div>';
+  }
+
+  function readEconTyped(id, type) {
+    var provenance = document.getElementById(id + "-prov").value;
+    var raw = document.getElementById(id).value.trim();
+    var evidence = document.getElementById(id + "-evidence").value.trim() || null;
+    var asOf = document.getElementById(id + "-asof").value.trim() || null;
+    var entered = document.getElementById(id + "-entered").value.trim() || null;
+    if (provenance === "UNKNOWN" || raw === "") {
+      return { value: null, provenance: "UNKNOWN", evidence_ref: evidence, as_of: asOf, entered_by: entered };
+    }
+    var value = type === "int" ? Number(raw) : type === "tuple" ? raw.split(",").map(function (x) { return x.trim(); }).filter(Boolean) : raw;
+    return { value: value, provenance: provenance, evidence_ref: evidence, as_of: asOf, entered_by: entered };
+  }
+
+  function tierRowHtml(index, tier) {
+    tier = tier || { name: "Tier " + (index + 1), price: unknownInput(), quantity: unknownInput() };
+    return '<tr data-tier-row="' + index + '"><td><input id="econ-tier-name-' + index + '" value="' + esc(tier.name) + '" /></td>' +
+      '<td>' + econTypedField("econ-tier-price-" + index, "Face price", tier.price, "decimal") + "</td>" +
+      '<td>' + econTypedField("econ-tier-qty-" + index, "Sellable inventory", tier.quantity, "int") + "</td>" +
+      '<td><button data-tier-remove="' + index + '">Remove</button></td></tr>';
+  }
+
+  function bindProvenanceControls(root) {
+    root.querySelectorAll("select.prov").forEach(function (select) {
+      function refresh() {
+        select.className = "prov prov-" + select.value;
+        var valueInput = document.getElementById(select.id.replace(/-prov$/, ""));
+        if (select.value === "UNKNOWN") valueInput.value = "";
+      }
+      select.addEventListener("change", refresh);
+      refresh();
+    });
+  }
+
+  function readEconomicsInputs() {
+    var tiers = Array.prototype.slice.call(document.querySelectorAll("tr[data-tier-row]")).map(function (tr) {
+      var index = tr.getAttribute("data-tier-row");
+      return {
+        name: document.getElementById("econ-tier-name-" + index).value.trim() || "Unnamed tier",
+        price: readEconTyped("econ-tier-price-" + index, "decimal"),
+        quantity: readEconTyped("econ-tier-qty-" + index, "int"),
+      };
+    });
+    return {
+      currency: readEconTyped("econ-currency", "text"),
+      usable_capacity: readEconTyped("econ-usable", "int"),
+      sellable_capacity: readEconTyped("econ-sellable", "int"),
+      ticket_scale: tiers,
+      sell_through: readEconTyped("econ-sellthrough", "decimal"),
+      ticketing_deduction_per_paid_ticket: readEconTyped("econ-ticket-deduction", "decimal"),
+      tax_rate_on_gross: readEconTyped("econ-tax", "decimal"),
+      deal: {
+        deal_type: readEconTyped("econ-deal-type", "text"),
+        guarantee: readEconTyped("econ-guarantee", "decimal"),
+        backend_percentage: readEconTyped("econ-backend-pct", "decimal"),
+        backend_basis: readEconTyped("econ-backend-basis", "text"),
+        artist_expenses: readEconTyped("econ-artist-expenses", "decimal"),
+        approved_expense_names: readEconTyped("econ-approved-expenses", "tuple"),
+      },
+      costs: {
+        venue: readEconTyped("econ-cost-venue", "decimal"),
+        production: readEconTyped("econ-cost-production", "decimal"),
+        labor: readEconTyped("econ-cost-labor", "decimal"),
+        marketing: readEconTyped("econ-cost-marketing", "decimal"),
+        insurance: readEconTyped("econ-cost-insurance", "decimal"),
+        other: readEconTyped("econ-cost-other", "decimal"),
+      },
+      ancillary_revenue: readEconTyped("econ-ancillary", "decimal"),
+      sponsorship_allocation: readEconTyped("econ-sponsorship", "decimal"),
+    };
+  }
+
+  function readEconomicsContext(project, artist) {
+    function value(id) { return document.getElementById(id).value.trim() || null; }
+    return {
+      project_key: project.project_key, project_name: project.name,
+      artist_key: artist.artist_key || null, artist_name: value("econ-artist"),
+      venue: value("econ-venue"), market: value("econ-market"),
+      event_date: value("econ-date"), event_configuration: value("econ-configuration"),
+      holds: value("econ-holds"), kills: value("econ-kills"), comps: value("econ-comps"),
+      offer_created_at: value("econ-offer-created"),
+    };
+  }
+
+  function numericValue(id) {
+    var node = document.getElementById(id);
+    if (!node || node.value.trim() === "") return null;
+    var value = Number(node.value);
+    return Number.isFinite(value) ? value : null;
+  }
+
+  function whatIfPayload() {
+    var axis = document.getElementById("econ-axis").value;
+    var current = {
+      sell_through: numericValue("econ-sellthrough"),
+      average_ticket_price: numericValue("econ-tier-price-0"),
+      artist_guarantee: numericValue("econ-guarantee"),
+      sellable_capacity: numericValue("econ-sellable"),
+      production_cost: numericValue("econ-cost-production"),
+      marketing_cost: numericValue("econ-cost-marketing"),
+    };
+    var base = current[axis];
+    var sensitivities = {};
+    if (axis === "sell_through") sensitivities[axis] = ["0.60", "0.70", "0.80", "0.90", "1.00"];
+    else if (base != null) sensitivities[axis] = [base * 0.8, base, base * 1.2].map(function (v) {
+      return axis === "sellable_capacity" ? Math.floor(v) : v.toFixed(2);
+    });
+    var price = current.average_ticket_price;
+    var capacity = current.sellable_capacity;
+    var boundary = null;
+    if (price != null && capacity != null) {
+      boundary = {
+        average_ticket_prices: [(price * 0.8).toFixed(2), price.toFixed(2), (price * 1.2).toFixed(2)],
+        sellable_capacities: [capacity], sell_throughs: ["0.60", "0.70", "0.80", "0.90", "1.00"],
+        minimum_contribution: document.getElementById("econ-hurdle").value || "0",
+      };
+    }
+    return { sensitivities: sensitivities, boundary: boundary };
+  }
+
+  function outputDisplay(output) {
+    if (!output || output.status !== "KNOWN") {
+      var reason = output && output.reason ? " · " + esc(output.reason) : "";
+      var missing = output && output.lineage ? " · inputs: " + esc(output.lineage.join(", ")) : "";
+      return '<span class="unknown">' + esc(output ? output.status : "UNKNOWN") + "</span><span class='muted'>" + reason + missing + "</span>";
+    }
+    return '<span class="econ-value">' + esc(output.value) + (output.currency ? " " + esc(output.currency) : "") +
+      '</span> <span class="pill prov-DERIVED">DERIVED</span>';
+  }
+
+  function renderEconomicsResult(result) {
+    var el = document.getElementById("econ-results");
+    if (!el) return;
+    if (!result || result.error) {
+      el.innerHTML = '<div class="error-line">' + esc((result && result.error) || "Calculation failed") + "</div>";
+      return;
+    }
+    var outputs = result.evaluation.outputs;
+    var core = [
+      ["Gross Potential", "gross_potential"], ["Realized / Scenario Gross", "gross_ticket_revenue"],
+      ["Artist Settlement", "artist_settlement"], ["Total Event Costs", "total_event_costs"],
+      ["Promoter Contribution", "promoter_contribution"], ["Promoter Margin", "promoter_margin"],
+    ];
+    var reverse = [
+      ["Break-even Tickets", "break_even_paid_tickets"], ["Break-even Sell-through", "break_even_sell_through"],
+      ["Break-even ATP / Price", "break_even_average_ticket_price"], ["Break-even Sellable Capacity", "break_even_sellable_capacity"],
+      ["Margin of Safety (tickets)", "margin_of_safety_tickets"], ["Artist Settlement Ceiling", "maximum_artist_settlement_at_break_even"],
+      ["Flat Guarantee Ceiling", "maximum_flat_guarantee_at_break_even"], ["Additional Cost Headroom", "additional_cost_capacity"],
+    ];
+    function cards(items) {
+      return '<div class="grid">' + items.map(function (item) {
+        return '<div class="card"><h3>' + esc(item[0]) + "</h3>" + outputDisplay(outputs[item[1]]) + "</div>";
+      }).join("") + "</div>";
+    }
+    var html = "<h2>Scenario economics</h2>" + cards(core) +
+      '<h2>Break-even boundaries <span class="pill warn">SCENARIO BOUNDARY</span></h2>' + cards(reverse);
+    var sensitivityRows = [];
+    Object.keys(result.sensitivities || {}).forEach(function (axis) {
+      result.sensitivities[axis].forEach(function (point) {
+        sensitivityRows.push(row([esc(axis), esc(point.input), outputDisplay(point.promoter_contribution), outputDisplay(point.promoter_margin)]));
+      });
+    });
+    html += "<h2>Sensitivity</h2><p class='sub'>WHAT-IF EQUATIONS — not probabilities or forecasts.</p>" +
+      (sensitivityRows.length ? "<table><thead><tr><th>Axis</th><th>Input</th><th>Contribution</th><th>Margin</th></tr></thead><tbody>" + sensitivityRows.join("") + "</tbody></table>" : '<div class="none">Enter the selected axis to calculate a sensitivity table.</div>');
+    if (result.boundaries && result.boundaries.length) {
+      html += "<h2>Price × sell-through hurdle table</h2><table><thead><tr><th>ATP</th><th>Capacity</th><th>Sell-through</th><th>Paid tickets</th><th>Contribution</th><th>Meets hurdle</th></tr></thead><tbody>" +
+        result.boundaries.map(function (point) {
+          return row([esc(point.average_ticket_price), esc(point.sellable_capacity), esc(point.sell_through), esc(point.paid_tickets), outputDisplay(point.promoter_contribution), point.meets_hurdle == null ? "UNKNOWN" : point.meets_hurdle ? "YES" : "NO"]);
+        }).join("") + "</tbody></table>";
+    }
+    el.innerHTML = html;
+  }
+
+  function loadEconomicsScenarios(projectKey) {
+    api("/api/planning/projects/" + encodeURIComponent(projectKey) + "/economics").then(function (items) {
+      var el = document.getElementById("econ-list");
+      if (!el) return;
+      if (!items || !items.length) {
+        el.innerHTML = '<div class="none">No economics scenarios yet. Open a candidate and choose Underwrite.</div>';
+        return;
+      }
+      el.innerHTML = "<table><thead><tr><th>Compare</th><th>Scenario</th><th>Artist / venue</th><th>Currency</th><th>Revision</th><th>Saved</th></tr></thead><tbody>" +
+        items.map(function (item) {
+          var ctx = item.identity_context || {};
+          var href = "#/build/" + encodeURIComponent(projectKey) + "/economics/" + encodeURIComponent(ctx.artist_key || ctx.artist_name || "booking-case") + "/" + encodeURIComponent(item.scenario_key);
+          return row(['<input type="checkbox" data-econ-compare="' + esc(item.scenario_key) + '" />', '<a href="' + href + '">' + esc(item.name) + "</a>", esc((ctx.artist_name || "UNKNOWN") + " / " + (ctx.venue || "UNKNOWN")), fmt(item.currency), esc(item.revision_no), fmt(item.updated_at)]);
+        }).join("") + "</tbody></table><button id='econ-compare-go'>Compare selected (2–4)</button>";
+      document.getElementById("econ-compare-go").addEventListener("click", function () {
+        var keys = Array.prototype.slice.call(document.querySelectorAll("[data-econ-compare]:checked")).map(function (node) { return node.getAttribute("data-econ-compare"); });
+        var out = document.getElementById("econ-compare");
+        if (keys.length < 2 || keys.length > 4) { out.innerHTML = '<div class="error-line">Select two to four scenarios.</div>'; return; }
+        api("/api/planning/projects/" + encodeURIComponent(projectKey) + "/economics/compare", { method: "POST", body: JSON.stringify({ scenario_keys: keys }) }).then(function (comparison) {
+          if (comparison.error) { out.innerHTML = '<div class="error-line">' + esc(comparison.error) + "</div>"; return; }
+          var useful = ["sellable_capacity", "weighted_average_ticket_price", "sell_through", "artist_guarantee", "total_event_costs", "gross_ticket_revenue", "artist_settlement", "promoter_contribution", "promoter_margin", "break_even_sell_through", "additional_cost_capacity"];
+          var rows = (comparison.rows || []).filter(function (r) { return useful.indexOf(r.metric) >= 0; });
+          out.innerHTML = "<h3>Scenario comparison</h3><p class='sub'>Differences from the first selected scenario. No ranking or winner.</p><table><thead><tr><th>Metric</th>" +
+            comparison.scenarios.map(function (s) { return "<th>" + esc(s.name) + "</th>"; }).join("") + "</tr></thead><tbody>" +
+            rows.map(function (r) { return "<tr><td>" + esc(r.metric) + "</td>" + r.values.map(function (v) { return "<td>" + (v.status === "KNOWN" ? esc(v.value) + (v.delta_from_baseline != null ? " Δ " + esc(v.delta_from_baseline) : "") : '<span class="unknown">' + esc(v.status) + "</span>") + "</td>"; }).join("") + "</tr>"; }).join("") + "</tbody></table>";
+        });
+      });
+    });
+  }
+
+  function viewEconomics(projectKey, artistId, scenarioKey) {
+    setNav("build");
+    var requests = [
+      api("/api/planning/projects/" + encodeURIComponent(projectKey)),
+      api("/api/planning/projects/" + encodeURIComponent(projectKey) + "/candidates"),
+    ];
+    if (scenarioKey) requests.push(api("/api/planning/economics/" + encodeURIComponent(scenarioKey)));
+    Promise.all(requests).then(function (values) {
+      var project = values[0];
+      var candidates = values[1] || [];
+      var saved = values[2] || null;
+      var artist = candidates.filter(function (c) { return String(c.artist_key || c.artist_name) === artistId; })[0] || {
+        artist_key: saved && saved.identity_context.artist_key || null,
+        artist_name: saved && saved.identity_context.artist_name || artistId,
+      };
+      var context = saved ? saved.identity_context || {} : {};
+      var inputs = saved ? saved.inputs : defaultEconomicsInputs();
+      var html = '<p><a href="#/build/' + encodeURIComponent(projectKey) + '">← ' + esc(project.name) + "</a></p>" +
+        "<h1>SHOW ECONOMICS</h1><p class='sub'>Interactive deterministic underwrite. This is not a forecast, recommendation, or probability model.</p>" +
+        '<div class="panel econ-actions"><label>Scenario name <input id="econ-name" value="' + esc(saved ? saved.name : "BASE") + '" /></label> ' +
+        '<button id="econ-calculate">Calculate</button> <button id="econ-save">Save</button> ' +
+        (saved ? '<button id="econ-duplicate">Duplicate</button> <span class="pill">revision ' + esc(saved.revision_no) + " · " + esc(saved.engine_version) + "</span>" : "") +
+        '<span id="econ-message"></span></div>' +
+        "<h2>Identity / context</h2><p class='sub'>Context identifies the booking case; it does not imply economics.</p>" +
+        '<div class="econ-grid"><div class="econ-field"><label>Artist</label><input id="econ-artist" value="' + esc(context.artist_name || artist.artist_name) + '" /></div>' +
+        '<div class="econ-field"><label>Venue</label><input id="econ-venue" value="' + esc(context.venue || project.venue_site || "") + '" placeholder="UNKNOWN" /></div>' +
+        '<div class="econ-field"><label>Market</label><input id="econ-market" value="' + esc(context.market || project.market || project.city || "") + '" placeholder="UNKNOWN" /></div>' +
+        '<div class="econ-field"><label>Event date</label><input id="econ-date" type="date" value="' + esc(context.event_date || project.start_date || "") + '" /></div>' +
+        '<div class="econ-field"><label>Event configuration</label><select id="econ-configuration"><option value="">UNKNOWN</option>' + ["CONCERT", "SEATED", "STANDING", "GA", "SPORTS"].map(function (v) { return '<option' + (context.event_configuration === v ? " selected" : "") + ">" + v + "</option>"; }).join("") + "</select></div>" +
+        '<div class="econ-field"><label>Offer created at</label><input id="econ-offer-created" value="' + esc(context.offer_created_at || "") + '" placeholder="UNKNOWN" /></div></div>' +
+        "<h2>Inventory</h2><div class='econ-grid'>" + econTypedField("econ-usable", "Usable capacity", inputs.usable_capacity, "int") + econTypedField("econ-sellable", "Sellable capacity", inputs.sellable_capacity, "int") +
+        '<div class="econ-field unsupported"><label>Holds</label><input id="econ-holds" value="' + esc(context.holds || "") + '" placeholder="UNKNOWN" /><span class="pill off">SCHEMA READY · NOT CALCULATED</span></div>' +
+        '<div class="econ-field unsupported"><label>Kills</label><input id="econ-kills" value="' + esc(context.kills || "") + '" placeholder="UNKNOWN" /><span class="pill off">SCHEMA READY · NOT CALCULATED</span></div>' +
+        '<div class="econ-field unsupported"><label>Comps</label><input id="econ-comps" value="' + esc(context.comps || "") + '" placeholder="UNKNOWN" /><span class="pill off">SCHEMA READY · NOT CALCULATED</span></div></div>' +
+        '<div class="panel"><button id="econ-prefill">Inspect compatible public capacity claims</button><div id="econ-prefill-result"></div></div>' +
+        "<h2>Tickets</h2><p class='sub'>Tier prices and quantities are supported. Tier quantities must sum to sellable capacity. Paid tickets are derived from sellable capacity × assumed sell-through; explicit paid-ticket override is NOT_SUPPORTED_IN_V1.</p>" +
+        '<table><thead><tr><th>Tier</th><th>Face price</th><th>Sellable inventory</th><th></th></tr></thead><tbody id="econ-tiers">' + inputs.ticket_scale.map(function (tier, i) { return tierRowHtml(i, tier); }).join("") + "</tbody></table><button id='econ-tier-add'>Add tier</button>" +
+        '<div class="econ-grid">' + econTypedField("econ-sellthrough", "Assumed sell-through (0–1)", inputs.sell_through, "decimal") + econTypedField("econ-ticket-deduction", "Ticketing deduction / paid ticket", inputs.ticketing_deduction_per_paid_ticket, "decimal") + econTypedField("econ-tax", "Tax rate on gross (0–1)", inputs.tax_rate_on_gross, "decimal") + econTypedField("econ-currency", "Currency (ISO)", inputs.currency, "text") + "</div>" +
+        "<h2>Artist deal</h2><div class='econ-grid'>" + econTypedField("econ-deal-type", "Deal type", inputs.deal.deal_type, "text", ["FLAT_GUARANTEE", "GUARANTEE_VS_PERCENTAGE", "PERCENTAGE_OF_DEFINED_BASE"]) + econTypedField("econ-guarantee", "Guarantee", inputs.deal.guarantee, "decimal") + econTypedField("econ-backend-pct", "Backend percentage (0–1)", inputs.deal.backend_percentage, "decimal") + econTypedField("econ-backend-basis", "Backend basis", inputs.deal.backend_basis, "text", ["GROSS_BOX_OFFICE", "ADJUSTED_GROSS", "NET_AFTER_APPROVED_EXPENSES"]) + econTypedField("econ-approved-expenses", "Approved expenses (comma-separated cost names)", inputs.deal.approved_expense_names, "tuple") + econTypedField("econ-artist-expenses", "Artist expenses", inputs.deal.artist_expenses, "decimal") + "</div><p class='sub'>Percentage deals require an explicit visible backend basis. Net-after-expenses also requires explicit approved cost names.</p>" +
+        "<h2>Costs</h2><div class='econ-grid'>" + econTypedField("econ-cost-venue", "Venue", inputs.costs.venue, "decimal") + econTypedField("econ-cost-production", "Production", inputs.costs.production, "decimal") + econTypedField("econ-cost-labor", "Labor", inputs.costs.labor, "decimal") + econTypedField("econ-cost-marketing", "Marketing", inputs.costs.marketing, "decimal") + econTypedField("econ-cost-insurance", "Insurance", inputs.costs.insurance, "decimal") + econTypedField("econ-cost-other", "Other", inputs.costs.other, "decimal") + "</div>" +
+        "<h2>Other revenues</h2><div class='econ-grid'>" + econTypedField("econ-ancillary", "Ancillary revenue", inputs.ancillary_revenue, "decimal") + econTypedField("econ-sponsorship", "Sponsorship allocation", inputs.sponsorship_allocation, "decimal") + "</div>" +
+        "<h2>What-if controls</h2><div class='panel'><label>Axis <select id='econ-axis'><option value='sell_through'>Sell-through</option><option value='average_ticket_price'>Ticket price</option><option value='artist_guarantee'>Artist guarantee</option><option value='sellable_capacity'>Sellable capacity</option><option value='production_cost'>Production cost</option><option value='marketing_cost'>Marketing cost</option></select></label> <label>Contribution hurdle <input id='econ-hurdle' type='number' step='any' value='0' /></label></div>" +
+        '<div id="econ-results"></div>';
+      content.innerHTML = html;
+      bindProvenanceControls(content);
+      var tierCounter = inputs.ticket_scale.length;
+      function bindTierRemoves() {
+        document.querySelectorAll("[data-tier-remove]").forEach(function (button) {
+          button.onclick = function () { if (document.querySelectorAll("tr[data-tier-row]").length > 1) button.closest("tr").remove(); };
+        });
+        bindProvenanceControls(document.getElementById("econ-tiers"));
+      }
+      bindTierRemoves();
+      document.getElementById("econ-tier-add").onclick = function () {
+        document.getElementById("econ-tiers").insertAdjacentHTML("beforeend", tierRowHtml(tierCounter, null));
+        tierCounter += 1; bindTierRemoves();
+      };
+      function calculate() {
+        var whatIf = whatIfPayload();
+        return api("/api/planning/projects/" + encodeURIComponent(projectKey) + "/economics/calculate", { method: "POST", body: JSON.stringify({ inputs: readEconomicsInputs(), sensitivities: whatIf.sensitivities, boundary: whatIf.boundary }) }).then(function (result) { renderEconomicsResult(result); return result; });
+      }
+      document.getElementById("econ-calculate").onclick = calculate;
+      document.getElementById("econ-save").onclick = function () {
+        api("/api/planning/projects/" + encodeURIComponent(projectKey) + "/economics", { method: "POST", body: JSON.stringify({ name: document.getElementById("econ-name").value.trim(), scenario_key: saved ? saved.scenario_key : null, inputs: readEconomicsInputs(), identity_context: readEconomicsContext(project, artist) }) }).then(function (record) {
+          if (record.error) { document.getElementById("econ-message").innerHTML = '<span class="error-line">' + esc(record.error) + "</span>"; return; }
+          location.hash = "#/build/" + encodeURIComponent(projectKey) + "/economics/" + encodeURIComponent(artistId) + "/" + encodeURIComponent(record.scenario_key);
+          viewEconomics(projectKey, artistId, record.scenario_key);
+        });
+      };
+      if (saved) document.getElementById("econ-duplicate").onclick = function () {
+        var name = document.getElementById("econ-name").value.trim() + " copy";
+        api("/api/planning/economics/" + encodeURIComponent(saved.scenario_key) + "/duplicate", { method: "POST", body: JSON.stringify({ name: name }) }).then(function (record) {
+          if (!record.error) location.hash = "#/build/" + encodeURIComponent(projectKey) + "/economics/" + encodeURIComponent(artistId) + "/" + encodeURIComponent(record.scenario_key);
+        });
+      };
+      document.getElementById("econ-prefill").onclick = function () {
+        var venue = document.getElementById("econ-venue").value.trim();
+        var configuration = document.getElementById("econ-configuration").value;
+        var target = document.getElementById("econ-prefill-result");
+        if (!venue) { target.innerHTML = '<div class="error-line">Enter a venue identity first.</div>'; return; }
+        api("/api/planning/projects/" + encodeURIComponent(projectKey) + "/economics/prefill?venue=" + encodeURIComponent(venue) + "&configuration=" + encodeURIComponent(configuration)).then(function (prefill) {
+          var claims = prefill.claims || [];
+          target.innerHTML = '<p class="sub">' + esc(prefill.status) + ". Claims remain separate; maximum capacity is never copied into sellable capacity.</p>" +
+            (prefill.usable_capacity_suggestion ? '<button id="econ-use-capacity">Use compatible claim as OBSERVED_PUBLIC usable capacity</button>' : "") +
+            (claims.length ? "<table><thead><tr><th>Value</th><th>Type</th><th>Status</th><th>Source</th><th>As of</th></tr></thead><tbody>" + claims.map(function (claim) { return row([fmt(claim.capacity), fmt(claim.capacity_type), fmt(claim.claim_status), claim.source_url ? '<a target="_blank" rel="noopener" href="' + esc(claim.source_url) + '">' + esc(claim.source_provider) + "</a>" : fmt(claim.source_provider), fmt(claim.knowledge_time)]); }).join("") + "</tbody></table>" : '<div class="none">No stored public capacity claims. Enter a clearly marked user assumption if appropriate.</div>');
+          if (prefill.usable_capacity_suggestion) document.getElementById("econ-use-capacity").onclick = function () {
+            var suggestion = prefill.usable_capacity_suggestion;
+            document.getElementById("econ-usable").value = suggestion.value;
+            document.getElementById("econ-usable-prov").value = "OBSERVED_PUBLIC";
+            document.getElementById("econ-usable-evidence").value = suggestion.evidence_ref || "";
+            document.getElementById("econ-usable-asof").value = suggestion.as_of || "";
+            document.getElementById("econ-usable-prov").dispatchEvent(new Event("change"));
+          };
+        });
+      };
+      if (saved) calculate();
     });
   }
 
@@ -936,6 +1311,9 @@
     if (view === "markets" && id) return viewMarket(decodeURIComponent(id));
     if (view === "festivals" && id) return viewFestival(decodeURIComponent(id));
     if (view === "tours" && id) return viewTour(decodeURIComponent(id));
+    if (view === "build" && id && parts[2] === "economics" && parts[3]) {
+      return viewEconomics(decodeURIComponent(id), decodeURIComponent(parts[3]), parts[4] ? decodeURIComponent(parts[4]) : null);
+    }
     if (view === "build" && id) return viewBuildProject(decodeURIComponent(id));
     if (VIEWS[view]) return VIEWS[view]();
     return viewTape();

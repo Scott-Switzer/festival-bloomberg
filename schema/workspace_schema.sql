@@ -163,11 +163,40 @@ CREATE TABLE IF NOT EXISTS planning.show_economics_scenarios (
     engine_version      VARCHAR NOT NULL,
     inputs              JSON NOT NULL,
     derived_outputs     JSON NOT NULL,
+    identity_context    JSON,
+    parent_scenario_key VARCHAR,
+    revision_no         INTEGER NOT NULL DEFAULT 0,
     created_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+ALTER TABLE planning.show_economics_scenarios
+  ADD COLUMN IF NOT EXISTS identity_context JSON;
+ALTER TABLE planning.show_economics_scenarios
+  ADD COLUMN IF NOT EXISTS parent_scenario_key VARCHAR;
+ALTER TABLE planning.show_economics_scenarios
+  ADD COLUMN IF NOT EXISTS revision_no INTEGER DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_show_economics_project
   ON planning.show_economics_scenarios (project_key);
+
+-- Append-only audit history.  Each save creates one replayable revision while
+-- the scenarios table above remains the current-state read model.
+CREATE TABLE IF NOT EXISTS planning.show_economics_scenario_revisions (
+    revision_key        VARCHAR PRIMARY KEY,
+    scenario_key        VARCHAR NOT NULL,
+    revision_no         INTEGER NOT NULL,
+    project_key         VARCHAR,
+    name                VARCHAR NOT NULL,
+    currency            VARCHAR,
+    engine_version      VARCHAR NOT NULL,
+    inputs              JSON NOT NULL,
+    derived_outputs     JSON NOT NULL,
+    identity_context    JSON,
+    changed_fields      JSON NOT NULL,
+    created_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (scenario_key, revision_no)
+);
+CREATE INDEX IF NOT EXISTS idx_show_economics_revisions
+  ON planning.show_economics_scenario_revisions (scenario_key, revision_no);
 
 -- ---------------------------------------------------------------------------
 -- Workspace metadata (schema version + provenance).
@@ -184,4 +213,4 @@ CREATE TABLE IF NOT EXISTS workspace_meta (
 -- INSERT OR IGNORE so it is stable across terminal restarts.  The schema
 -- here only sets schema_version.
 INSERT OR REPLACE INTO workspace_meta (key, value) VALUES
-    ('schema_version', 'terminal_workspace_v2');
+    ('schema_version', 'terminal_workspace_v3');

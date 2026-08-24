@@ -59,6 +59,8 @@ class TypedInput:
     value: Decimal | int | str | Enum | tuple[str, ...] | None
     provenance: Provenance
     evidence_ref: str | None = None
+    as_of: str | None = None
+    entered_by: str | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.value, float):
@@ -873,6 +875,8 @@ def input_to_dict(item: TypedInput) -> dict[str, Any]:
         "value": str(value) if isinstance(value, Decimal) else value,
         "provenance": item.provenance.value,
         "evidence_ref": item.evidence_ref,
+        "as_of": item.as_of,
+        "entered_by": item.entered_by,
     }
 
 
@@ -882,7 +886,13 @@ def _input_from_dict(
 ) -> TypedInput:
     provenance = Provenance(data["provenance"])
     if provenance == Provenance.UNKNOWN:
-        return TypedInput.unknown(data.get("evidence_ref"))
+        return TypedInput(
+            None,
+            Provenance.UNKNOWN,
+            data.get("evidence_ref"),
+            data.get("as_of"),
+            data.get("entered_by"),
+        )
     raw = data.get("value")
     if value_type is Decimal:
         value: Decimal | int | str | Enum = Decimal(str(raw))
@@ -894,7 +904,13 @@ def _input_from_dict(
         value = tuple(raw)
     else:
         value = value_type(raw)
-    return TypedInput(value, provenance, data.get("evidence_ref"))
+    return TypedInput(
+        value,
+        provenance,
+        data.get("evidence_ref"),
+        data.get("as_of"),
+        data.get("entered_by"),
+    )
 
 
 def scenario_to_dict(scenario: ShowEconomicsScenario) -> dict[str, Any]:
