@@ -339,7 +339,7 @@ def test_workspace_has_only_user_state_tables(tmp_path):
             assert n == 0, f"workspace must not contain {schema}.{table}"
         assert conn.execute(
             "SELECT value FROM workspace_meta WHERE key='schema_version'"
-        ).fetchone()[0] == "terminal_workspace_v1"
+        ).fetchone()[0] == "terminal_workspace_v2"
     finally:
         conn.close()
 
