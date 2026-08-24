@@ -245,8 +245,14 @@ def bootstrap_delta_ci(
     *,
     seed: int = 42,
     B: int = 200,
+    cluster_by: str = "artist",
 ) -> dict[str, Any]:
-    """Cluster-bootstrap (by artist) the metric delta between two models."""
+    """Cluster-bootstrap the metric delta while preserving multiplicity.
+
+    ``cluster_by`` is ``artist`` (the historical default) or ``tour``. Tour
+    clustering falls back to artist when a row has no tour identity, matching
+    the repository's TOUR_GROUP split semantics.
+    """
     eligible, _ = population(rows, target_type)
     train_rows, test_rows = _split_folds(eligible, split_type)
     if not train_rows or not test_rows:
@@ -261,17 +267,17 @@ def bootstrap_delta_ci(
         _model_preds(test_feats, train_feats, target_type, global_median, model_b)
 
     metric = _primary_metric(target_type)
-    groups = np.asarray([it["row"].get("artist") or "unknown" for it in test_feats])
+    groups = _bootstrap_group_labels(test_feats, cluster_by)
     rng = np.random.default_rng(seed)
     unique = np.unique(groups)
     deltas: list[float] = []
     for _ in range(B):
         sample_groups = rng.choice(unique, size=len(unique), replace=True)
-        keep = np.isin(groups, sample_groups)
-        if keep.sum() == 0:
+        sample_indices = _cluster_bootstrap_indices(groups, sample_groups)
+        if sample_indices.size == 0:
             continue
-        ma = _metric(target_type, y_true[keep], pred_a[keep])[metric]
-        mb = _metric(target_type, y_true[keep], pred_b[keep])[metric]
+        ma = _metric(target_type, y_true[sample_indices], pred_a[sample_indices])[metric]
+        mb = _metric(target_type, y_true[sample_indices], pred_b[sample_indices])[metric]
         deltas.append(ma - mb)
     deltas = np.asarray(deltas)
     if deltas.size == 0:
@@ -283,6 +289,30 @@ def bootstrap_delta_ci(
         "ci_90": [float(lo), float(hi)],
         "p_improve": float(np.mean(deltas < 0)),
     }
+
+
+def _bootstrap_group_labels(
+    items: list[dict[str, Any]], cluster_by: str,
+) -> np.ndarray:
+    if cluster_by == "artist":
+        return np.asarray([it["row"].get("artist") or "unknown" for it in items])
+    if cluster_by == "tour":
+        return np.asarray([
+            it["row"].get("tour") or it["row"].get("artist") or "unknown"
+            for it in items
+        ])
+    raise ValueError("cluster_by must be 'artist' or 'tour'")
+
+
+def _cluster_bootstrap_indices(
+    groups: np.ndarray,
+    sampled_groups: np.ndarray,
+) -> np.ndarray:
+    """Concatenate every sampled cluster, including repeated draws."""
+    chunks = [np.flatnonzero(groups == group) for group in sampled_groups]
+    if not chunks:
+        return np.asarray([], dtype=int)
+    return np.concatenate(chunks).astype(int, copy=False)
 
 
 def _model_preds(test_feats, train_feats, target_type, global_median, name):

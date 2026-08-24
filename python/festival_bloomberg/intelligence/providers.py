@@ -30,6 +30,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..acquisition.automation import AutomationStatus, automation_status
 from ..localenv import load_local_env
 
 # -- status constants ---------------------------------------------------------
@@ -74,6 +75,8 @@ class ProviderScaffold:
         return AUTH_CONFIGURED if self.is_configured else AUTH_MISSING
 
     def status(self) -> str:
+        if automation_status(self.name) == AutomationStatus.DISABLED:
+            return DISABLED_RIGHTS
         if self.rights_status in ("DISABLED", "RIGHTS_BLOCKED", "TERMS_BLOCKED"):
             return DISABLED_RIGHTS
         if not self.is_configured:

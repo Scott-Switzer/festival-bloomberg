@@ -44,7 +44,7 @@ milestones:
   COMPARABLE_EVENT_ENGINE_V2: "PARTIAL_ATTENTION_EVALUABLE_COMPETITION_NOT_EVALUABLE (competition NOT_EVALUABLE: no historical event source; Wikimedia stored panel INSUFFICIENT but source EVALUABLE_AFTER_HISTORICAL_ACQUISITION from 2015-07-01; 30-event real pilot: 27/30 resolved, 26 full PIT 30d windows; retrieved_at is NEVER a gate; no V3)"
   DESIGN_PARTNER_DATA_ACTIVATION_V1: "PASS_ONBOARDING_INFRASTRUCTURE (PR #36 merged; one-command isolated partner preview CLI + breadth-gated readiness tiers + synthetic value curves + onboarding package)"
   TERMINAL_SERVING_SNAPSHOT_V1: "PASS (PR #37; real 4.93 GiB canonical -> immutable serving snapshot VERIFIED; 23/23 serving tests + 608 Python + 76 Node; C3 buyer-morning acceptance PASS; concurrent canonical write + N→N+1 generational PASS; terminal zero canonical file handles")
-  SHOW_ECONOMICS_WORKBENCH_V1: "SPEC_ONLY (deterministic show/offer economics research; not implemented)"
+  SHOW_ECONOMICS_WORKBENCH_V1: "PASS_DETERMINISTIC_V1 (Decimal equations + explicit provenance/bases + UNKNOWN propagation + inverse boundaries + sensitivity + workspace replay; no prediction or recommendation)"
 
 providers:
   # status taxonomy: PUBLIC_NO_AUTH | AUTH_CONFIGURED | AUTH_MISSING |
@@ -60,7 +60,7 @@ providers:
   spotify: "AUTH_CONFIGURED / OPERATIONAL (client-credentials Web API; 2026 catalog-only fields id/name/external_urls/images/type/uri — no popularity/followers/genres)"
   soloist: "IDENTIFIED_CREDENTIAL / NOT_WIRED (spak_ key; separate Spotify product surface, endpoint contract unresolved — never sent to Web API)"
   nvidia: "AUTH (OpenAI-compatible NIM; prototyping/research)"
-  seatgeek: "DISABLED_RIGHTS (automated ingestion terms)"
+  seatgeek: "AUTOMATION=DISABLED; RIGHTS=TERMS_REVIEW_REQUIRED; COMMERCIAL_USE=TERMS_REVIEW_REQUIRED; RESEARCH_USE=TERMS_REVIEW_REQUIRED"
 
 docs:
   - historical_festival_artist_database_spec.md
@@ -87,6 +87,7 @@ docs:
   - terminal-serving-snapshot-v1.md
   - terminal-storage-role-audit-v1.md
   - show-economics-workbench-v1-spec.md
+  - show-economics-workbench-v1.md
 
 key_commands:
   context: "PYTHONPATH=python .venv/bin/python -m festival_bloomberg.ops.context_snapshot"

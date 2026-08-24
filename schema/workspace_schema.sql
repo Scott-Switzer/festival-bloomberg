@@ -152,6 +152,23 @@ CREATE TABLE IF NOT EXISTS planning.festival_scenarios (
 );
 CREATE INDEX IF NOT EXISTS idx_planning_scenarios_project ON planning.festival_scenarios (project_key);
 
+-- Reproducible deterministic show-economics scenarios.  Inputs include value
+-- provenance and remain mutable analyst state; canonical evidence is referenced
+-- by identity only and is never copied into this table by the engine.
+CREATE TABLE IF NOT EXISTS planning.show_economics_scenarios (
+    scenario_key        VARCHAR PRIMARY KEY,
+    project_key         VARCHAR,
+    name                VARCHAR NOT NULL,
+    currency            VARCHAR,
+    engine_version      VARCHAR NOT NULL,
+    inputs              JSON NOT NULL,
+    derived_outputs     JSON NOT NULL,
+    created_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_show_economics_project
+  ON planning.show_economics_scenarios (project_key);
+
 -- ---------------------------------------------------------------------------
 -- Workspace metadata (schema version + provenance).
 --
@@ -167,4 +184,4 @@ CREATE TABLE IF NOT EXISTS workspace_meta (
 -- INSERT OR IGNORE so it is stable across terminal restarts.  The schema
 -- here only sets schema_version.
 INSERT OR REPLACE INTO workspace_meta (key, value) VALUES
-    ('schema_version', 'terminal_workspace_v1');
+    ('schema_version', 'terminal_workspace_v2');

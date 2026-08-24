@@ -32,15 +32,15 @@ class FlywheelRepository:
             INSERT INTO flywheel.source_registry
                 (source_id, source_name, source_kind, pipeline, provider,
                  access_status, documented_quota, rights_status,
-                 commercial_use_status, license, coverage_contribution, notes,
+                 commercial_use_status, automation_status, license, coverage_contribution, notes,
                  registered_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 row["source_id"], row["source_name"], row.get("source_kind"),
                 row["pipeline"], row.get("provider"), row["access_status"],
                 row.get("documented_quota"), row["rights_status"],
-                row["commercial_use_status"], row.get("license"),
+                row["commercial_use_status"], row["automation_status"], row.get("license"),
                 row.get("coverage_contribution"), row.get("notes"),
                 row["registered_at"], row.get("updated_at"),
             ],

@@ -844,3 +844,7 @@ def test_source_registry_size():
     assert all(row["access_status"] in (
         "AVAILABLE", "KEY_REQUIRED", "TERMS_REVIEW", "REGISTRATION_REQUIRED", "PARTNER_GATED", "NOT_AVAILABLE"
     ) for row in rows)
+    seatgeek = next(row for row in rows if row["source_id"] == "seatgeek")
+    assert seatgeek["rights_status"] == "TERMS_REVIEW_REQUIRED"
+    assert seatgeek["commercial_use_status"] == "TERMS_REVIEW_REQUIRED"
+    assert seatgeek["automation_status"] == "AUTOMATION_DISABLED"

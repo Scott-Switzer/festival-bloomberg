@@ -23,7 +23,7 @@ def test_apply_pending_migrations_is_idempotent(tmp_path: Path):
 
     connection = duckdb.connect(str(db_path))
     try:
-        assert apply_pending_migrations(connection) == 33
+        assert apply_pending_migrations(connection) == 34
         assert apply_pending_migrations(connection) == 0
         versions = [
             row[0]
@@ -31,7 +31,7 @@ def test_apply_pending_migrations_is_idempotent(tmp_path: Path):
                 "SELECT version FROM schema_migrations ORDER BY version"
             ).fetchall()
         ]
-        assert versions == list(range(1, 34))
+        assert versions == list(range(1, 35))
         tables = {
             row[0]
             for row in connection.execute(
@@ -96,3 +96,49 @@ def test_schema_loads_outside_repo_root(tmp_path: Path, monkeypatch: pytest.Monk
         lambda: [schema_root],
     )
     assert "published_at" in schema_paths.load_schema_sql()
+
+
+def test_failing_migration_is_atomic_and_retryable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    import duckdb
+    from festival_bloomberg import migrations
+
+    migration_path = tmp_path / "034_atomic_probe.sql"
+    migration_path.write_text(
+        "CREATE TABLE atomic_probe (id INTEGER);\n"
+        "INSERT INTO table_that_does_not_exist VALUES (1);\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        migrations,
+        "load_migration_files",
+        lambda: [(34, "atomic_probe", migration_path)],
+    )
+
+    connection = duckdb.connect(str(tmp_path / "atomic.duckdb"))
+    try:
+        with pytest.raises(duckdb.Error):
+            apply_pending_migrations(connection)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM information_schema.tables "
+            "WHERE table_name = 'atomic_probe'"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version = 34"
+        ).fetchone()[0] == 0
+        assert connection.execute("SELECT 1").fetchone() == (1,)
+
+        migration_path.write_text(
+            "CREATE TABLE atomic_probe (id INTEGER);\n"
+            "INSERT INTO atomic_probe VALUES (1);\n",
+            encoding="utf-8",
+        )
+        assert apply_pending_migrations(connection) == 1
+        assert connection.execute("SELECT * FROM atomic_probe").fetchall() == [(1,)]
+        assert connection.execute(
+            "SELECT name FROM schema_migrations WHERE version = 34"
+        ).fetchone() == ("atomic_probe",)
+        assert apply_pending_migrations(connection) == 0
+    finally:
+        connection.close()

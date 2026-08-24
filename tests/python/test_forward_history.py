@@ -306,6 +306,26 @@ class TestCollector:
         finally:
             repo.close()
 
+    def test_seatgeek_automation_disposition_blocks_injected_provider(self, tmp_path):
+        repo = FestivalRepository(str(tmp_path / "sg-disabled.duckdb"))
+        try:
+            events_repo = EventRepository(repo.conn)
+            economics = EconomicsRepository(repo.conn)
+            _seed_event(events_repo)
+            sg = FakeSg(configured=True)
+            summary = snapshot_event(
+                events_repo=events_repo,
+                economics_repo=economics,
+                canonical_event_id=EVENT_A,
+                providers=("seatgeek",),
+                seatgeek=sg,
+            )
+            assert sg.calls == 0
+            assert summary["price_snapshots"] == 0
+            assert summary["errors"] == ["seatgeek_automation_disabled"]
+        finally:
+            repo.close()
+
     def test_ticketmaster_failure_is_explicit_error(self, tmp_path):
         repo = FestivalRepository(str(tmp_path / "f.duckdb"))
         try:

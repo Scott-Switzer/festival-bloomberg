@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from ..acquisition.contracts import AcquisitionRequest, AcquisitionStatus, utc_now
+from ..acquisition.automation import automation_allowed
 from ..acquisition.providers.seatgeek import SEARCH_EVENTS as SG_SEARCH_EVENTS
 from ..acquisition.providers.seatgeek import SeatGeekProvider
 from ..acquisition.providers.ticketmaster import GET_EVENT as TM_GET_EVENT
@@ -114,7 +115,9 @@ def snapshot_event(
     sg_record = None
     if "seatgeek" in providers:
         sg = seatgeek or SeatGeekProvider()
-        if not sg.configured():
+        if not automation_allowed("seatgeek"):
+            errors.append("seatgeek_automation_disabled")
+        elif not sg.configured():
             errors.append("seatgeek_not_configured")
         else:
             result = None

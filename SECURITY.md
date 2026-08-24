@@ -19,8 +19,10 @@ branch's first commit). Deleting the file did not remove the value from
 history.
 
 - **Credential type affected:** Hetzner vLLM API key.
-- **Status:** `ROTATION_REQUIRED` — rotate any key that may have been live,
-  and verify the Hetzner account for unauthorized usage.
+- **Repository status:** `EXTERNAL_ROTATION_VERIFICATION_REQUIRED` — repository
+  evidence cannot establish that the credential was revoked externally. Rotate
+  any key that may have been live and verify the Hetzner account for unauthorized
+  usage before treating this incident as closed.
 - The value is intentionally not reproduced here and was not printed during
   the audit.
 

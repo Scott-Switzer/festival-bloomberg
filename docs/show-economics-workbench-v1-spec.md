@@ -75,5 +75,6 @@ standard" settlement definitions.
 
 ## Status
 
-SPEC ONLY — not implemented. Implementation is gated until PR #35 (dense panel)
-is complete.
+Implemented as `FOUNDATION_CORRECTNESS_AND_SHOW_ECONOMICS_V1`. The executable
+financial contract and persistence boundary are documented in
+`docs/show-economics-workbench-v1.md`.

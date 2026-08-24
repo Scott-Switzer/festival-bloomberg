@@ -65,6 +65,7 @@ WORKSPACE_TABLES: tuple[tuple[str, str], ...] = (
     ("planning", "festival_shortlists"),
     ("planning", "festival_constraints"),
     ("planning", "festival_scenarios"),
+    ("planning", "show_economics_scenarios"),
 )
 
 # Critical tables whose presence/row-counts are part of the integrity contract.
@@ -124,6 +125,10 @@ _MIGRATION_COLUMNS: dict[tuple[str, str], list[str]] = {
     ("planning", "festival_scenarios"): [
         "scenario_key", "project_key", "name", "notes",
         "slots", "warnings", "summaries", "created_at", "updated_at",
+    ],
+    ("planning", "show_economics_scenarios"): [
+        "scenario_key", "project_key", "name", "currency", "engine_version",
+        "inputs", "derived_outputs", "created_at", "updated_at",
     ],
 }
 
@@ -501,7 +506,7 @@ def _ensure_workspace_meta(conn: duckdb.DuckDBPyConnection) -> None:
     )
     conn.execute(
         "INSERT OR REPLACE INTO workspace_meta (key, value) "
-        "VALUES ('schema_version', 'terminal_workspace_v1')"
+        "VALUES ('schema_version', 'terminal_workspace_v2')"
     )
 
 

@@ -22,6 +22,7 @@ import sys
 from datetime import datetime, timezone
 
 from ..acquisition.contracts import AcquisitionRequest
+from ..acquisition.automation import automation_allowed
 from ..acquisition.policy import PolicyGate
 from ..acquisition.providers import default_providers
 from ..acquisition.router import AcquisitionRouter
@@ -544,7 +545,10 @@ def cmd_economics_snapshot_tracked(args: argparse.Namespace) -> int:
                     logger.log_provider_status("ticketmaster", PROVIDER_NOT_CONFIGURED)
                     logger.log_error("Ticketmaster not configured")
                 
-                if sg.configured():
+                seatgeek_enabled = automation_allowed("seatgeek")
+                if not seatgeek_enabled:
+                    logger.log_provider_status("seatgeek", "AUTOMATION_DISABLED")
+                elif sg.configured():
                     logger.log_provider_status("seatgeek", PROVIDER_AUTH_VALID)
                 else:
                     logger.log_provider_status("seatgeek", PROVIDER_NOT_CONFIGURED)
@@ -555,7 +559,7 @@ def cmd_economics_snapshot_tracked(args: argparse.Namespace) -> int:
                     providers = []
                     if tm.configured():
                         providers.append("ticketmaster")
-                    if sg.configured():
+                    if seatgeek_enabled and sg.configured():
                         providers.append("seatgeek")
                     
                     try:
@@ -565,7 +569,7 @@ def cmd_economics_snapshot_tracked(args: argparse.Namespace) -> int:
                             canonical_event_id=event.canonical_event_id,
                             providers=tuple(providers),
                             ticketmaster=tm if tm.configured() else None,
-                            seatgeek=sg if sg.configured() else None,
+                            seatgeek=sg if seatgeek_enabled and sg.configured() else None,
                         )
                         logger.increment_events_succeeded()
                         logger.increment_snapshots_appended(summary["price_snapshots"])
