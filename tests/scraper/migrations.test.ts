@@ -73,13 +73,14 @@ describe("schema migrations", () => {
     assert.equal(rows[31]?.name, "pipeline_phase_ledger_v1");
     assert.equal(rows[32]?.name, "talent_buyer_workbench_v1");
     assert.equal(rows[33]?.name, "provider_automation_disposition_v1");
+    assert.equal(rows[34]?.name, "venue_capacity_claim_metadata_v1");
 
     const reopened = await createDuckDbWarehouse({ path: temp.path });
     await reopened.close();
     const again = await queryMigrations(temp.path);
     assert.deepEqual(
       again.map((row) => row.version),
-      Array.from({ length: 34 }, (_, i) => i + 1),
+      Array.from({ length: 35 }, (_, i) => i + 1),
     );
   });
 });
