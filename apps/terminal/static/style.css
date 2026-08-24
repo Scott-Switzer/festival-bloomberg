@@ -78,3 +78,26 @@ button.link:hover { text-decoration: underline; }
 .ask-input:focus { outline: none; border-color: var(--accent); }
 pre.evidence { background: var(--panel2); border: 1px solid var(--border); border-radius: 4px; padding: 10px; overflow: auto; font-size: 11px; font-family: var(--mono); max-height: 340px; }
 .badge { font-family: var(--mono); font-size: 11px; }
+.panel { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin: 10px 0; }
+input, select, button {
+  background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+  border-radius: 4px; padding: 6px 8px;
+}
+button { cursor: pointer; }
+button:hover { border-color: var(--accent); }
+.econ-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 10px; }
+.econ-field { background: var(--panel); border: 1px solid var(--border); border-radius: 5px; padding: 9px; min-width: 0; }
+.econ-field > label { display: block; color: var(--dim); font-family: var(--mono); font-size: 11px; margin-bottom: 5px; }
+.econ-field > input, .econ-field > select { width: calc(100% - 2px); margin-bottom: 5px; }
+.econ-field .prov { width: 100%; font-family: var(--mono); font-size: 10px; }
+.econ-field details { margin-top: 6px; color: var(--dim); font-family: var(--mono); font-size: 10px; }
+.econ-field details input { display: block; width: 100%; margin-top: 5px; font-size: 11px; }
+.prov-USER_ASSUMPTION { color: var(--warn); border-color: var(--warn); }
+.prov-OBSERVED_PUBLIC { color: var(--accent); border-color: var(--accent); }
+.prov-OBSERVED_PRIVATE { color: #bc8cff; border-color: #bc8cff; }
+.prov-DERIVED { color: var(--accent2); border-color: var(--accent2); }
+.prov-UNKNOWN, .unknown { color: var(--dim); border-color: var(--dim); font-family: var(--mono); font-weight: 700; }
+.econ-value { color: var(--text); font-family: var(--mono); font-size: 18px; }
+.unsupported { border-style: dashed; }
+.error-line { color: var(--bad); font-family: var(--mono); padding: 8px; }
+.econ-actions { position: sticky; top: -18px; z-index: 4; }

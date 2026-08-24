@@ -66,6 +66,7 @@ WORKSPACE_TABLES: tuple[tuple[str, str], ...] = (
     ("planning", "festival_constraints"),
     ("planning", "festival_scenarios"),
     ("planning", "show_economics_scenarios"),
+    ("planning", "show_economics_scenario_revisions"),
 )
 
 # Critical tables whose presence/row-counts are part of the integrity contract.
@@ -128,7 +129,14 @@ _MIGRATION_COLUMNS: dict[tuple[str, str], list[str]] = {
     ],
     ("planning", "show_economics_scenarios"): [
         "scenario_key", "project_key", "name", "currency", "engine_version",
+        # Canonical migration 033 predates workspace-only revision metadata.
+        # Copy its legacy columns; destination-only columns retain safe defaults.
         "inputs", "derived_outputs", "created_at", "updated_at",
+    ],
+    ("planning", "show_economics_scenario_revisions"): [
+        "revision_key", "scenario_key", "revision_no", "project_key", "name",
+        "currency", "engine_version", "inputs", "derived_outputs",
+        "identity_context", "changed_fields", "created_at",
     ],
 }
 
@@ -506,7 +514,7 @@ def _ensure_workspace_meta(conn: duckdb.DuckDBPyConnection) -> None:
     )
     conn.execute(
         "INSERT OR REPLACE INTO workspace_meta (key, value) "
-        "VALUES ('schema_version', 'terminal_workspace_v2')"
+        "VALUES ('schema_version', 'terminal_workspace_v3')"
     )
 
 

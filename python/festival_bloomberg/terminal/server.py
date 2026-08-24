@@ -37,6 +37,20 @@ from ..localenv import load_local_env
 from ..planning import candidates as planning_candidates
 from ..planning import repository as planning_repo
 from ..planning import scenario as planning_scenario
+from ..economics.show_economics import scenario_from_dict
+from ..economics.show_economics_product import (
+    PRIVATE_DATA_READINESS,
+    calculate_workbench,
+    capacity_prefill,
+    compare_saved_scenarios,
+)
+from ..economics.show_economics_repository import (
+    duplicate_show_economics_scenario,
+    list_show_economics_revisions,
+    list_show_economics_scenarios,
+    load_show_economics_scenario,
+    save_show_economics_scenario,
+)
 from . import storage
 
 STATIC_DIR = os.path.join(
@@ -53,6 +67,19 @@ def _json(payload: Any) -> bytes:
 
 def _count(conn, sql: str) -> int:
     return int(conn.execute(sql).fetchone()[0])
+
+
+def _body_object(body: bytes) -> dict[str, Any]:
+    try:
+        value = json.loads(body.decode("utf-8"))
+    except Exception:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _public_scenario(record: dict[str, Any]) -> dict[str, Any]:
+    """Remove the in-process dataclass while preserving its JSON contract."""
+    return {key: value for key, value in record.items() if key != "scenario"}
 
 
 def _data_coverage(conn, workspace_conn) -> dict[str, Any]:
@@ -235,6 +262,31 @@ class TerminalApp:
             return self._ok(planning_candidates.artist_scorecard(
                 self.conn, artist_key=params.get("artist_key"),
                 artist_name=params.get("artist_name")))
+        if path == "/api/planning/economics/readiness":
+            return self._ok({"fields": PRIVATE_DATA_READINESS})
+        if path.startswith("/api/planning/economics/"):
+            rest = path[len("/api/planning/economics/"):]
+            segs = rest.split("/")
+            scenario_key = segs[0]
+            action = segs[1] if len(segs) > 1 else None
+            try:
+                if action == "duplicate" and method == "POST":
+                    b = _body_object(body)
+                    return self._ok(_public_scenario(duplicate_show_economics_scenario(
+                        self.workspace_conn,
+                        source_scenario_key=scenario_key,
+                        name=b.get("name", "Scenario copy"),
+                    )))
+                if action == "revisions" and method == "GET":
+                    return self._ok(list_show_economics_revisions(
+                        self.workspace_conn, scenario_key
+                    ))
+                if action is None and method == "GET":
+                    return self._ok(_public_scenario(load_show_economics_scenario(
+                        self.workspace_conn, scenario_key
+                    )))
+            except (KeyError, ValueError) as exc:
+                return self._bad_request(str(exc))
         if path.startswith("/api/planning/projects/"):
             rest = path[len("/api/planning/projects/"):]
             segs = rest.split("/")
@@ -295,6 +347,57 @@ class TerminalApp:
                     slots=b.get("slots", []), notes=b.get("notes")))
             if sub == "scenarios":
                 return self._ok(planning_repo.list_scenarios(self.workspace_conn, pkey))
+            if sub == "economics":
+                action = segs[2] if len(segs) > 2 else None
+                try:
+                    if action == "calculate" and method == "POST":
+                        b = _body_object(body)
+                        return self._ok(calculate_workbench(
+                            b.get("inputs", {}),
+                            sensitivity_requests=b.get("sensitivities"),
+                            boundary_request=b.get("boundary"),
+                        ))
+                    if action == "compare" and method == "POST":
+                        b = _body_object(body)
+                        records = [
+                            load_show_economics_scenario(self.workspace_conn, key)
+                            for key in b.get("scenario_keys", [])
+                        ]
+                        if any(record["project_key"] != pkey for record in records):
+                            raise ValueError("all comparison scenarios must belong to this project")
+                        return self._ok(compare_saved_scenarios(records))
+                    if action == "prefill" and method == "GET":
+                        return self._ok(capacity_prefill(
+                            self.conn,
+                            venue_key=params.get("venue", ""),
+                            event_configuration=params.get("configuration"),
+                        ))
+                    if action is None and method == "POST":
+                        b = _body_object(body)
+                        scenario_key = b.get("scenario_key")
+                        if scenario_key:
+                            existing = load_show_economics_scenario(
+                                self.workspace_conn, scenario_key
+                            )
+                            if existing["project_key"] != pkey:
+                                raise ValueError(
+                                    "show economics scenario does not belong to this project"
+                                )
+                        record = save_show_economics_scenario(
+                            self.workspace_conn,
+                            name=b.get("name", ""),
+                            project_key=pkey,
+                            scenario=scenario_from_dict(b.get("inputs", {})),
+                            scenario_key=scenario_key,
+                            identity_context=b.get("identity_context"),
+                        )
+                        return self._ok(_public_scenario(record))
+                    if action is None and method == "GET":
+                        return self._ok(list_show_economics_scenarios(
+                            self.workspace_conn, project_key=pkey
+                        ))
+                except (KeyError, ValueError, TypeError) as exc:
+                    return self._bad_request(str(exc))
 
         if path.startswith("/api/watchlists/") and method == "POST":
             try:
@@ -424,6 +527,10 @@ class TerminalApp:
     def _missing(self) -> dict[str, Any]:
         return {"status": 400, "headers": {"Content-Type": "application/json"},
                 "body": _json({"error": "missing entity id"})}
+
+    def _bad_request(self, message: str) -> dict[str, Any]:
+        return {"status": 400, "headers": {"Content-Type": "application/json"},
+                "body": _json({"error": message})}
 
 
 class _Handler(BaseHTTPRequestHandler):
