@@ -38,6 +38,15 @@ from ..planning import candidates as planning_candidates
 from ..planning import repository as planning_repo
 from ..planning import scenario as planning_scenario
 from ..planning.competitive_calendar import calendar_for_proposed_show
+from ..planning.proposed_show import (
+    buyer_decision_view,
+    compare_proposals,
+    create_proposed_show,
+    get_proposed_show,
+    get_revision,
+    list_proposed_shows,
+    list_revisions,
+)
 from ..economics.show_economics import scenario_from_dict
 from ..economics.show_economics_product import (
     PRIVATE_DATA_READINESS,
@@ -367,6 +376,66 @@ class TerminalApp:
                     lon=lon,
                     research_cutoff=params.get("research_cutoff"),
                 ))
+            if sub == "proposed-shows" and method == "POST":
+                try:
+                    b = json.loads(body.decode("utf-8"))
+                except Exception:
+                    b = {}
+                return self._ok(create_proposed_show(
+                    self.workspace_conn,
+                    project_key=pkey,
+                    artist_name=b.get("artist_name", ""),
+                    artist_key=b.get("artist_key"),
+                    musicbrainz_id=b.get("musicbrainz_id"),
+                    market=b.get("market", ""),
+                    city=b.get("city"),
+                    state_code=b.get("state_code"),
+                    venue_key=b.get("venue_key"),
+                    venue_name=b.get("venue_name"),
+                    venue_configuration=b.get("venue_configuration"),
+                    proposed_date=b.get("proposed_date", ""),
+                    deal_type=b.get("deal_type"),
+                    artist_guarantee=b.get("artist_guarantee"),
+                    backend_percentage=b.get("backend_percentage"),
+                    backend_basis=b.get("backend_basis"),
+                    deal_provenance=b.get("deal_provenance", "USER_ASSUMPTION"),
+                    guarantee_provenance=b.get("guarantee_provenance", "USER_ASSUMPTION"),
+                    backend_provenance=b.get("backend_provenance", "USER_ASSUMPTION"),
+                    decision_cutoff=b.get("decision_cutoff"),
+                    research_cutoff=b.get("research_cutoff"),
+                    notes=b.get("notes"),
+                ))
+            if sub == "proposed-shows":
+                return self._ok(list_proposed_shows(self.workspace_conn, pkey))
+            if sub == "buyer-decision":
+                return self._ok(buyer_decision_view(
+                    self.conn, self.workspace_conn,
+                    proposed_show_key=params.get("show", ""),
+                ))
+            if sub == "compare-proposals" and method == "POST":
+                try:
+                    b = json.loads(body.decode("utf-8"))
+                except Exception:
+                    b = {}
+                return self._ok(compare_proposals(
+                    self.conn, self.workspace_conn,
+                    proposed_show_keys=b.get("proposed_show_keys", []),
+                    project_key=pkey,
+                    scenario_keys=b.get("scenario_keys"),
+                ))
+            if sub == "revisions":
+                show_key = params.get("show", "")
+                if show_key:
+                    return self._ok(list_revisions(self.workspace_conn, show_key))
+                else:
+                    return self._bad_request("Missing 'show' parameter")
+            if sub == "revision":
+                scenario_key = params.get("key", "")
+                if scenario_key:
+                    rev = get_revision(self.workspace_conn, scenario_key)
+                    return self._ok(rev) if rev else self._not_found()
+                else:
+                    return self._bad_request("Missing 'key' parameter")
             if sub == "economics":
                 action = segs[2] if len(segs) > 2 else None
                 try:

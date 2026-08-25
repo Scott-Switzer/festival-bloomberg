@@ -30,6 +30,11 @@ gitleaks-report.json
 data/cache/
 # MusicBrainz CC0 bulk dumps (large; never committed)
 data/musicbrainz_dumps/
+# Apify bakeoff raw data (generated artifacts, not source)
+data/bakeoff/
+# Serving/workspace runtime data
+data/serving/
+data/workspace/
 *.db
 *.sqlite
 *.sqlite3
