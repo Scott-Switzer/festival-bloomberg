@@ -362,11 +362,17 @@ def buyer_decision_view(
     workspace_conn,
     *,
     proposed_show_key: str,
+    evidence_conn=None,
 ) -> dict[str, Any]:
     """Assemble the full buyer decision view for one proposed show.
 
     Calls into existing components; never reimplements their logic.
     Programming errors are exposed as ERROR, never silently converted to UNKNOWN.
+
+    evidence_conn (optional): read-only connection to the evidence estate
+    (acquisition.ticket_market_snapshots / external_event_observations from
+    migration 039). When omitted, the TICKET MARKET section reports UNKNOWN
+    rather than failing the whole view.
     """
     _ensure_schema(workspace_conn)
     show = get_proposed_show(workspace_conn, proposed_show_key)
@@ -436,9 +442,13 @@ def buyer_decision_view(
         "artist_context": _artist_section(serving_conn, artist_key, artist_name),
         # ---- 7. SHOW ECONOMICS --------------------------------------------
         "show_economics": _economics_section(workspace_conn, proposed_show_key),
-        # ---- 8. RISKS / WARNINGS ------------------------------------------
+        # ---- 8. TICKET MARKET (evidence rail) -----------------------------
+        "ticket_market": _ticket_market_section(
+            evidence_conn, show, proposed_show_key,
+        ),
+        # ---- 9. RISKS / WARNINGS ------------------------------------------
         "risks": [],
-        # ---- 9. PROVENANCE ------------------------------------------------
+        # ---- 10. PROVENANCE -----------------------------------------------
         "provenance": _provenance_section(serving_conn, show),
     }
 
@@ -619,6 +629,202 @@ def _summarize_input_ledger(inputs: dict[str, Any]) -> dict[str, Any]:
     return summary
 
 
+def _ticket_market_section(
+    evidence_conn,
+    show: dict[str, Any],
+    proposed_show_key: str,
+) -> dict[str, Any]:
+    """TICKET MARKET section from the evidence estate (migration 039).
+
+    Queries acquisition.ticket_market_snapshots for the proposed show's
+    canonical event key (via artist+venue+date match against the watch
+    universe), then reports per-source current state and, when 2+ real
+    observations exist, absolute/percent change + elapsed time.
+
+    Evidence semantics: listing_count / ticket_count are marketplace
+    availability PROXIES, never tickets sold. No demand score is derived.
+    """
+    if evidence_conn is None:
+        return {
+            "status": "UNKNOWN",
+            "reason": "evidence estate not connected",
+            "sources": [],
+            "history_coverage": {"observations": 0, "sources": [], "first_observed": None, "last_observed": None},
+        }
+
+    artist = show.get("artist_name") or ""
+    venue = show.get("venue_name") or ""
+    proposed_date = str(show.get("proposed_date") or "")[:10]
+    if not artist or not proposed_date:
+        return {
+            "status": "UNKNOWN",
+            "reason": "proposed show lacks artist or date for resolution",
+            "sources": [],
+            "history_coverage": {"observations": 0, "sources": [], "first_observed": None, "last_observed": None},
+        }
+
+    try:
+        # 1. Resolve the proposed show to a watch-universe event key.
+        ev_rows = _rows(
+            evidence_conn,
+            """
+            SELECT event_key FROM acquisition.watch_universe
+            WHERE lower(artist_name) = lower(?)
+              AND lower(venue_name) = lower(?)
+              AND CAST(event_date AS VARCHAR) = ?
+            LIMIT 1
+            """,
+            [artist, venue, proposed_date],
+        )
+        event_key = ev_rows[0]["event_key"] if ev_rows else None
+        if not event_key:
+            return {
+                "status": "UNKNOWN",
+                "reason": "proposed show not in frozen watch universe",
+                "sources": [],
+                "history_coverage": {"observations": 0, "sources": [], "first_observed": None, "last_observed": None},
+            }
+
+        # 2. Latest snapshot per source for this event.
+        latest = _rows(
+            evidence_conn,
+            """
+            SELECT * FROM (
+                SELECT source_platform, actor_or_endpoint, source_record_id,
+                       wave_label, observed_at, currency,
+                       resale_min_price, resale_median_price, resale_avg_price,
+                       resale_max_price, listing_count, ticket_count,
+                       sold_out_flag, availability_flag, face_value,
+                       identity_match_status, identity_match_confidence,
+                       source_url,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY source_platform ORDER BY observed_at DESC
+                       ) AS rn
+                FROM acquisition.ticket_market_snapshots
+                WHERE event_key = ? AND identity_match_status = 'MATCHED'
+            ) WHERE rn = 1
+            """,
+            [event_key],
+        )
+
+        # 3. Per-event history depth across all sources.
+        hist = _rows(
+            evidence_conn,
+            """
+            SELECT COUNT(*) AS observation_count,
+                   COUNT(DISTINCT source_platform) AS source_count,
+                   MIN(observed_at) AS first_observed,
+                   MAX(observed_at) AS last_observed
+            FROM acquisition.ticket_market_snapshots
+            WHERE event_key = ? AND identity_match_status = 'MATCHED'
+            """,
+            [event_key],
+        )
+
+        sources = []
+        for row in latest:
+            src = {
+                "source_platform": row["source_platform"],
+                "actor_or_endpoint": row.get("actor_or_endpoint"),
+                "currency": row.get("currency"),
+                "current": {
+                    "min_price": row.get("resale_min_price"),
+                    "median_price": row.get("resale_median_price"),
+                    "avg_price": row.get("resale_avg_price"),
+                    "max_price": row.get("resale_max_price"),
+                    "listing_count": row.get("listing_count"),
+                    "ticket_count": row.get("ticket_count"),
+                    "sold_out": row.get("sold_out_flag"),
+                    "availability": row.get("availability_flag"),
+                    "face_value": row.get("face_value"),
+                },
+                "last_observed": str(row.get("observed_at"))[:19],
+                "match_confidence": row.get("identity_match_confidence"),
+                "source_url": row.get("source_url"),
+            }
+            # 4. Change vs first observation (when 2+ real observations).
+            changes = _rows(
+                evidence_conn,
+                """
+                SELECT MIN(observed_at) AS first_obs, MAX(observed_at) AS last_obs,
+                       COUNT(*) AS n
+                FROM acquisition.ticket_market_snapshots
+                WHERE event_key = ? AND source_platform = ?
+                  AND identity_match_status = 'MATCHED'
+                """,
+                [event_key, row["source_platform"]],
+            )
+            if changes and changes[0]["n"] >= 2:
+                first_row = _rows(
+                    evidence_conn,
+                    """
+                    SELECT resale_min_price, resale_median_price, listing_count
+                    FROM acquisition.ticket_market_snapshots
+                    WHERE event_key = ? AND source_platform = ?
+                      AND identity_match_status = 'MATCHED'
+                    ORDER BY observed_at ASC LIMIT 1
+                    """,
+                    [event_key, row["source_platform"]],
+                )
+                c0 = first_row[0] if first_row else {}
+                c1 = changes[0]
+                src["change"] = _market_change(c0, row, c1)
+            sources.append(src)
+
+        h0 = hist[0] if hist else {}
+        return {
+            "status": "OBSERVED" if sources else "NO_MATCHED_SNAPSHOTS",
+            "event_key": event_key,
+            "sources": sources,
+            "history_coverage": {
+                "observations": int(h0.get("observation_count") or 0),
+                "source_count": int(h0.get("source_count") or 0),
+                "sources": sorted({s["source_platform"] for s in sources}),
+                "first_observed": str(h0["first_observed"])[:19] if h0.get("first_observed") else None,
+                "last_observed": str(h0["last_observed"])[:19] if h0.get("last_observed") else None,
+            },
+        }
+    except Exception as e:
+        return {
+            "status": "ERROR",
+            "reason": f"ticket market section error: {e}",
+            "sources": [],
+            "history_coverage": {"observations": 0, "sources": [], "first_observed": None, "last_observed": None},
+        }
+
+
+def _market_change(first: dict[str, Any], latest: dict[str, Any], timing: dict[str, Any]) -> dict[str, Any]:
+    """Compute factual delta between first and latest observation.
+
+    Only availability-proxy semantics: price and listing deltas, NOT sales.
+    Returns absolute + percent change and elapsed time.
+    """
+    out: dict[str, Any] = {
+        "first_observed": str(timing.get("first_obs") or "")[:19] or None,
+        "last_observed": str(timing.get("last_obs") or "")[:19] or None,
+        "observation_count": int(timing.get("n") or 0),
+    }
+
+    def _delta(key: str, label: str) -> None:
+        a = latest.get(key)
+        b = first.get(key)
+        if a is None or b is None:
+            return
+        diff = float(a) - float(b)
+        pct = (diff / float(b) * 100.0) if float(b) else None
+        out[label] = {
+            "previous": float(b),
+            "current": float(a),
+            "absolute_change": round(diff, 2),
+            "percent_change": round(pct, 2) if pct is not None else None,
+        }
+
+    _delta("resale_min_price", "min_price")
+    _delta("resale_median_price", "median_price")
+    _delta("listing_count", "listing_count")
+    return out
+
+
 def _provenance_section(
     serving_conn, show: dict[str, Any],
 ) -> dict[str, Any]:
@@ -629,7 +835,8 @@ def _provenance_section(
         "comparable_events": "boxoffice_research_corpus_v1 (Pollstar/Billboard Boxscore)",
         "artist_context": "core.artists + metrics.artist_attention_observations + events.provider_event_snapshots",
         "show_economics": "planning.show_economics_scenarios (deterministic engine)",
-        "source_count": 5,
+        "ticket_market": "acquisition.ticket_market_snapshots + acquisition.watch_universe (migration 039 evidence rail)",
+        "source_count": 6,
         "has_external_augmentation": False,
     }
 
@@ -676,6 +883,21 @@ def _derive_risks(view: dict[str, Any]) -> list[dict[str, Any]]:
             "severity": "INFO",
             "type": "INCOMPLETE_KNOWLEDGE_TIME",
             "detail": f"{unknown_count} competing events have unknown knowledge time",
+        })
+
+    # Ticket market: check evidence availability.
+    tm = view.get("ticket_market", {})
+    if tm.get("status") == "UNKNOWN":
+        risks.append({
+            "severity": "INFO",
+            "type": "NO_TICKET_MARKET_EVIDENCE",
+            "detail": "No ticket-market evidence for this show (evidence estate not connected or show not in watch universe)",
+        })
+    elif tm.get("status") == "ERROR":
+        risks.append({
+            "severity": "WARNING",
+            "type": "TICKET_MARKET_INTEGRATION_ERROR",
+            "detail": f"Ticket market section error: {tm.get('reason')}",
         })
 
     # Economics: check for missing scenario.
@@ -855,6 +1077,16 @@ def _build_evidence_status(
         status[EVIDENCE_UNKNOWN].append("show_economics")
     else:
         status[EVIDENCE_UNKNOWN].append("show_economics")
+
+    # Ticket market.
+    tm = view.get("ticket_market", {})
+    if tm.get("status") == "OBSERVED":
+        status[EVIDENCE_KNOWN].append("ticket_market")
+    elif tm.get("status") == "ERROR":
+        status[EVIDENCE_UNKNOWN].append("ticket_market")
+        status[EVIDENCE_CONFLICTING].append("ticket_market_error")
+    else:
+        status[EVIDENCE_UNKNOWN].append("ticket_market")
 
     return status
 

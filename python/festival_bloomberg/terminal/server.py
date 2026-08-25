@@ -411,6 +411,7 @@ class TerminalApp:
                 return self._ok(buyer_decision_view(
                     self.conn, self.workspace_conn,
                     proposed_show_key=params.get("show", ""),
+                    evidence_conn=getattr(self, "evidence_conn", None),
                 ))
             if sub == "compare-proposals" and method == "POST":
                 try:
