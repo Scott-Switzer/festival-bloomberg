@@ -955,6 +955,10 @@ def _event_identifiers(evidence_conn, event_key: str) -> dict[str, Any]:
         )
     except Exception:
         return {"status": "UNKNOWN", "reason": "event_identifiers table not available"}
+    for r in rows:
+        for k, v in r.items():
+            if hasattr(v, "isoformat"):
+                r[k] = v.isoformat()
     return {
         "status": "OBSERVED" if rows else "NO_IDENTIFIERS",
         "event_key": event_key,
@@ -978,6 +982,11 @@ def _source_health_by_method(evidence_conn, event_key: str) -> dict[str, Any]:
         )
     except Exception:
         return {"status": "UNKNOWN", "reason": "source_health_by_method table not available"}
+    # Coerce datetimes so the view stays JSON-serializable.
+    for r in rows:
+        for k, v in r.items():
+            if hasattr(v, "isoformat"):
+                r[k] = v.isoformat()
     return {"status": "OBSERVED" if rows else "NO_RUNS", "runs": rows}
 
 
