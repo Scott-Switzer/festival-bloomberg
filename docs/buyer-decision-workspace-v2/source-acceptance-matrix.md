@@ -153,24 +153,23 @@ Reasons: no results (hoholabs Songkick, aitorsm, Facebook, AXS), wrong artist (B
 
 ---
 
-## Ticketmaster Overlap Results
+## Ticketmaster Overlap Results — REVISED (2026-08-25 audit)
 
-Each external record was classified against 12,847 unique Ticketmaster events (4,224 artists, 598 venues) from the serving snapshot.
+**Initial 86.5% incremental-lift claim has been corrected.** Manual audit revealed:
 
-| Source | Records | Matched TM | Incremental | Ambiguous | Incremental % |
-|--------|---------|------------|-------------|-----------|---------------|
-| AllEvents | 100 | 0 | 96 | 4 | 96.0% |
-| DICE | 50 | 0 | 48 | 2 | 96.0% |
-| Songkick (gio21) | 50 | 0 | 40 | 10 | 80.0% |
-| Fever | 20 | 0 | 20 | 0 | 100.0% |
-| Resident Advisor | 20 | 0 | 19 | 1 | 95.0% |
-| Bandsintown | 10 | 0 | 10 | 0 | 100.0% |
-| Eventbrite* | 25 | TBD | TBD | TBD | TBD |
-| **TOTAL** | **275** | **0** | **238** | **17** | **86.5%** |
+1. **DICE was queried for London** against a TM estate with **0 London events** — false comparison, different event universes.
+2. **Resident Advisor `city` parameter is unreliable** — returns London venues regardless of city input.
+3. **AllEvents `cities` parameter is unreliable** — returns New York venues regardless of city input.
+4. **Songkick/Bandsintown queried by artist**, not by market — artist queries span multiple markets.
 
-*Eventbrite ran successfully (25 records, 74 fields) but the overlap re-run timed out; data from earlier execution confirms rich schema.
+**Valid same-universe overlap cannot currently be measured** with these actors. RA and AllEvents ignore geographic filtering; DICE and TM cover different markets.
 
-**Key finding: Every external platform finds events Ticketmaster misses.** The 86.5% incremental rate across 275 records confirms that no single official API covers the live entertainment landscape. A multi-source ensemble is necessary for competitive intelligence.
+**What we CAN say:** These platforms (DICE, Eventbrite, Songkick, RA, Bandsintown, AllEvents, Fever) carry events that Ticketmaster's API does not surface. But the exact marginal coverage requires same-universe queries — which these specific actor versions do not support reliably.
+
+**Recommendation for future measurement:**
+- Query all sources by the same frozen artist × market universe
+- Use artist-specific inputs where city filtering is unreliable
+- Report only same-universe overlap when making incremental-lift claims
 
 ## Historical Depth Tested
 
