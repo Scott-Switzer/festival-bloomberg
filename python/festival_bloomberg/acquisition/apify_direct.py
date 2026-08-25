@@ -48,6 +48,7 @@ def inspect_actor(actor_id: str) -> dict[str, Any]:
     """Fetch actor metadata and input schema from Apify directly.
 
     Returns: { actor_id, title, description, input_schema, default_run_options, ... }
+    The actor_id uses ~ as namespace separator (e.g. crawlergang~songkick-scraper).
     """
     token = _token()
     if token is None:
@@ -63,14 +64,56 @@ def inspect_actor(actor_id: str) -> dict[str, Any]:
     except Exception as e:
         return {"status": "ERROR", "actor_id": actor_id, "error": str(e)}
 
+    actor_data = data.get("data", data)  # handle both wrapped/unwrapped
+
+    # Extract input schema from tagged build
+    input_schema = {}
+    build_id = None
+    tagged = actor_data.get("taggedBuilds", {})
+    if tagged:
+        latest_tag = tagged.get("latest", {})
+        build_id = latest_tag.get("buildId")
+
+    if build_id:
+        build_url = f"{DEFAULT_BASE_URL}/acts/{actor_id}/builds/{build_id}"
+        try:
+            b_req = urllib.request.Request(build_url, headers={"Authorization": f"Bearer {token}"})
+            with urllib.request.urlopen(b_req, timeout=15) as b_resp:
+                build_data = json.loads(b_resp.read().decode("utf-8"))
+            bd = build_data.get("data", build_data)
+            raw_schema = bd.get("inputSchema", {})
+            # inputSchema may be a JSON string — parse if needed
+            if isinstance(raw_schema, str):
+                try:
+                    input_schema = json.loads(raw_schema)
+                except json.JSONDecodeError:
+                    input_schema = {}
+            else:
+                input_schema = raw_schema
+        except Exception:
+            pass  # schema unavailable
+
+    # Pricing info
+    pricing = actor_data.get("pricingInfos", {})
+    usage_usd = actor_data.get("usageTotalUsd") or (pricing.get("pricePerUnitUsd") if isinstance(pricing, dict) else None)
+
     return {
         "status": "OBSERVED",
         "actor_id": actor_id,
-        "title": data.get("data", {}).get("title", ""),
-        "description_short": data.get("data", {}).get("description", "")[:500],
-        "input_schema": data.get("data", {}).get("input", {}),
-        "default_run_options": data.get("data", {}).get("defaultRunOptions", {}),
-        "stats": data.get("data", {}).get("stats", {}),
+        "title": actor_data.get("title", ""),
+        "description_short": (actor_data.get("description") or "")[:500],
+        "input_schema": input_schema,
+        "schema_properties": list(input_schema.get("properties", {}).keys()) if isinstance(input_schema, dict) else [],
+        "example_run_input": actor_data.get("exampleRunInput", {}),
+        "default_run_options": actor_data.get("defaultRunOptions", {}),
+        "stats": actor_data.get("stats", {}),
+        "build_version": tagged.get("latest", {}).get("buildNumber", "unknown") if tagged else "unknown",
+        "build_id": build_id,
+        "pricing_model": str(pricing)[:200] if pricing else None,
+        "usage_total_usd": usage_usd,
+        "modified_at": actor_data.get("modifiedAt"),
+        "categories": actor_data.get("categories", []),
+        "is_deprecated": actor_data.get("isDeprecated", False),
     }
 
 

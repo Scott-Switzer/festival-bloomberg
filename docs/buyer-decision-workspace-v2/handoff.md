@@ -42,37 +42,38 @@ predictive ability.
 - Venue capacity, competitive calendar, economics, evidence all diffable
 - No recommendation or score — just "here's what differs"
 
-### Phase 4–8: Monid/Apify Source Bakeoff
+### Phase 4–8: Direct Apify Source Bakeoff (COMPLETED)
 
-**Monid CLI installed and configured** (v0.1.6, MONID_API_KEY from .env).
+**Direct Apify API configured** (APIFY_TOKEN from .env, single credential).
 
-**Discovery:** 20+ endpoints discovered across Apify, context.dev, TikHub.
-Inspected 6 candidates (free). Executed 5 real paid calls.
+**Schema inspection:** 18 actor candidates inspected (free). 10 executed with real queries.
 
-**Real measurements:**
+**Real dataset measurements:**
 
-| Source | Cost | Record Count | Fields |
-|--------|------|-------------|--------|
-| Google Maps | $0.0045/result | 1 | title, address, lat, lng, rating, website |
-| YouTube | $0.0045/result | 5 | title, viewCount, likes, date, channelName |
-| TikTok | $0.00045/result | 0 | noResults (unreliable) |
-| Instagram | $0.003/result | 1 | username, followersCount (18.7M), biography |
-| Web Scrape | $0.0009/call | N/A | 154KB markdown from Wikipedia |
+| Source | Records | Cost | Fields | Coords | Price | PIT | Verdict |
+|--------|---------|------|--------|--------|-------|-----|---------|
+| Eventbrite (scrapesage) | 25 | $0.00 | 74 | ✓ | ✓ | ✓ publishedDate | PILOT_ONLY |
+| DICE (hoholabs) | 50 | $0.003 | 52 | ✓ | ✓ | ✓ announcement_date | PILOT_ONLY |
+| Songkick (gio21) | 50 | $0.00 | 16 | 98% | ✗ | ✗ | RESEARCH_ONLY |
+| AllEvents | 100 | $0.00 | 24 | ✓ | ✓ | ✗ | RESEARCH_ONLY |
+| Resident Advisor | 20 | $0.00 | 16 | ✗ | ✗ | ✗ | RESEARCH_ONLY |
+| Bandsintown (autolab) | 10 | $0.00 | 13 | ✗ | ✗ | ✗ | RESEARCH_ONLY |
+| Fever | 20 | $0.00 | 14 | ✓ | ✓ | ✗ | RESEARCH_ONLY |
+| TM Web (control) | ERROR | — | — | — | — | — | REJECT |
 
-**Total spent: $0.02835 from $1.00 balance.**
+**Total spent: $0.0038 from $2.00 budget.**
 
 ### Phase 9: Source Acceptance Matrix
 
 See: `docs/buyer-decision-workspace-v2/source-acceptance-matrix.md`
 
-**ADOPTED (1):**
-- `context.dev/web/scrape/markdown` — highest value/cost ratio for venue/event enrichment
+**ADOPTED — PILOT_ONLY (2):**
+- `Eventbrite (scrapesage~eventbrite-scraper)` — 74 fields including publishedDate (PIT), price, capacity, organizer enrichment
+- `DICE (hoholabs~dicefm-scraper)` — 52 fields including announcement_date (PIT), genre tags, ticket breakdown, sold-out detection
 
-**PILOT ONLY (1):**
-- `apify/streamers/youtube-scraper` — good attention data but defer to official YouTube API
+**Research rail (3):** Songkick, AllEvents, Resident Advisor
 
-**NOT AVAILABLE through Monid (requires direct Apify token):**
-- Songkick, Eventbrite (both), Resident Advisor, Bandsintown — the specialist event scrapers
+**All specialist event scrapers now available via direct Apify.**
 
 ### Phase 10–11: Architecture
 
@@ -95,7 +96,7 @@ All new sources normalize through the existing evidence model:
 
 ## Tests
 
-**29 new tests** in `tests/python/test_proposed_show.py` covering:
+**41 proposed-show tests** in `tests/python/test_proposed_show.py`.
 - CRUD (create, get, list, idempotent, version increment)
 - Evidence classification (KNOWN/ASSUMED/UNKNOWN/CONFLICTING)
 - UNKNOWN propagation (never collapsed to 0)
@@ -115,12 +116,14 @@ All new sources normalize through the existing evidence model:
 
 **Migration counts updated:** 36→37 in all test assertions.
 
-## Test Results
+**Total:** 779 Python tests collected, 1 skipped. Node tests pending full build.
 
-```
-Python: 766 passed, 1 skipped (0 failures)
-Node:   76 passed (0 failures)
-```
+Key results:
+- 41 proposed-show tests: ✅ all pass
+- Immutable revisions: ✅ v1 preserved, v2 distinct, replay deterministic
+- Evidence classification: ✅ KNOWN/ASSUMED/UNKNOWN/CONFLICTING
+- Product acceptance: ✅ 2 real scenarios, buyer view renders 11 sections, comparison detects venue/guarantee/cutoff diffs
+- Source bakeoff: ✅ 18 inspected, 10 executed, $0.0038 spent, 2 adopted
 
 ## Product Gate
 
@@ -176,22 +179,20 @@ New terminal API routes:
 
 ## Remaining Product Gaps
 
-1. **Event-source gap:** Songkick, Eventbrite, RA, Bandsintown NOT available through Monid. Need direct Apify token.
-2. **SPA panel:** API routes exist but the SPA needs a `buyer-decision` panel in `apps/terminal/static/app.js`.
-3. **Monid → proposed_show bridge:** Source bakeoff results aren't yet wired into the buyer view's provenance section.
-4. **Historical knowledge-time semantics:** Current scrapes correctly marked as current, not historical.
+1. **Event-source integration rail:** Eventbrite (scrapesage) and DICE (hoholabs) are evaluated and selected, but the normalized acquisition rail (ingest → normalize → evidence) is not yet wired.
+2. **SPA panel for direct-Apify results:** The buyer view shows provenance from Ticketmaster but not yet from the new scrapers.
+3. **Terms/commercial clearance:** All scraped sources are TERMS_REVIEW_REQUIRED — no commercial clearance has been sought.
+4. **Multi-key rotation:** Explicitly deferred — single APIFY_TOKEN is sufficient for this bounded evaluation.
 
 ## Next Milestone Ranking
 
 Based on measured marginal buyer value from this milestone:
 
-1. **HISTORICAL_WEB_EVIDENCE_V1** — Songkick/Bandsintown gigography would materially improve historical event coverage and comparable-event evidence. Direct Apify token required.
+1. **SOURCE_ACQUISITION_RAIL_V1** — Wire the 2 adopted scrapers (Eventbrite + DICE) into the acquisition rail with normalization, evidence integration, and provenance.
 
-2. **DESIGN_PARTNER_DATA_ACTIVATION_V2** — The unified proposed-show object is ready for design partners who can validate whether the buyer view answers real underwriting questions.
+2. **DESIGN_PARTNER_DATA_ACTIVATION_V2** — The unified proposed-show object is ready. Design partners can validate whether the buyer view answers real underwriting questions.
 
-3. **SOCIAL_ATTENTION_PANEL_V1** — YouTube/Instagram scrapers are evaluated and cheap. A forward-attention panel for talent buyers is more valuable than abstract "market fundamentals."
-
-4. **MARKET_FUNDAMENTALS_V1** — Market-level data aggregation is less valuable than artist-specific evidence for underwriting decisions.
+3. **HISTORICAL_WEB_EVIDENCE_V1** — Songkick/AllEvents gigography would materially improve historical event coverage with deeper queries and broader date ranges.
 
 ## Security
 
