@@ -6,24 +6,27 @@
 -- A proposed show organizes existing evidence around one coherent object:
 -- ARTIST × MARKET × DATE × VENUE × DEAL
 --
--- The workspace presents evidence status (known/assumed/unknown/conflicting),
--- competitive calendar, comparable events, venue capacity, show economics,
--- artist/attention context, risks/warnings, and provenance — all without
--- any opaque recommendation score.
+-- Identity model: proposed_show_key now includes venue + deal dimensions,
+-- so same artist/market/date + different venue or deal do NOT collide.
 --
--- Semantics preserved:
---   UNKNOWN != 0
---   retrieved_at != publication_time
---   current scrape != historical availability
---   current followers != historical followers
---   source existence today != knowable at decision cutoff
+-- Immutable revisions: each update snapshots the previous state into
+-- planning.proposed_show_revisions before overwriting.
+--
+-- Evidence provenance: deal_provenance, guarantee_provenance, backend_provenance
+-- capture whether values are USER_ASSUMPTION, OBSERVED_PUBLIC, etc.
+-- USER_ASSUMPTION is NEVER classified as KNOWN.
 -- ===========================================================================
+
+-- Drop old table to allow schema change (columns added, type changed).
+DROP TABLE IF EXISTS planning.proposal_comparisons;
+DROP TABLE IF EXISTS planning.proposed_show_revisions;
+DROP TABLE IF EXISTS planning.proposed_shows;
 
 -- ---------------------------------------------------------------------------
 -- 1. Proposed shows (one coherent underwriting object).
 -- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS planning.proposed_shows (
-    proposed_show_key   VARCHAR PRIMARY KEY,   -- hash(project_key, artist_key, market, date)
+CREATE TABLE planning.proposed_shows (
+    proposed_show_key   VARCHAR PRIMARY KEY,   -- hash(project, artist, market, date, venue, deal)
     project_key         VARCHAR NOT NULL,
     artist_key          VARCHAR,
     artist_name         VARCHAR NOT NULL,
@@ -35,28 +38,44 @@ CREATE TABLE IF NOT EXISTS planning.proposed_shows (
     venue_name          VARCHAR,
     venue_configuration VARCHAR,               -- e.g. "SEATED", "CONCERT", "SPORTS"
     proposed_date       DATE NOT NULL,
-    deal_type           VARCHAR,               -- FLAT_GUARANTEE|GUARANTEE_VS_PERCENTAGE|PERCENTAGE
+    deal_type           VARCHAR,               -- FLAT_GUARANTEE|GUARANTEE_VS_PERCENTAGE|...
     artist_guarantee    DOUBLE,
     backend_percentage  DOUBLE,
     backend_basis       VARCHAR,
+    deal_provenance     VARCHAR NOT NULL DEFAULT 'USER_ASSUMPTION',
+    guarantee_provenance VARCHAR NOT NULL DEFAULT 'USER_ASSUMPTION',
+    backend_provenance  VARCHAR NOT NULL DEFAULT 'USER_ASSUMPTION',
     decision_cutoff     TIMESTAMP,             -- when the buyer must decide
     research_cutoff     TIMESTAMP,             -- PIT anchor (earliest knowledge cutoff)
-    scenario_version    INTEGER NOT NULL DEFAULT 1,
+    current_revision    INTEGER NOT NULL DEFAULT 1,
     notes               VARCHAR,
     created_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-CREATE INDEX IF NOT EXISTS idx_proposed_shows_project
+CREATE INDEX idx_proposed_shows_project
   ON planning.proposed_shows (project_key);
-CREATE INDEX IF NOT EXISTS idx_proposed_shows_date
+CREATE INDEX idx_proposed_shows_date
   ON planning.proposed_shows (proposed_date);
 
 -- ---------------------------------------------------------------------------
--- 2. Proposal comparisons (stored snapshots of a buyer comparing scenarios).
---    Each comparison links 2+ proposed shows and records the assembled
---    evidence snapshot at compare time, so it is replayable.
+-- 2. Immutable revision history.
 -- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS planning.proposal_comparisons (
+CREATE TABLE planning.proposed_show_revisions (
+    scenario_key        VARCHAR PRIMARY KEY,   -- hash(proposed_show_key, revision_number, created_at)
+    proposed_show_key   VARCHAR NOT NULL,
+    revision_number     INTEGER NOT NULL,
+    snapshot_json       JSON NOT NULL,         -- frozen show state at this revision
+    created_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    notes               VARCHAR,
+    FOREIGN KEY (proposed_show_key) REFERENCES planning.proposed_shows(proposed_show_key)
+);
+CREATE INDEX idx_revisions_show
+  ON planning.proposed_show_revisions (proposed_show_key, revision_number);
+
+-- ---------------------------------------------------------------------------
+-- 3. Proposal comparisons (stored snapshots of a buyer comparing scenarios).
+-- ---------------------------------------------------------------------------
+CREATE TABLE planning.proposal_comparisons (
     comparison_key      VARCHAR PRIMARY KEY,
     project_key         VARCHAR NOT NULL,
     name                VARCHAR NOT NULL,
@@ -66,12 +85,11 @@ CREATE TABLE IF NOT EXISTS planning.proposal_comparisons (
     notes               VARCHAR,
     created_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-CREATE INDEX IF NOT EXISTS idx_proposal_comparisons_project
+CREATE INDEX idx_proposal_comparisons_project
   ON planning.proposal_comparisons (project_key);
 
 -- ---------------------------------------------------------------------------
--- 3. External source evidence log (Apify/Monid observations).
---    One row per provider call; raw payload preserved for provenance.
+-- 4. External source evidence log (Apify/Monid observations).
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS planning.source_evaluation_log (
     eval_key            VARCHAR PRIMARY KEY,   -- hash(source, actor, query)

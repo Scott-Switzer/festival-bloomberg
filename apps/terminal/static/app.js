@@ -562,6 +562,17 @@
         "<div id='scen-list'></div>";
       html += "<h2>Show economics</h2><p class='sub'>Deterministic underwrites attached to this project. Scenario labels do not imply probability.</p>" +
         "<div id='econ-list'></div><div id='econ-compare'></div>";
+
+      html += "<h2>Proposed shows</h2><p class='sub'>Unified ARTIST × MARKET × DATE × VENUE × DEAL underwriting objects. Evidence organized, never scored.</p>" +
+        "<div class='panel'><input id='ps-artist' placeholder='Artist name' /> " +
+        "<input id='ps-venue' placeholder='Venue name' /> " +
+        "<input id='ps-date' type='date' /> " +
+        "<input id='ps-guarantee' type='number' placeholder='Guarantee' style='width:100px' /> " +
+        "<select id='ps-deal'><option value='FLAT_GUARANTEE'>Flat guarantee</option><option value='GUARANTEE_VS_PERCENTAGE'>Guarantee vs %</option><option value='PERCENTAGE'>Percentage</option></select> " +
+        "<button id='ps-create' data-project='" + esc(p.project_key) + "'>Create proposed show</button></div>" +
+        "<div id='ps-list'></div>" +
+        "<button id='ps-compare-btn' data-project='" + esc(p.project_key) + "' style='margin-top:8px'>Compare proposed shows</button>";
+
       content.innerHTML = html;
 
       var stAdd = document.getElementById("st-add");
@@ -600,6 +611,52 @@
       loadShortlist(p.project_key);
       loadScenarios(p.project_key);
       loadEconomicsScenarios(p.project_key);
+      loadProposedShows(p.project_key);
+
+      var psCreate = document.getElementById("ps-create");
+      if (psCreate) psCreate.addEventListener("click", function () {
+        api("/api/planning/projects/" + encodeURIComponent(p.project_key) + "/proposed-shows", {
+          method: "POST",
+          body: JSON.stringify({
+            artist_name: document.getElementById("ps-artist").value.trim(),
+            venue_name: document.getElementById("ps-venue").value.trim(),
+            proposed_date: document.getElementById("ps-date").value,
+            artist_guarantee: Number(document.getElementById("ps-guarantee").value) || null,
+            deal_type: document.getElementById("ps-deal").value,
+            market: p.city || p.market || "",
+            city: p.city,
+            project_key: p.project_key,
+          }),
+        }).then(function (show) {
+          if (show && show.proposed_show_key) location.hash = "#/build/" + encodeURIComponent(p.project_key) + "/proposed/" + encodeURIComponent(show.proposed_show_key);
+          else loadProposedShows(p.project_key);
+        });
+      });
+
+      var psCompareBtn = document.getElementById("ps-compare-btn");
+      if (psCompareBtn) psCompareBtn.addEventListener("click", function () {
+        location.hash = "#/build/" + encodeURIComponent(p.project_key) + "/compare-proposals";
+      });
+    });
+  }
+
+  function loadProposedShows(projectKey) {
+    api("/api/planning/projects/" + encodeURIComponent(projectKey) + "/proposed-shows").then(function (shows) {
+      var el = document.getElementById("ps-list");
+      if (!el) return;
+      if (!shows || !shows.length) {
+        el.innerHTML = '<div class="none">No proposed shows yet. Create one above.</div>';
+        return;
+      }
+      el.innerHTML = "<table><thead><tr><th>Artist</th><th>Date</th><th>Venue</th><th>Deal</th><th>Guarantee</th><th>Rev</th></tr></thead><tbody>" +
+        shows.map(function (s) {
+          return "<tr><td>" + linkTo("build/" + encodeURIComponent(projectKey) + "/proposed", s.proposed_show_key, s.artist_name) + "</td>" +
+            "<td>" + fmt(s.proposed_date) + "</td>" +
+            "<td>" + fmt(s.venue_name) + "</td>" +
+            "<td>" + fmt(s.deal_type) + "</td>" +
+            "<td>" + (s.artist_guarantee ? "$" + s.artist_guarantee.toLocaleString() : "UNKNOWN") + "</td>" +
+            "<td>" + s.current_revision + "</td></tr>";
+        }).join("") + "</tbody></table>";
     });
   }
 
@@ -1348,6 +1405,178 @@
     document.getElementById("ask-q").onkeydown = function (e) { if (e.key === "Enter") go(); };
   }
 
+  /* ---- BUILD: proposed shows ------------------------------------------ */
+
+  function viewProposedShow(projectKey, showKey) {
+    setNav("build");
+    api("/api/planning/projects/" + encodeURIComponent(projectKey)).then(function (p) {
+      api("/api/planning/projects/" + encodeURIComponent(projectKey) + "/buyer-decision?show=" + encodeURIComponent(showKey)).then(function (view) {
+        if (!view || view.status !== "OBSERVED") {
+          content.innerHTML = '<p><a href="#/build/' + esc(projectKey) + '">← Build</a></p><h1>Proposed Show</h1><div class="none">Not found.</div>';
+          return;
+        }
+        var h = view.header;
+        var ev = view.evidence_status;
+        var html = '<p><a href="#/build/' + esc(projectKey) + '">← ' + esc(p.name) + "</a></p>";
+
+        // 1. SHOW HEADER
+        html += "<h1>PROPOSED SHOW</h1>" +
+          "<div class='card'><table><tr><th>Artist</th><td><strong>" + esc(h.artist_name) + "</strong></td>" +
+          "<th>Market</th><td>" + esc(h.market) + "</td></tr>" +
+          "<tr><th>Date</th><td>" + fmt(h.proposed_date) + "</td>" +
+          "<th>Venue</th><td>" + esc(h.venue_name) + "</td></tr>" +
+          "<tr><th>Configuration</th><td>" + fmt(h.venue_configuration) + "</td>" +
+          "<th>Deal</th><td>" + fmt(h.deal_type) + "</td></tr>" +
+          "<tr><th>Guarantee</th><td>" + (h.artist_guarantee ? "$" + h.artist_guarantee.toLocaleString() : "UNKNOWN") +
+          " <span class='pill prov-" + esc(h.guarantee_provenance) + "'>" + esc(h.guarantee_provenance) + "</span></td>" +
+          "<th>Decision cutoff</th><td>" + fmt(h.decision_cutoff) + "</td></tr>" +
+          "<tr><th>Research cutoff</th><td>" + fmt(h.research_cutoff) + "</td>" +
+          "<th>Revision</th><td>" + h.current_revision + "</td></tr></table></div>";
+
+        // 2. EVIDENCE STATUS
+        html += "<h2>Evidence status</h2><div style='display:flex;gap:8px'>" +
+          "<span class='pill ok'>" + ev.KNOWN.length + " KNOWN</span>" +
+          "<span class='pill warn'>" + ev.ASSUMED.length + " ASSUMED</span>" +
+          "<span class='pill off'>" + ev.UNKNOWN.length + " UNKNOWN</span>" +
+          "<span class='pill off'>" + ev.CONFLICTING.length + " CONFLICTING</span></div>";
+        if (ev.ASSUMED.length) html += "<p class='muted'>Assumptions: " + ev.ASSUMED.map(function (f) { return '<code>' + esc(f) + '</code>'; }).join(", ") + "</p>";
+        if (ev.UNKNOWN.length) html += "<p class='muted'>Unknown: " + ev.UNKNOWN.map(function (f) { return '<code>' + esc(f) + '</code>'; }).join(", ") + "</p>";
+
+        // 3. VENUE / CAPACITY
+        var vc = view.venue_capacity;
+        html += "<h2>Venue capacity</h2>";
+        html += "<p class='muted'>Status: <span class='pill " + (vc.status === "CONFIGURATION_COMPATIBLE" ? "ok" : "warn") + "'>" + esc(vc.status) + "</span></p>";
+        var safePairs = (vc.assessment || {}).safe_pairs || [];
+        var reviewPairs = (vc.assessment || {}).review_required_pairs || [];
+        if (safePairs.length) html += "<p>Safe: " + safePairs.map(function (p) { return esc(p.configuration) + " → " + p.value; }).join(", ") + "</p>";
+        if (reviewPairs.length) html += "<p class='warn-line'>⚠ Review required: " + reviewPairs.map(function (p) { return esc(p.configuration) + " (" + p.values.join("/") + ")"; }).join(", ") + "</p>";
+
+        // 4. COMPETITIVE CALENDAR
+        var cc = view.competitive_calendar;
+        html += "<h2>Competitive calendar</h2>" +
+          "<p class='muted'>PIT: <span class='pill warn'>" + esc(cc.pit_mode) + "</span>" +
+          " · known: " + (cc.known_at_cutoff ? cc.known_at_cutoff.length : 0) +
+          " · post: " + (cc.observed_after_cutoff ? cc.observed_after_cutoff.length : 0) +
+          " · unknown time: " + (cc.unknown_knowledge_time ? cc.unknown_knowledge_time.length : 0) + "</p>";
+        if (cc.distance) {
+          html += "<p class='muted'>Distance: same venue " + fmt(cc.distance.same_venue) +
+            " · ≤5mi " + fmt(cc.distance.within_5) + " · ≤10mi " + fmt(cc.distance.within_10) +
+            " · ≤25mi " + fmt(cc.distance.within_25) + " · ≤50mi " + fmt(cc.distance.within_50) + "</p>";
+        }
+
+        // 5. COMPARABLE EVENTS
+        var comp = view.comparable_events;
+        html += "<h2>Comparable events</h2>";
+        var gross = comp.gross || {};
+        html += "<p>Gross: status " + esc(gross.status) + (gross.weighted_median != null ? " · median $" + gross.weighted_median : "") + "</p>";
+
+        // 6. ARTIST CONTEXT
+        var artist = view.artist_context;
+        html += "<h2>Artist context</h2>" +
+          "<p>Identity: " + (artist.identity && artist.identity.matched ? "resolved" : "UNKNOWN") + "</p>";
+
+        // 7. SHOW ECONOMICS
+        var econ = view.show_economics;
+        html += "<h2>Show economics</h2><p class='muted'>Status: " + esc(econ.status) + "</p>";
+
+        // 8. RISKS
+        var risks = view.risks;
+        html += "<h2>Risks & warnings</h2>";
+        if (!risks.length) html += '<div class="none">No warnings detected.</div>';
+        else risks.forEach(function (r) {
+          var sev = r.severity === "WARNING" ? "warn" : r.severity === "ERROR" ? "off" : "ok";
+          html += '<div><span class="pill ' + sev + '">' + esc(r.severity) + "</span> " + esc(r.type) + ": " + esc(r.detail) + "</div>";
+        });
+
+        // 9. PROVENANCE
+        html += "<h2>Provenance</h2><p class='muted'>" + esc(view.provenance.competitive_calendar) + "</p>";
+        html += "<p class='muted'>Sources: " + view.provenance.source_count + "</p>";
+
+        // Actions
+        html += "<div class='panel' style='margin-top:16px'>" +
+          "<button id='ps-compare' data-project='" + esc(projectKey) + "' data-show='" + esc(showKey) + "'>Compare with another</button> " +
+          "<button id='ps-revisions' data-project='" + esc(projectKey) + "' data-show='" + esc(showKey) + "'>Revision history</button></div>" +
+          "<div id='ps-revisions-out'></div>";
+
+        content.innerHTML = html;
+        var compareBtn = document.getElementById("ps-compare");
+        if (compareBtn) compareBtn.addEventListener("click", function () {
+          location.hash = "#/build/" + encodeURIComponent(projectKey) + "/compare-proposals";
+        });
+        var revBtn = document.getElementById("ps-revisions");
+        if (revBtn) revBtn.addEventListener("click", function () {
+          api("/api/planning/projects/" + encodeURIComponent(projectKey) + "/revisions?show=" + encodeURIComponent(showKey)).then(function (revs) {
+            var out = document.getElementById("ps-revisions-out");
+            if (!revs || !revs.length) { out.innerHTML = '<div class="none">No prior revisions.</div>'; return; }
+            out.innerHTML = "<table><thead><tr><th>Revision</th><th>Date</th><th>Notes</th></tr></thead><tbody>" +
+              revs.map(function (r) {
+                return row([r.revision_number, fmt(r.created_at), fmt(r.notes)]);
+              }).join("") + "</tbody></table>";
+          });
+        });
+      });
+    });
+  }
+
+  function viewCompareProposals(projectKey) {
+    setNav("build");
+    api("/api/planning/projects/" + encodeURIComponent(projectKey)).then(function (p) {
+      api("/api/planning/projects/" + encodeURIComponent(projectKey) + "/proposed-shows").then(function (shows) {
+        if (!shows || !shows.length) {
+          content.innerHTML = '<p><a href="#/build/' + esc(projectKey) + '">← Build</a></p><h1>Compare proposed shows</h1><div class="none">No proposed shows to compare. Create at least 2 shows first.</div>';
+          return;
+        }
+        var html = '<p><a href="#/build/' + esc(projectKey) + '">← ' + esc(p.name) + "</a></p>" +
+          "<h1>COMPARE PROPOSED SHOWS</h1><p class='sub'>Side-by-side evidence comparison. No ranking or recommendation.</p>" +
+          "<p>Select two proposed shows to compare:</p>";
+        shows.forEach(function (s) {
+          html += '<div><input type="checkbox" class="ps-comp-cb" data-show="' + esc(s.proposed_show_key) + '" /> ' +
+            esc(s.artist_name) + " · " + esc(s.proposed_date) + " · " + esc(s.venue_name || "") +
+            " · $" + fmt(s.artist_guarantee) + " · " + esc(s.deal_type || "") + "</div>";
+        });
+        html += "<button id='ps-comp-go' data-project='" + esc(projectKey) + "'>Compare selected</button>";
+        html += "<div id='ps-comp-result'></div>";
+        content.innerHTML = html;
+
+        document.getElementById("ps-comp-go").addEventListener("click", function () {
+          var keys = Array.prototype.slice.call(document.querySelectorAll(".ps-comp-cb:checked")).map(function (cb) { return cb.getAttribute("data-show"); });
+          var out = document.getElementById("ps-comp-result");
+          if (keys.length !== 2) { out.innerHTML = '<div class="error-line">Select exactly two proposed shows.</div>'; return; }
+          api("/api/planning/projects/" + encodeURIComponent(projectKey) + "/compare-proposals", {
+            method: "POST",
+            body: JSON.stringify({ proposed_show_keys: keys }),
+          }).then(function (comparison) {
+            if (!comparison || comparison.status !== "OBSERVED") {
+              out.innerHTML = '<div class="error-line">Comparison failed.</div>'; return;
+            }
+            var table = comparison.comparison_table;
+            out.innerHTML = "<h2>Side-by-side</h2><table><thead><tr><th>Dimension</th>" +
+              comparison.scenarios.map(function (s) { return "<th>" + esc(s.header.artist_name) + " " + esc(s.header.venue_name || "") + " " + esc(s.header.proposed_date) + "</th>"; }).join("") +
+              "</tr></thead><tbody>" +
+              table.map(function (r) {
+                return "<tr><th>" + esc(r.dimension) + "</th>" +
+                  r.values.map(function (v, i) {
+                    return "<td style='" + (r.differs ? "font-weight:bold;background:#fff3cd" : "") + "'>" + esc(v) + "</td>";
+                  }).join("") + "</tr>";
+              }).join("") + "</tbody></table>";
+
+            // Show differences summary.
+            if (comparison.differences.length) {
+              out.innerHTML += "<p class='muted'>Differences: " + comparison.differences.map(function (d) { return esc(d.dimension); }).join(", ") + "</p>";
+            }
+
+            // Risk comparison
+            out.innerHTML += "<h2>Risks per scenario</h2>";
+            comparison.scenarios.forEach(function (s, i) {
+              out.innerHTML += "<h3>Scenario " + (i + 1) + "</h3>" +
+                (s.risks.length ? s.risks.map(function (r) { return '<div class="warn-line">' + esc(r.type) + ": " + esc(r.detail) + "</div>"; }).join("") : '<div class="none">No warnings.</div>');
+            });
+          });
+        });
+      });
+    });
+  }
+
   function tableOrNone(items, headers, render) {
     if (!items || !items.length) return '<div class="none">No data recorded. Unknown is not shown as zero.</div>';
     return "<table><thead><tr>" + headers.map(function (h) { return "<th>" + esc(h) + "</th>"; }).join("") +
@@ -1371,6 +1600,12 @@
     if (view === "tours" && id) return viewTour(decodeURIComponent(id));
     if (view === "build" && id && parts[2] === "economics" && parts[3]) {
       return viewEconomics(decodeURIComponent(id), decodeURIComponent(parts[3]), parts[4] ? decodeURIComponent(parts[4]) : null);
+    }
+    if (view === "build" && id && parts[2] === "proposed" && parts[3]) {
+      return viewProposedShow(decodeURIComponent(id), decodeURIComponent(parts[3]));
+    }
+    if (view === "build" && id && parts[2] === "compare-proposals") {
+      return viewCompareProposals(decodeURIComponent(id));
     }
     if (view === "build" && id) return viewBuildProject(decodeURIComponent(id));
     if (VIEWS[view]) return VIEWS[view]();

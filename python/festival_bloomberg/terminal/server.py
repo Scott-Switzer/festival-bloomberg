@@ -43,7 +43,9 @@ from ..planning.proposed_show import (
     compare_proposals,
     create_proposed_show,
     get_proposed_show,
+    get_revision,
     list_proposed_shows,
+    list_revisions,
 )
 from ..economics.show_economics import scenario_from_dict
 from ..economics.show_economics_product import (
@@ -396,6 +398,9 @@ class TerminalApp:
                     artist_guarantee=b.get("artist_guarantee"),
                     backend_percentage=b.get("backend_percentage"),
                     backend_basis=b.get("backend_basis"),
+                    deal_provenance=b.get("deal_provenance", "USER_ASSUMPTION"),
+                    guarantee_provenance=b.get("guarantee_provenance", "USER_ASSUMPTION"),
+                    backend_provenance=b.get("backend_provenance", "USER_ASSUMPTION"),
                     decision_cutoff=b.get("decision_cutoff"),
                     research_cutoff=b.get("research_cutoff"),
                     notes=b.get("notes"),
@@ -416,7 +421,21 @@ class TerminalApp:
                     self.conn, self.workspace_conn,
                     proposed_show_keys=b.get("proposed_show_keys", []),
                     project_key=pkey,
+                    scenario_keys=b.get("scenario_keys"),
                 ))
+            if sub == "revisions":
+                show_key = params.get("show", "")
+                if show_key:
+                    return self._ok(list_revisions(self.workspace_conn, show_key))
+                else:
+                    return self._bad_request("Missing 'show' parameter")
+            if sub == "revision":
+                scenario_key = params.get("key", "")
+                if scenario_key:
+                    rev = get_revision(self.workspace_conn, scenario_key)
+                    return self._ok(rev) if rev else self._not_found()
+                else:
+                    return self._bad_request("Missing 'key' parameter")
             if sub == "economics":
                 action = segs[2] if len(segs) > 2 else None
                 try:
