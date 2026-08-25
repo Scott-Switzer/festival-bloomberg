@@ -37,6 +37,7 @@ from ..localenv import load_local_env
 from ..planning import candidates as planning_candidates
 from ..planning import repository as planning_repo
 from ..planning import scenario as planning_scenario
+from ..planning.competitive_calendar import calendar_for_proposed_show
 from ..economics.show_economics import scenario_from_dict
 from ..economics.show_economics_product import (
     PRIVATE_DATA_READINESS,
@@ -347,6 +348,25 @@ class TerminalApp:
                     slots=b.get("slots", []), notes=b.get("notes")))
             if sub == "scenarios":
                 return self._ok(planning_repo.list_scenarios(self.workspace_conn, pkey))
+            if sub == "competitive-calendar":
+                project = planning_repo.get_project(self.workspace_conn, pkey) or {}
+                market = project.get("market") or ""
+                state = params.get("state") or (
+                    market.split(",")[1].strip() if market and "," in market else None
+                )
+                lat = float(params["lat"]) if params.get("lat") else None
+                lon = float(params["lon"]) if params.get("lon") else None
+                return self._ok(calendar_for_proposed_show(
+                    self.conn,
+                    city=params.get("city") or project.get("city"),
+                    state_code=state,
+                    date=params.get("date") or project.get("start_date"),
+                    venue_name=params.get("venue_name") or project.get("venue_site"),
+                    venue_id=params.get("venue_id"),
+                    lat=lat,
+                    lon=lon,
+                    research_cutoff=params.get("research_cutoff"),
+                ))
             if sub == "economics":
                 action = segs[2] if len(segs) > 2 else None
                 try:

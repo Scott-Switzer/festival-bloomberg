@@ -47,6 +47,7 @@ milestones:
   SHOW_ECONOMICS_WORKBENCH_V1: "PASS_DETERMINISTIC_V1 (Decimal equations + explicit provenance/bases + UNKNOWN propagation + inverse boundaries + sensitivity + workspace replay; no prediction or recommendation)"
   VENUE_CONFIGURATION_AND_CAPACITY_EVIDENCE_V1: "PARTIAL (5 venues enriched from Wikidata P1083; 9 MAX_PERSONS claims; 0 configuration-specific capacity; workbench-safe prefill = 0; MSG has 5 conflicting claims preserved; Wikipedia infobox + OSM deferred)"
   VENUE_CONFIGURATION_CAPACITY_V2: "PASS (PR #42; mwparserfromhell infobox parser replaces fuzzy search; QID->sitelink->exact-page route; 52 claims across 28 venues incl. SEATED x8 + CONCERT + SPORTS x6; 8 workbench-safe venue-configuration prefills vs 0 in V1 (MSG CONCERT 22,000 correctly blocked: CROSS_KIND_CONTRADICTION vs MAX 20,789); one shared assess_venue_claims contract across production capacity_prefill/acquisition/tests; raw/parser metadata preserved; fixed br-concatenation + DuckDB ADD-COLUMN index defects; OSM low-yield)"
+  MARKET_COMPETITIVE_CALENDAR_V1: "PASS_MEASURED (full public live-event calendar: Ticketmaster sweep across Music+Sports+Arts&Theatre+Family+Film+Miscellaneous with raw classification IDs preserved; 108 partitions 90 COMPLETE/18 SPLIT/0 truncated, 872 requests, 18,818 snapshots; PIT tri-state known/post/unknown via two-pass acquisition + earliest knowledge_time; explainable competitive-calendar panel in BUILD workspace with distance buckets 5/10/25/50mi, segment split windows, no competition score; 18.3% of music targets have same-day non-music competitors and 55% see +-3d context change from non-music — information lift over music-only = PASS)"
 
 providers:
   # status taxonomy: PUBLIC_NO_AUTH | AUTH_CONFIGURED | AUTH_MISSING |
@@ -92,6 +93,7 @@ docs:
   - show-economics-workbench-v1.md
   - venue-configuration-capacity-evidence-v1.md
   - venue-configuration-capacity-v2.md
+  - market-competitive-calendar-v1.md
 
 key_commands:
   context: "PYTHONPATH=python .venv/bin/python -m festival_bloomberg.ops.context_snapshot"

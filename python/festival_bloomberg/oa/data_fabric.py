@@ -282,6 +282,7 @@ def _run_ticketmaster(
         _sweep_window(
             conn, provider, city, state, start, end,
             depth=0, parent_id=None, summary=summary, run_retrieved=run_retrieved,
+            classification_name="Music",
         )
         if summary["status"].startswith(("RATE_LIMITED", "STOPPED", "NOT_CONFIGURED")):
             break
@@ -305,16 +306,19 @@ def _sweep_window(
     parent_id: str | None,
     summary: dict[str, Any],
     run_retrieved: str,
+    classification_name: str = "Music",
+    software_version: str = SOFTWARE_VERSION,
 ) -> None:
-    """Recursively sweep one market x date window, splitting oversized windows.
+    """Recursively sweep one market x classification x date window.
 
     A partition whose reported total exceeds the provider's deep-paging
     ceiling is SPLIT in half and each half re-queried, down to a minimum
     window, so every LEAF partition is either COMPLETE or explicitly
     TRUNCATED_BY_CAP / RATE_LIMITED / ERROR — never silently truncated.
     """
+    class_key = classification_name.lower().replace(" ", "_")
     partition_id = (
-        f"{city.lower()},{state.lower()},US:music"
+        f"{city.lower()},{state.lower()},US:{class_key}"
         f":{start.strftime('%Y%m%d')}-{end.strftime('%Y%m%d')}"
     )
     market_id = f"{city},{state},US"
@@ -324,7 +328,7 @@ def _sweep_window(
         platform="ticketmaster",
         query="",
         market_id=market_id,
-        classification_name="Music",
+        classification_name=classification_name,
         max_records=RETRIEVAL_CEILING,
         operation="SEARCH_EVENTS",
         commercial_context="research",
@@ -339,19 +343,25 @@ def _sweep_window(
     if result.status.value == "NOT_CONFIGURED":
         summary["status"] = "NOT_CONFIGURED"
         _persist_partition(conn, partition_id, market_id, start, end, "NOT_CONFIGURED",
-                           None, False, None, parent_id, depth, run_retrieved)
+                           None, False, None, parent_id, depth, run_retrieved,
+                           classification_name=classification_name,
+                           software_version=software_version)
         return
     if result.status.value == "RATE_LIMITED":
         summary["rate_limited"] += 1
         summary["status"] = "RATE_LIMITED_STOPPED"
         _persist_partition(conn, partition_id, market_id, start, end, "RATE_LIMITED",
-                           None, False, "rate_limited", parent_id, depth, run_retrieved)
+                           None, False, "rate_limited", parent_id, depth, run_retrieved,
+                           classification_name=classification_name,
+                           software_version=software_version)
         return
     if result.status.value == "PROVIDER_ERROR":
         summary["provider_errors"] += 1
         summary["status"] = "STOPPED_PROVIDER_ERROR"
         _persist_partition(conn, partition_id, market_id, start, end, "ERROR",
-                           None, False, "provider_error", parent_id, depth, run_retrieved)
+                           None, False, "provider_error", parent_id, depth, run_retrieved,
+                           classification_name=classification_name,
+                           software_version=software_version)
         return
 
     # One snapshot per (event, run): the split re-fetches are pagination
@@ -359,7 +369,8 @@ def _sweep_window(
     # retrieved_at and dedupe against the parent partition's copies.
     persisted = 0
     for rec in result.records:
-        if _persist_event_snapshot(conn, rec, run_retrieved):
+        if _persist_event_snapshot(conn, rec, run_retrieved,
+                                   software_version=software_version):
             persisted += 1
     summary["events_persisted"] += persisted
 
@@ -375,12 +386,18 @@ def _sweep_window(
             "reported_total_exceeds_ceiling", parent_id, depth, run_retrieved,
             received=pagination.get("items_fetched"), persisted=persisted,
             split_reason="reported_total_exceeds_ceiling",
+            classification_name=classification_name,
+            software_version=software_version,
         )
         mid = start + (end - start) / 2
         _sweep_window(conn, provider, city, state, start, mid, depth=depth + 1,
-                      parent_id=partition_id, summary=summary, run_retrieved=run_retrieved)
+                      parent_id=partition_id, summary=summary, run_retrieved=run_retrieved,
+                      classification_name=classification_name,
+                      software_version=software_version)
         _sweep_window(conn, provider, city, state, mid, end, depth=depth + 1,
-                      parent_id=partition_id, summary=summary, run_retrieved=run_retrieved)
+                      parent_id=partition_id, summary=summary, run_retrieved=run_retrieved,
+                      classification_name=classification_name,
+                      software_version=software_version)
         return
 
     if complete and not truncated:
@@ -395,6 +412,8 @@ def _sweep_window(
         conn, partition_id, market_id, start, end, status, total, truncated,
         None, parent_id, depth, run_retrieved,
         received=pagination.get("items_fetched"), persisted=persisted,
+        classification_name=classification_name,
+        software_version=software_version,
     )
 
 
@@ -414,6 +433,8 @@ def _persist_partition(
     received: int | None = None,
     persisted: int | None = None,
     split_reason: str | None = None,
+    classification_name: str = "Music",
+    software_version: str = SOFTWARE_VERSION,
 ) -> None:
     partition_key = content_hash_of(f"ticketmaster|{partition_id}|{retrieved_at}")
     exists = conn.execute(
@@ -429,23 +450,26 @@ def _persist_partition(
              records_persisted, truncated, status, error_category, parent_partition_id,
              depth, split_reason, started_at, finished_at, retrieved_at,
              knowledge_time, software_version, ingested_at)
-        VALUES (?, 'ticketmaster', ?, ?, 'Music', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL,
+        VALUES (?, 'ticketmaster', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL,
                 NULL, ?, ?, ?, CURRENT_TIMESTAMP)
         """,
         [
-            partition_key, partition_id, market_id,
+            partition_key, partition_id, market_id, classification_name,
             start.strftime("%Y-%m-%d") if hasattr(start, "strftime") else str(start),
             end.strftime("%Y-%m-%d") if hasattr(end, "strftime") else str(end),
             total_expected,
             received if received is not None else 0,
             persisted if persisted is not None else 0,
             truncated, status, error_category, parent_id, depth, split_reason,
-            retrieved_at, retrieved_at, SOFTWARE_VERSION,
+            retrieved_at, retrieved_at, software_version,
         ],
     )
 
 
-def _persist_event_snapshot(conn, rec: dict[str, Any], retrieved_at: str) -> bool:
+def _persist_event_snapshot(
+    conn, rec: dict[str, Any], retrieved_at: str,
+    software_version: str = SOFTWARE_VERSION,
+) -> bool:
     platform_object_id = rec.get("platform_object_id")
     if not platform_object_id:
         return False
@@ -467,18 +491,23 @@ def _persist_event_snapshot(conn, rec: dict[str, Any], retrieved_at: str) -> boo
              attractions, venue_id, venue_name, city, state_code, country_code,
              latitude, longitude, local_date, local_time, event_time, timezone,
              event_status, onsale_start, onsale_end, presales, price_min,
-             price_max, price_currency, price_type, promoter, segment, genre,
-             subgenre, event_type, canonical_url, retrieved_at, knowledge_time,
+             price_max, price_currency, price_type, promoter, segment, segment_id,
+             genre, genre_id, subgenre, subgenre_id, family, event_type,
+             canonical_url, retrieved_at, knowledge_time,
              content_hash, raw_payload_hash, rights_status, commercial_use_status,
              software_version, ingested_at)
         VALUES (?, 'ticketmaster',
-                ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?,
-                ?, ?, ?, 'RESEARCH_ONLY',
+                ?, ?, ?, ?,
+                ?, ?, ?, ?,
+                ?, ?, ?, ?,
+                ?, ?, ?, ?,
+                ?, ?, ?, ?,
+                ?, ?, ?, ?,
+                ?, ?, ?, ?,
+                ?, ?, ?, ?,
+                ?, ?, ?, ?,
+                ?,
+                'RESEARCH_ONLY',
                 'PROTOTYPE_ONLY', ?, CURRENT_TIMESTAMP)
         """,
         [
@@ -508,15 +537,19 @@ def _persist_event_snapshot(conn, rec: dict[str, Any], retrieved_at: str) -> boo
             rec.get("price_type"),
             rec.get("promoter"),
             classifications.get("segment"),
+            classifications.get("segment_id"),
             classifications.get("genre"),
+            classifications.get("genre_id"),
             classifications.get("subgenre"),
+            classifications.get("subgenre_id"),
+            classifications.get("family"),
             rec.get("event_type"),
             rec.get("canonical_url"),
             retrieved_at,
             retrieved_at,
             rec.get("content_hash"),
             rec.get("content_hash"),
-            SOFTWARE_VERSION,
+            software_version,
         ],
     )
     return True
