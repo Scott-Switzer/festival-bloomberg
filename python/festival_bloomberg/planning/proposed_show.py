@@ -29,7 +29,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from .competitive_calendar import calendar_for_proposed_show
@@ -772,7 +772,7 @@ def _ticket_market_section(
             sources.append(src)
 
         h0 = hist[0] if hist else {}
-        return {
+        section = {
             "status": "OBSERVED" if sources else "NO_MATCHED_SNAPSHOTS",
             "event_key": event_key,
             "sources": sources,
@@ -784,6 +784,17 @@ def _ticket_market_section(
                 "last_observed": str(h0["last_observed"])[:19] if h0.get("last_observed") else None,
             },
         }
+
+        # ---- TICKET_MARKET_DATA_MOAT_V2 additions (graceful when absent) ----
+        # 5. NOW / 1D / 7D history columns per source.
+        section["market_history"] = _market_history_columns(evidence_conn, event_key, sources)
+        # 6. Cross-market summary (all-in normalized where available).
+        section["cross_market"] = _cross_market_summary(sources)
+        # 7. Security master drill-down (event identifiers per marketplace).
+        section["event_identifiers"] = _event_identifiers(evidence_conn, event_key)
+        # 8. Source health by acquisition method.
+        section["source_health"] = _source_health_by_method(evidence_conn, event_key)
+        return section
     except Exception as e:
         return {
             "status": "ERROR",
@@ -791,6 +802,183 @@ def _ticket_market_section(
             "sources": [],
             "history_coverage": {"observations": 0, "sources": [], "first_observed": None, "last_observed": None},
         }
+
+
+def _market_history_columns(
+    evidence_conn, event_key: str, sources: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Per-source NOW / 1D / 7D price and listing columns.
+
+    Factual deltas only — absolute + percent change over the window.
+    Windows use real timestamps; short histories simply report fewer columns.
+    """
+    out: dict[str, Any] = {}
+    try:
+        rows = _rows(
+            evidence_conn,
+            """
+            SELECT source_platform, observed_at,
+                   resale_min_price, resale_median_price, listing_count
+            FROM acquisition.ticket_market_snapshots
+            WHERE event_key = ? AND identity_match_status = 'MATCHED'
+            ORDER BY source_platform, observed_at
+            """,
+            [event_key],
+        )
+    except Exception:
+        return out
+
+    by_source: dict[str, list[dict]] = {}
+    for r in rows:
+        by_source.setdefault(r["source_platform"], []).append(r)
+
+    from datetime import datetime as _dt
+
+    for platform, obs in by_source.items():
+        current = obs[-1]
+        col: dict[str, Any] = {
+            "now": _price_col(current),
+            "observations": len(obs),
+        }
+        now_ts = _parse_ts(current.get("observed_at"))
+        if now_ts is None:
+            out[platform] = col
+            continue
+        for label, hours in (("1d", 24), ("7d", 168)):
+            cutoff = now_ts - timedelta(hours=hours)
+            past = [o for o in obs if _parse_ts(o.get("observed_at")) is not None
+                    and _parse_ts(o.get("observed_at")) <= cutoff]
+            if not past:
+                col[label] = {"available": False, "reason": "no observation in window"}
+                continue
+            oldest = past[0]
+            col[label] = {
+                "available": True,
+                "previous": _price_col(oldest),
+                "delta": _window_delta(oldest, current),
+                "elapsed_hours": round(
+                    (now_ts - _parse_ts(oldest.get("observed_at"))).total_seconds() / 3600, 1
+                ),
+            }
+        out[platform] = col
+    return out
+
+
+def _price_col(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "min_price": row.get("resale_min_price"),
+        "median_price": row.get("resale_median_price"),
+        "listing_count": row.get("listing_count"),
+        "observed_at": str(row.get("observed_at"))[:19] if row.get("observed_at") else None,
+    }
+
+
+def _window_delta(first: dict[str, Any], latest: dict[str, Any]) -> dict[str, Any]:
+    """Absolute + percent delta between two observation rows (price, listings)."""
+    out: dict[str, Any] = {}
+
+    def _d(key: str, label: str) -> None:
+        a = latest.get(key)
+        b = first.get(key)
+        if a is None or b is None:
+            return
+        diff = float(a) - float(b)
+        pct = (diff / float(b) * 100.0) if float(b) else None
+        out[label] = {
+            "previous": float(b),
+            "current": float(a),
+            "absolute_change": round(diff, 2),
+            "percent_change": round(pct, 2) if pct is not None else None,
+        }
+
+    _d("resale_min_price", "min_price")
+    _d("resale_median_price", "median_price")
+    _d("listing_count", "listing_count")
+    return out
+
+
+def _parse_ts(value: Any):
+    from datetime import datetime as _dt
+    if value is None:
+        return None
+    try:
+        return _dt.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+
+
+def _cross_market_summary(sources: list[dict[str, Any]]) -> dict[str, Any]:
+    """Cross-market spread across mapped marketplaces.
+
+    Uses min_price (all-in where available) per source. No arbitrage claim:
+    fee conventions and inventory populations differ by marketplace.
+    """
+    prices = []
+    per_source: dict[str, float | None] = {}
+    for s in sources:
+        p = (s.get("current") or {}).get("min_price")
+        per_source[s["source_platform"]] = p
+        if p is not None:
+            prices.append(float(p))
+    if len(prices) < 2:
+        return {
+            "status": "INSUFFICIENT",
+            "detail": "cross-market spread requires 2+ marketplaces with prices",
+            "per_source": per_source,
+        }
+    lo, hi = min(prices), max(prices)
+    return {
+        "status": "OBSERVED",
+        "lowest_observed_price": lo,
+        "highest_observed_price": hi,
+        "absolute_spread": round(hi - lo, 2),
+        "percent_spread": round((hi - lo) / lo * 100.0, 2) if lo else None,
+        "per_source": per_source,
+        "note": "all-in basis where available; fee conventions differ across marketplaces — not an arbitrage signal",
+    }
+
+
+def _event_identifiers(evidence_conn, event_key: str) -> dict[str, Any]:
+    """Security master drill-down: FI event_key → provider IDs (migration 041)."""
+    try:
+        rows = _rows(
+            evidence_conn,
+            """
+            SELECT marketplace, marketplace_event_id, marketplace_event_url,
+                   mapping_status, mapping_method, confidence, first_resolved_at,
+                   last_verified_at
+            FROM acquisition.event_identifiers
+            WHERE event_key = ?
+            ORDER BY marketplace
+            """,
+            [event_key],
+        )
+    except Exception:
+        return {"status": "UNKNOWN", "reason": "event_identifiers table not available"}
+    return {
+        "status": "OBSERVED" if rows else "NO_IDENTIFIERS",
+        "event_key": event_key,
+        "identifiers": rows,
+    }
+
+
+def _source_health_by_method(evidence_conn, event_key: str) -> dict[str, Any]:
+    """Source health by acquisition method (migration 041)."""
+    try:
+        rows = _rows(
+            evidence_conn,
+            """
+            SELECT method, marketplace, status, error_category, events_requested,
+                   events_resolved, observations_ingested, latency_ms, cost_usd,
+                   schema_version, started_at, finished_at
+            FROM acquisition.source_health_by_method
+            ORDER BY started_at DESC
+            LIMIT 50
+            """,
+        )
+    except Exception:
+        return {"status": "UNKNOWN", "reason": "source_health_by_method table not available"}
+    return {"status": "OBSERVED" if rows else "NO_RUNS", "runs": rows}
 
 
 def _market_change(first: dict[str, Any], latest: dict[str, Any], timing: dict[str, Any]) -> dict[str, Any]:
