@@ -199,6 +199,81 @@ CREATE INDEX IF NOT EXISTS idx_show_economics_revisions
   ON planning.show_economics_scenario_revisions (scenario_key, revision_no);
 
 -- ---------------------------------------------------------------------------
+-- Proposed shows (Buyer Decision Workspace V2).
+-- ARTIST x MARKET x DATE x VENUE x DEAL
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS planning.proposed_shows (
+    proposed_show_key   VARCHAR PRIMARY KEY,
+    project_key         VARCHAR NOT NULL,
+    artist_key          VARCHAR,
+    artist_name         VARCHAR NOT NULL,
+    musicbrainz_id      VARCHAR,
+    market              VARCHAR NOT NULL,
+    city                VARCHAR,
+    state_code          VARCHAR,
+    venue_key           VARCHAR,
+    venue_name          VARCHAR,
+    venue_configuration VARCHAR,
+    proposed_date       DATE NOT NULL,
+    deal_type           VARCHAR,
+    artist_guarantee    DOUBLE,
+    backend_percentage  DOUBLE,
+    backend_basis       VARCHAR,
+    decision_cutoff     TIMESTAMP,
+    research_cutoff     TIMESTAMP,
+    scenario_version    INTEGER NOT NULL DEFAULT 1,
+    notes               VARCHAR,
+    created_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_proposed_shows_project
+  ON planning.proposed_shows (project_key);
+CREATE INDEX IF NOT EXISTS idx_proposed_shows_date
+  ON planning.proposed_shows (proposed_date);
+
+-- ---------------------------------------------------------------------------
+-- Proposal comparisons (stored snapshots).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS planning.proposal_comparisons (
+    comparison_key      VARCHAR PRIMARY KEY,
+    project_key         VARCHAR NOT NULL,
+    name                VARCHAR NOT NULL,
+    proposed_show_keys  JSON NOT NULL,
+    evidence_snapshot   JSON,
+    assumptions_ledger  JSON,
+    notes               VARCHAR,
+    created_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_proposal_comparisons_project
+  ON planning.proposal_comparisons (project_key);
+
+-- ---------------------------------------------------------------------------
+-- External source evaluation log (Apify/Monid bakeoff).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS planning.source_evaluation_log (
+    eval_key            VARCHAR PRIMARY KEY,
+    source              VARCHAR NOT NULL,
+    actor_endpoint      VARCHAR NOT NULL,
+    query_context       VARCHAR NOT NULL,
+    retrieved_at        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    raw_payload         JSON,
+    record_count        INTEGER,
+    cost_usd            DOUBLE,
+    latency_ms          DOUBLE,
+    success             BOOLEAN NOT NULL,
+    error_category      VARCHAR,
+    fields_observed     JSON,
+    null_rate           JSON,
+    verdict             VARCHAR,
+    verdict_rationale   VARCHAR,
+    rights_status       VARCHAR,
+    commercial_use_ok   BOOLEAN,
+    retention_notes     VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_source_eval_source
+  ON planning.source_evaluation_log (source, actor_endpoint);
+
+-- ---------------------------------------------------------------------------
 -- Workspace metadata (schema version + provenance).
 --
 -- created_at    — first-ever workspace creation (INSERT OR IGNORE, never overwritten)
