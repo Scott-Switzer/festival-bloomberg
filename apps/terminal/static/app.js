@@ -550,6 +550,11 @@
       html += "<h2>Shortlist</h2><div id='sl-list'></div>";
       html += "<div class='panel'><button id='sl-refresh' data-project='" + esc(p.project_key) + "'>Refresh</button></div>";
 
+      html += "<h2>Competitive calendar</h2><p class='sub'>What else is happening around the proposed date — raw counts and evidence, never a score. PIT label: NON_PIT means the current warehouse view, not historical knowability.</p>" +
+        "<div class='panel'><label>Date <input id='cc-date' type='date' value='" + esc(p.start_date || "") + "' /></label> " +
+        "<button id='cc-load' data-project='" + esc(p.project_key) + "'>Load calendar</button></div>" +
+        "<div id='cc-view'><div class='none'>Choose a date and load the calendar.</div></div>";
+
       html += "<h2>Scenarios (non-optimizing)</h2>" +
         "<div class='panel'><input id='scen-name' placeholder='Scenario name' value='Day 1 v1' /> " +
         "<button id='scen-build' data-project='" + esc(p.project_key) + "'>Build board from shortlist</button></div>" +
@@ -586,10 +591,63 @@
       if (slRefresh) slRefresh.addEventListener("click", function () { loadShortlist(p.project_key); });
       var scenBuild = document.getElementById("scen-build");
       if (scenBuild) scenBuild.addEventListener("click", function () { buildScenarioBoard(p.project_key); });
+      var ccLoad = document.getElementById("cc-load");
+      if (ccLoad) ccLoad.addEventListener("click", function () {
+        loadCompetitiveCalendar(p.project_key, document.getElementById("cc-date").value || null);
+      });
+      if (p.start_date) loadCompetitiveCalendar(p.project_key, p.start_date);
       loadCandidates(p.project_key);
       loadShortlist(p.project_key);
       loadScenarios(p.project_key);
       loadEconomicsScenarios(p.project_key);
+    });
+  }
+
+  function loadCompetitiveCalendar(projectKey, date) {
+    var q = date ? "?date=" + encodeURIComponent(date) : "";
+    api("/api/planning/projects/" + encodeURIComponent(projectKey) + "/competitive-calendar" + q).then(function (cal) {
+      var el = document.getElementById("cc-view");
+      if (!el) return;
+      if (!cal || cal.status !== "OBSERVED") {
+        el.innerHTML = '<div class="none">No calendar evidence for this date/market yet.</div>';
+        return;
+      }
+      var known = cal.known_at_cutoff || [];
+      var post = cal.observed_after_cutoff || [];
+      var unknown = cal.unknown_knowledge_time || [];
+      var html = "<p class='muted'>" + esc(cal.target.date) + " · " + esc(cal.target.city || "") +
+        " · <span class='pill warn'>" + esc(cal.pit_mode) + "</span></p>";
+      html += "<table><thead><tr><th>Window</th><th>Known at cutoff</th><th>Observed after</th><th>Unknown</th></tr></thead><tbody>";
+      ["pm0", "pm3", "pm7", "pm14"].forEach(function (w) {
+        var cell = (cal.windows || {})[w] || {};
+        var segCounts = function (bucket) {
+          var m = cell[bucket] || {};
+          return Object.keys(m).map(function (s) { return s + " " + m[s]; }).join(", ") || "0";
+        };
+        html += row([w === "pm0" ? "Same day" : "±" + w.slice(2) + " days",
+          segCounts("known_before_cutoff"), segCounts("observed_post_cutoff"), segCounts("unknown_knowledge_time")]);
+      });
+      html += "</tbody></table>";
+      var dist = cal.distance || {};
+      html += "<p class='muted'>Distance: same venue " + fmt(dist.same_venue) +
+        " · ≤5mi " + fmt(dist.within_5) + " · ≤10mi " + fmt(dist.within_10) +
+        " · ≤25mi " + fmt(dist.within_25) + " · ≤50mi " + fmt(dist.within_50) + "</p>";
+      var eventTable = function (rows) {
+        if (!rows.length) return '<div class="none">None</div>';
+        return "<table><thead><tr><th>Date</th><th>Event</th><th>Type</th><th>Venue</th><th>Distance</th><th>Window</th><th>Knowledge</th></tr></thead><tbody>" +
+          rows.map(function (r) {
+            return row([esc(r.event_date), esc(r.event_name),
+              esc((r.segment || "") + (r.genre ? " / " + r.genre : "")),
+              esc(r.venue_name || ""),
+              r.distance_miles != null ? r.distance_miles + " mi" : "UNKNOWN",
+              (r.windows || []).map(function (w) { return w === "pm0" ? "same day" : "±" + w.slice(2); }).join(", "),
+              esc(r.knowledge_status || "")]);
+          }).join("") + "</tbody></table>";
+      };
+      html += "<h3>Known at decision cutoff</h3>" + eventTable(known);
+      html += "<h3>Observed after cutoff</h3><p class='muted'>Not knowable at the decision time — shown separately, never mixed into the known count.</p>" + eventTable(post);
+      html += "<h3>Unknown knowledge time</h3>" + eventTable(unknown);
+      el.innerHTML = html;
     });
   }
 

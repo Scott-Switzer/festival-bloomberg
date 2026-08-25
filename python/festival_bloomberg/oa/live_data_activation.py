@@ -211,11 +211,14 @@ def _persist_event_snapshot(conn, rec: dict[str, Any], retrieved_at: str,
              attractions, venue_id, venue_name, city, state_code, country_code,
              latitude, longitude, local_date, local_time, event_time, timezone,
              event_status, onsale_start, onsale_end, presales, price_min,
-             price_max, price_currency, price_type, promoter, segment, genre,
-             subgenre, event_type, canonical_url, retrieved_at, knowledge_time,
+             price_max, price_currency, price_type, promoter, segment, segment_id,
+             genre, genre_id, subgenre, subgenre_id, family, event_type,
+             canonical_url, retrieved_at, knowledge_time,
              content_hash, raw_payload_hash, rights_status, commercial_use_status,
              software_version, acquisition_run_id, ingested_at)
         VALUES (?, 'ticketmaster',
+                ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?,
@@ -252,16 +255,20 @@ def _persist_event_snapshot(conn, rec: dict[str, Any], retrieved_at: str,
             rec.get("price_type"),  # 24 price_type
             rec.get("promoter"),    # 25 promoter
             classifications.get("segment"),   # 26 segment
-            classifications.get("genre"),     # 27 genre
-            classifications.get("subgenre"),  # 28 subgenre
-            rec.get("event_type"),  # 29 event_type
-            rec.get("canonical_url"),  # 30 canonical_url
-            retrieved_at,           # 31 retrieved_at
-            retrieved_at,           # 32 knowledge_time
-            rec.get("content_hash"),  # 33 content_hash
-            rec.get("content_hash"),  # 34 raw_payload_hash
-            SOFTWARE_VERSION,       # 35 software_version
-            acquisition_run_id,     # 36 acquisition_run_id
+            classifications.get("segment_id"),  # 27 segment_id
+            classifications.get("genre"),     # 28 genre
+            classifications.get("genre_id"),   # 29 genre_id
+            classifications.get("subgenre"),  # 30 subgenre
+            classifications.get("subgenre_id"),  # 31 subgenre_id
+            classifications.get("family"),    # 32 family
+            rec.get("event_type"),  # 33 event_type
+            rec.get("canonical_url"),  # 34 canonical_url
+            retrieved_at,           # 35 retrieved_at
+            retrieved_at,           # 36 knowledge_time
+            rec.get("content_hash"),  # 37 content_hash
+            rec.get("content_hash"),  # 38 raw_payload_hash
+            SOFTWARE_VERSION,       # 39 software_version
+            acquisition_run_id,     # 40 acquisition_run_id
         ],
     )
     return True

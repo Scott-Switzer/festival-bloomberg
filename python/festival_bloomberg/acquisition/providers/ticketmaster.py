@@ -403,9 +403,13 @@ class TicketmasterProvider(BaseProvider):
             "price_type": (first_price or {}).get("type"),
             "classifications": {
                 "segment": ((primary.get("segment") or {}).get("name")),
+                "segment_id": ((primary.get("segment") or {}).get("id")),
                 "genre": ((primary.get("genre") or {}).get("name")),
+                "genre_id": ((primary.get("genre") or {}).get("id")),
                 "subgenre": ((primary.get("subgenre") or {}).get("name")),
+                "subgenre_id": ((primary.get("subgenre") or {}).get("id")),
                 "type": ((primary.get("type") or {}).get("name")),
+                "family": (primary.get("segment") or {}).get("family"),
             },
             "promoter": ((item.get("promoter") or {}).get("name")) or None,
             "price_ranges": price_ranges,
