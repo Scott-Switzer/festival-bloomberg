@@ -56,6 +56,44 @@ def open_warehouse(path: Path) -> duckdb.DuckDBPyConnection:
     return conn
 
 
+def persist_universe(conn, universe: list[dict]) -> int:
+    """Load the frozen watch universe into acquisition.watch_universe (idempotent)."""
+    n = 0
+    # Universe-level metadata is not on each event; read it from the file once.
+    meta = json.loads(UNIVERSE_PATH.read_text(encoding="utf-8"))
+    frozen_at = meta.get("frozen_at") or _now()
+    content_hash = meta.get("content_hash")
+    for ev in universe:
+        ev = dict(ev)  # copy so we can fill metadata without mutating the caller's list
+        ev.setdefault("frozen_at", frozen_at)
+        ev.setdefault("content_hash", content_hash)
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO acquisition.watch_universe (
+                watch_universe_version, event_key, provider_event_id, artist_key,
+                artist_name, venue_key, venue_name, market_key, city, state,
+                event_date, event_time, timezone, latitude, longitude,
+                tm_price_min, tm_price_max, tm_currency, promoter, genre,
+                subgenre, canonical_url, selection_reason, frozen_at, content_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                ev.get("watch_universe_version"), ev.get("event_key"),
+                ev.get("provider_event_id"), ev.get("artist_key"),
+                ev.get("artist_name"), ev.get("venue_key"), ev.get("venue_name"),
+                ev.get("market_key"), ev.get("city"), ev.get("state"),
+                ev.get("event_date"), ev.get("event_time"), ev.get("timezone"),
+                ev.get("latitude"), ev.get("longitude"),
+                ev.get("tm_price_min"), ev.get("tm_price_max"), ev.get("tm_currency"),
+                ev.get("promoter"), ev.get("genre"), ev.get("subgenre"),
+                ev.get("canonical_url"), ev.get("selection_reason"),
+                ev.get("frozen_at"), ev.get("content_hash"),
+            ],
+        )
+        n += 1
+    return n
+
+
 def replay_wave0(conn, universe: list[dict], wave_label: str = "wave0_bakeoff_20260825") -> dict:
     """Ingest REAL records previously captured from the network.
 
@@ -209,7 +247,8 @@ def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     conn = open_warehouse(Path(args.db))
     universe = load_universe(UNIVERSE_PATH)
-    print(f"Universe: {len(universe)} events | DB: {args.db}")
+    persisted = persist_universe(conn, universe)
+    print(f"Universe: {len(universe)} events ({persisted} persisted) | DB: {args.db}")
 
     if args.wave == "wave0":
         report = replay_wave0(conn, universe)
