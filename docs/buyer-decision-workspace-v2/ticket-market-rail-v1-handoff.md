@@ -2,6 +2,7 @@
 
 Branch: `feat/live-entertainment-evidence-rails-v1` (continues the evidence-rails milestone)
 Base: `main` at `3e38f53` (PR #44 merged)
+Head: `6555d5b` — draft PR #45, exact-head CI green (run 32881150701: python ✅ node ✅ security ✅)
 Date: 2026-08-25
 
 ## Milestone Goal
@@ -61,6 +62,10 @@ the evidence estate with their **true capture timestamps**:
 - 1 source-health entry
 - All honestly classified **UNRESOLVED** (they are country-wide market-sweep
   records, not targeted music events)
+- Watch universe persisted into `acquisition.watch_universe` so the buyer view
+  resolves proposed shows to canonical event keys (end-to-end product check:
+  Jodeci @ Arie Crown Theater 2026-11-07 resolves, section reports
+  `NO_MATCHED_SNAPSHOTS` — honest given the sweep data)
 
 ### 5. Buyer workspace — TICKET MARKET section
 
@@ -128,7 +133,7 @@ universe. See `scripts/ticket_market_cost_model.py` and
 | Node | ✅ 76/76 |
 | TypeScript | ✅ clean |
 | Secret scan | ✅ clean — no `.env` tracked, no tokens in diff |
-| Exact-head CI | ⏳ pending push |
+| Exact-head CI | ✅ run 32881150701 — python, node, security all success |
 
 ## PASS ASSESSMENT
 
