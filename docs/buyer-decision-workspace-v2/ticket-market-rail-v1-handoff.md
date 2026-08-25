@@ -114,6 +114,23 @@ Measured: each SeatGeek run returns ~100 records (~$0.45–0.50/run) because
 universe. See `scripts/ticket_market_cost_model.py` and
 `data/workspace/ticket_market_cost_model.json`.
 
+### UPDATE — MARKETPLACE_URL_RESOLUTION_V1 (head `75025a0`)
+
+The Apify search-Actor architecture was replaced. Search is now a one-time
+discovery operation; recurring observation fetches exact known URLs.
+
+- **52 marketplace event mappings** from 100 FREE `tinyfish/search` calls:
+  SeatGeek 17, Vivid 13, StubHub 7, TickPick 6, Gametime 2 (MATCHED_EXACT /
+  MATCHED_HIGH_CONFIDENCE, validated on artist+venue+date+city)
+- **Real Wave A**: 19 snapshots via `context.dev/web/scrape/html` ($0.0009/call),
+  8 with genuine JSON-LD prices (Jodeci/Arie Crown $101, BoyNextDoor/Salt Shed
+  $205, Hazlett/House of Blues $48), 2026-08-25
+- **Real Wave B**: 17 re-fetches of the exact same URLs, **0 price changes**
+  (honest zero-delta — no manufactured change)
+- **Total Monid spend: ~$0.04** for the entire pilot (searches free)
+- Targeted cost: ~$0.001/snapshot → **~$3–9/month for 100 events daily**,
+  vs ~$1,350/month with broken Apify search Actors
+
 ## GATE STATUS
 
 | Gate | Status |
@@ -121,9 +138,9 @@ universe. See `scripts/ticket_market_cost_model.py` and
 | 100-event frozen universe | ✅ real, immutable, versioned |
 | Migration 039 schema | ✅ |
 | Wave 0 (real records) | ✅ 100 snapshots, true timestamps |
-| Wave A (live network) | ⛔ **BLOCKED** — credential over monthly limit |
-| Wave B (live network) | ⛔ **BLOCKED** — same reason |
-| Canonical matching | ✅ implemented + unit-tested; real rows all UNRESOLVED (market sweep) |
+| Wave A (live network) | ✅ **REAL** — 19 targeted snapshots via Monid context.dev HTML, 2026-08-25 |
+| Wave B (live network) | ✅ **REAL** — 17 re-fetches of exact URLs, 0 price deltas (honest) |
+| Canonical matching | ✅ URL-resolved (tinyfish/search) + JSON-LD extraction; MATCHED mappings drive buyer series |
 | Append-only storage | ✅ |
 | Change detection | ✅ tested (price + listing deltas) |
 | Source health ledger | ✅ 1 real entry |
