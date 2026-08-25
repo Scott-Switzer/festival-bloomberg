@@ -2,6 +2,7 @@
 
 from .capacity import (
     CapacityClaim,
+    assess_venue_claims,
     average_capacity,
     claim_from_wikipedia_infobox,
     compute_utilization,
@@ -84,6 +85,7 @@ __all__ = [
     "CollectorLock",
     "LockHeldError",
     "RunLogger",
+    "assess_venue_claims",
     "average_capacity",
     "claim_from_wikipedia_infobox",
     "compare_primary_secondary",

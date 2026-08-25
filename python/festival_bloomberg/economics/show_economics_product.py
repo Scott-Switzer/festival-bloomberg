@@ -10,6 +10,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any, Iterable
 
+from .capacity import CapacityClaim, assess_venue_claims
 from .show_economics import (
     SensitivityField,
     ShowEconomicsScenario,
@@ -219,27 +220,55 @@ def capacity_prefill(serving_connection, *, venue_key: str, event_configuration:
         "configuration_description", "source_provider", "source_url",
         "knowledge_time", "claim_status", "usage_label",
     )
-    claims = [dict(zip(columns, row)) for row in rows]
+    claim_dicts = [dict(zip(columns, row)) for row in rows]
+    objects: list[CapacityClaim] = []
+    for d in claim_dicts:
+        objects.append(
+            CapacityClaim(
+                claim_id=d["claim_id"],
+                canonical_venue_id=venue_key,
+                capacity_value=d["capacity"],
+                capacity_kind=d["capacity_type"],
+                configuration_description=d["configuration_description"],
+                effective_from=None,
+                effective_to=None,
+                provider=d["source_provider"],
+                source="serving",
+                source_url=d["source_url"],
+                source_publication_time=None,
+                retrieved_at=str(d["knowledge_time"] or ""),
+                knowledge_time=str(d["knowledge_time"] or ""),
+                source_observation_id=None,
+                claim_status=d["claim_status"],
+                usage_label=d["usage_label"],
+            )
+        )
+    # One deterministic contract for the decision and the evidence.
+    assessment = assess_venue_claims(objects)
+    status_by_id = {c.claim_id: c.claim_status for c in objects}
+    claims = [
+        {**d, "claim_status": status_by_id.get(d["claim_id"], d["claim_status"])}
+        for d in claim_dicts
+    ]
     wanted = (event_configuration or "").upper()
-    compatible = [c for c in claims if wanted and c["capacity_type"] == wanted]
-    distinct = {c["capacity"] for c in compatible if c["capacity"] is not None}
-    integral = all(
-        c["capacity"] is not None and float(c["capacity"]).is_integer()
-        for c in compatible
-    )
-    safe = (
-        len(distinct) == 1
-        and integral
-        and all(c["claim_status"] != "CONFLICTING" for c in compatible)
+    pair = next(
+        (p for p in assessment["safe_pairs"] if p["configuration"] == wanted),
+        None,
     )
     suggestion = None
-    if safe and compatible:
+    if pair:
+        evidence = next(
+            (c for c in objects if c.claim_id in pair["supporting_claim_ids"]),
+            None,
+        )
         suggestion = {
-            "value": int(compatible[0]["capacity"]),
+            "value": pair["value"],
             "provenance": "OBSERVED_PUBLIC",
-            "evidence_ref": compatible[0]["source_url"] or compatible[0]["claim_id"],
-            "as_of": str(compatible[0]["knowledge_time"]),
-            "supporting_claim_ids": [c["claim_id"] for c in compatible],
+            "evidence_ref": (
+                (evidence.source_url or evidence.claim_id) if evidence else pair["supporting_claim_ids"][0]
+            ),
+            "as_of": str(evidence.knowledge_time) if evidence else None,
+            "supporting_claim_ids": pair["supporting_claim_ids"],
         }
     return {
         "venue_key": venue_key,
@@ -248,7 +277,9 @@ def capacity_prefill(serving_connection, *, venue_key: str, event_configuration:
         "usable_capacity_suggestion": suggestion,
         "sellable_capacity_suggestion": None,
         "status": "CONFIGURATION_COMPATIBLE" if suggestion else (
-            "CONFLICTING_COMPATIBLE_CLAIMS" if compatible and not safe else
-            "UPPER_BOUND_OR_INCOMPATIBLE_ONLY" if claims else "UNKNOWN"
+            "CONFLICTING_COMPATIBLE_CLAIMS"
+            if any(p["configuration"] == wanted for p in assessment["review_required_pairs"])
+            else "UPPER_BOUND_OR_INCOMPATIBLE_ONLY" if claim_dicts else "UNKNOWN"
         ),
+        "assessment": assessment,
     }

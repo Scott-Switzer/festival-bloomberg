@@ -355,7 +355,8 @@ def run_acquisition(canonical_path: str) -> dict[str, Any]:
         "WHERE capacity_kind = 'STANDING'"
     ).fetchone()[0]
     conflict_claims = conn.execute(
-        "SELECT count(*) FROM economics.venue_capacity_claims WHERE claim_status = 'CONFLICTING'"
+        "SELECT count(*) FROM economics.venue_capacity_claims WHERE claim_status IN "
+        "('CONFLICTING', 'SAME_CONFIGURATION_CONFLICT', 'CROSS_KIND_CONTRADICTION')"
     ).fetchone()[0]
 
     # --- Workbench-safe prefill ---
@@ -373,7 +374,8 @@ def run_acquisition(canonical_path: str) -> dict[str, Any]:
         ).fetchall()
         compatible = [
             r for r in rows
-            if r[1] in ("STANDING", "CONCERT", "SEATED") and r[2] != "CONFLICTING"
+            if r[1] in ("STANDING", "CONCERT", "SEATED")
+            and r[2] not in ("CONFLICTING", "SAME_CONFIGURATION_CONFLICT", "CROSS_KIND_CONTRADICTION")
         ]
         distinct = set(r[0] for r in compatible if r[0] is not None)
         integral = all(

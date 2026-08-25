@@ -46,6 +46,7 @@ milestones:
   TERMINAL_SERVING_SNAPSHOT_V1: "PASS (PR #37; real 4.93 GiB canonical -> immutable serving snapshot VERIFIED; 23/23 serving tests + 608 Python + 76 Node; C3 buyer-morning acceptance PASS; concurrent canonical write + N→N+1 generational PASS; terminal zero canonical file handles")
   SHOW_ECONOMICS_WORKBENCH_V1: "PASS_DETERMINISTIC_V1 (Decimal equations + explicit provenance/bases + UNKNOWN propagation + inverse boundaries + sensitivity + workspace replay; no prediction or recommendation)"
   VENUE_CONFIGURATION_AND_CAPACITY_EVIDENCE_V1: "PARTIAL (5 venues enriched from Wikidata P1083; 9 MAX_PERSONS claims; 0 configuration-specific capacity; workbench-safe prefill = 0; MSG has 5 conflicting claims preserved; Wikipedia infobox + OSM deferred)"
+  VENUE_CONFIGURATION_CAPACITY_V2: "PASS (PR #42; mwparserfromhell infobox parser replaces fuzzy search; QID->sitelink->exact-page route; 52 claims across 28 venues incl. SEATED x8 + CONCERT + SPORTS x6; 8 workbench-safe venue-configuration prefills vs 0 in V1 (MSG CONCERT 22,000 correctly blocked: CROSS_KIND_CONTRADICTION vs MAX 20,789); one shared assess_venue_claims contract across production capacity_prefill/acquisition/tests; raw/parser metadata preserved; fixed br-concatenation + DuckDB ADD-COLUMN index defects; OSM low-yield)"
 
 providers:
   # status taxonomy: PUBLIC_NO_AUTH | AUTH_CONFIGURED | AUTH_MISSING |
@@ -90,6 +91,7 @@ docs:
   - show-economics-workbench-v1-spec.md
   - show-economics-workbench-v1.md
   - venue-configuration-capacity-evidence-v1.md
+  - venue-configuration-capacity-v2.md
 
 key_commands:
   context: "PYTHONPATH=python .venv/bin/python -m festival_bloomberg.ops.context_snapshot"
