@@ -298,9 +298,84 @@ fabricated zero. `FREE_RAIL` is no longer a valid cost basis.
 | Raw objects | 114 |
 | Normalized staging | 178 |
 | Scorecard rows | 103 |
-| Governor state | 0 reserved, 0 leases (no leaks) |
+| Governor state | 0 reserved, 0 leases (no leaks) |## Mapping Factory Status
 
-## Mapping Factory Status
+
+---
+
+# EVENT_MAPPING_FACTORY_V2 (PR #51)
+
+## Architecture
+
+Three discovery sources, one identity contract (artist + date + venue + city;
+artist-only forbidden; AMBIGUOUS fails closed). Only `EXACT_PROVIDER_ID` /
+`EXACT_PAGE_MATCH` / `HIGH_CONFIDENCE` enter automated acquisition.
+
+```
+SOURCE 1  provider-ID promotion   canonical_url + provider_event_id → EXACT_PROVIDER_ID
+SOURCE 2  venue/promoter calendars  bounded /links + sitemaps → ticket links
+SOURCE 3  Common Crawl URL index    bounded domain/pattern queries → candidate evidence
+          ↓
+          deterministic match
+          ↓
+          canonical/event_identifiers/<event_key>.json  (security master)
+          control/mappings/current.json                  (mapping ledger)
+```
+
+## Source 1 — Provider-ID promotion (zero scraper cost)
+
+**Key insight:** the canonical estate ALREADY carries `provider_event_id` +
+`canonical_url` for every event. There is no reason to crawl a sitemap to
+rediscover an identity the provider already supplied. Promotion is a pure
+deterministic transform:
+
+- `scripts/export_identity_estate.py` exports future on-sale events with full
+  identity from the lake parquet →
+  `control/event_estate/identity_estate_v1.json` (20,000 events).
+- `cloud-runtime/src/mapping-factory-v2.ts` reads the estate, promotes each
+  event to `EXACT_PROVIDER_ID` (confidence 1.0), and persists per-event
+  records + the mapping ledger.
+- White-label hosts (universe.com, venue sites) keep the provider's primary
+  marketplace (ticketmaster.com) — never invent a marketplace from an unknown
+  host.
+
+## Source 3 — Common Crawl URL index
+
+- `cloud-runtime/src/common-crawl.ts` — bounded domain/pattern queries against
+  the official URL index (never bulk CDX dumps).
+- `latestCrawlId()` resolves the current crawl from `collinfo.json` (1h cache).
+- Output is CANDIDATE EVIDENCE ONLY; deterministic validation runs afterward.
+- PIT semantics preserved: `source_as_of` = capture timestamp, `retrieved_at` =
+  query time. ARCHIVE_CAPTURE != PUBLICATION_TIME.
+
+## Endpoint
+
+`POST /admin/mapping-factory-v2` (ADMIN_TOKEN protected)
+
+| Param | Default | Meaning |
+|---|---|---|
+| `max_events` | 100 | Wave size (Worker subrequest limit ~1000; use 500/wave) |
+| `offset` | 0 | Estate offset for chunked waves |
+| `dry_run` | false | Plan without persisting |
+| `include_provider_id` | true | Source 1 promotion |
+| `include_calendars` | true | Source 2 venue/promoter calendars |
+| `include_common_crawl` | false | Source 3 CC index (candidate only) |
+
+## Live results (2026-08-26)
+
+| Metric | Value |
+|---|---|
+| Estate exported | 20,000 provider-native events |
+| Accepted mappings persisted | **2,993 EXACT_PROVIDER_ID** |
+| Marketplaces | ticketmaster.com 1,911 / ticketweb.com 78 / axs.com 4 (+ ~1,000 more in later waves) |
+| Mapping method | provider_id_promotion, confidence 1.0 |
+| Scraper cost | $0.00 (pure deterministic promotion) |
+| Common Crawl probe | bounded query works; NOT_FOUND for future 2026 events (correct fail-closed) |
+
+Next: activate a bounded COHORT of accepted pairs for repeated observation
+(EVENT_TAPE_SCALE_V2).
+
+
 
 Discovery via marketplace sitemaps returned NOT_FOUND for current canonical
 events — the factory fails closed rather than accepting artist-only matches.
