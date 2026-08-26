@@ -56,6 +56,9 @@ export interface AcquisitionResult {
   inventory_basis: string;
   availability_state: string;
 
+  /** Measured provider cash cost returned by the paid provider (Monid), if any. */
+  measured_provider_cost_usd: number | null;
+
   rights_status: string;
   commercial_use_status: string;
 
@@ -201,6 +204,7 @@ export function baseResult(
     price_basis: "NONE",
     inventory_basis: "UNKNOWN",
     availability_state: "UNKNOWN",
+    measured_provider_cost_usd: null,
     rights_status: "TERMS_REVIEW_REQUIRED",
     commercial_use_status: "PROTOTYPE_ONLY",
     parser_version: "router_v1",
@@ -291,6 +295,8 @@ export async function acquireUrl(
           rail: "RAIL_4_MONID",
         };
         const res = baseResult(event_key, marketplace, source_url, outcome, software_version, now);
+        // Preserve the MEASURED provider cost (tinyfish = $0, context.dev = $0.0009).
+        res.measured_provider_cost_usd = page.cost_usd;
         applyExtraction(res, extractStructured(page.html, marketplace));
         return res;
       }

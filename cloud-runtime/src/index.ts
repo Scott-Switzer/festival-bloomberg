@@ -235,17 +235,19 @@ export default {
         attempts: number; ok: number; useful: number; price: number; avail: number;
         cost: number; latency: number[]; http403: number; http429: number; http5xx: number; timeout: number;
         byRail: Record<string, number>; byProvider: Record<string, number>;
+        browserMs: number; estimatedBrowserCost: number; byBasis: Record<string, number>;
       }>();
       const totals = {
         attempts: 0, ok: 0, useful: 0, price: 0, avail: 0, cost: 0,
         http403: 0, http429: 0, http5xx: 0, timeout: 0, latencies: [] as number[],
+        browserMs: 0, estimatedBrowserCost: 0,
       };
 
       for (const r of rows) {
         const key = `${r.marketplace}|${r.rail}`;
         let acc = byMpRail.get(key);
         if (!acc) {
-          acc = { attempts: 0, ok: 0, useful: 0, price: 0, avail: 0, cost: 0, latency: [], http403: 0, http429: 0, http5xx: 0, timeout: 0, byRail: {}, byProvider: {} };
+          acc = { attempts: 0, ok: 0, useful: 0, price: 0, avail: 0, cost: 0, latency: [], http403: 0, http429: 0, http5xx: 0, timeout: 0, byRail: {}, byProvider: {}, browserMs: 0, estimatedBrowserCost: 0, byBasis: {} };
           byMpRail.set(key, acc);
         }
         acc.attempts++; totals.attempts++;
@@ -254,6 +256,9 @@ export default {
         if (r.price_extracted) { acc.price++; totals.price++; }
         if (r.availability_extracted) { acc.avail++; totals.avail++; }
         acc.cost += r.cost_usd || 0; totals.cost += r.cost_usd || 0;
+        acc.browserMs += r.browser_ms || 0; totals.browserMs += r.browser_ms || 0;
+        acc.estimatedBrowserCost += r.estimated_browser_cost_usd || 0; totals.estimatedBrowserCost += r.estimated_browser_cost_usd || 0;
+        if (r.cost_basis) acc.byBasis[r.cost_basis] = (acc.byBasis[r.cost_basis] || 0) + 1;
         acc.latency.push(r.latency_ms || 0); totals.latencies.push(r.latency_ms || 0);
         if (r.http_status === 403) { acc.http403++; totals.http403++; }
         if (r.http_status === 429) { acc.http429++; totals.http429++; }
@@ -280,7 +285,10 @@ export default {
           useful_observation_rate: pct(acc.useful, acc.attempts),
           price_extracted: acc.price,
           availability_extracted: acc.avail,
-          cost_usd: Math.round(acc.cost * 1e6) / 1e6,
+          provider_cash_spend_usd: Math.round(acc.cost * 1e6) / 1e6,
+          cost_basis: Object.keys(acc.byBasis),
+          browser_ms: acc.browserMs,
+          estimated_browser_marginal_usd: Math.round(acc.estimatedBrowserCost * 1e6) / 1e6,
           cost_per_fetch: Math.round((acc.cost / (acc.attempts || 1)) * 1e6) / 1e6,
           cost_per_useful: Math.round((acc.cost / (acc.useful || 1)) * 1e6) / 1e6,
           latency_p50_ms: pLat(acc.latency, 0.5),
@@ -300,7 +308,9 @@ export default {
           useful_observation_rate: pct(totals.useful, totals.attempts),
           price_extracted: totals.price,
           availability_extracted: totals.avail,
-          cost_usd: Math.round(totals.cost * 1e6) / 1e6,
+          provider_cash_spend_usd: Math.round(totals.cost * 1e6) / 1e6,
+          measured_browser_ms: totals.browserMs,
+          estimated_browser_marginal_usd: Math.round(totals.estimatedBrowserCost * 1e6) / 1e6,
           cost_per_fetch: Math.round((totals.cost / (totals.attempts || 1)) * 1e6) / 1e6,
           cost_per_useful: Math.round((totals.cost / (totals.useful || 1)) * 1e6) / 1e6,
           latency_p50_ms: pLat(totals.latencies, 0.5),

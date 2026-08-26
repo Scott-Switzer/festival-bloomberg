@@ -22,6 +22,7 @@
 import { AcquisitionTask } from "./task-contract";
 import { acquireUrl, AcquisitionResult, RouterDeps } from "./acquisition";
 import { fetchPage } from "./monid-client";
+import { accountRailCost, RailCostAccount } from "./cost-model";
 
 interface Env {
   FAST_QUEUE: Queue;
@@ -58,14 +59,20 @@ function buildRouterDeps(env: Env): RouterDeps {
   };
 }
 
-/** Resolve actual accounted cost based on the rail/provider used (free rails cost $0). */
-function accountedCostFor(res: AcquisitionResult): { cost_usd: number; cost_basis: string } {
-  // Only Monid is a paid rail. Direct/browser rails are free.
-  if (res.error_category) return { cost_usd: 0, cost_basis: "NONE" };
-  if (res.acquisition_provider === "monid" || res.acquisition_rail === "RAIL_4_MONID") {
-    return { cost_usd: 0.0009, cost_basis: "MEASURED" };
+/**
+ * Account the full cost of one acquisition result.
+ *
+ * Only Monid is provider cash spend (Governor budget ledger). Browser rails
+ * are included-allowance/metered: the Governor ledger sees $0 cash, but the
+ * scorecard tracks browser_ms + estimated marginal browser cost so
+ * cost/useful-observation never falsely reports $0 as the dataset grows
+ * past the monthly 10 browser-hour allowance.
+ */
+function accountedCostFor(res: AcquisitionResult): RailCostAccount {
+  if (res.error_category) {
+    return { provider_cash_spend_usd: 0, cost_basis: "NONE", browser_ms: res.browser_ms || 0, estimated_browser_marginal_usd: 0 };
   }
-  return { cost_usd: 0, cost_basis: "FREE_RAIL" };
+  return accountRailCost(res.acquisition_rail, res.browser_ms || 0, res.measured_provider_cost_usd);
 }
 
 /**
@@ -93,6 +100,8 @@ interface ScorecardTelemetry {
   latency_ms: number;
   browser_ms: number;
   cost_usd: number;
+  cost_basis: string;
+  estimated_browser_cost_usd: number;
   raw_bytes: number;
   identity_status: string;
   price_extracted: boolean;
@@ -209,6 +218,8 @@ export async function handleFastBatch(
           latency_ms: Date.now() - start,
           browser_ms: result.browser_ms,
           cost_usd: 0,
+          cost_basis: "NONE",
+          estimated_browser_cost_usd: 0,
           raw_bytes: 0,
           identity_status: "FAILED",
           price_extracted: false,
@@ -229,8 +240,11 @@ export async function handleFastBatch(
 
       // --------- SUCCESS: raw evidence + normalized observation ---------
 
-      // 3. Determine accounted cost from the rail actually used
-      const { cost_usd, cost_basis } = accountedCostFor(result);
+      // 3. Determine accounted cost from the rail actually used.
+      //    provider_cash_spend_usd → Governor ledger (Monid only).
+      //    browser_ms + estimated_browser_marginal_usd → scorecard allowance/metering.
+      const cost = accountedCostFor(result);
+      const { provider_cash_spend_usd: cost_usd, cost_basis } = cost;
 
       // 4. Write FULL raw evidence to R2 (NO TRUNCATION)
       // raw_sha256 was computed over result.raw_body — the exact canonical bytes.
@@ -256,6 +270,8 @@ export async function handleFastBatch(
           fetched_at: new Date().toISOString(),
           cost_usd,
           cost_basis,
+          browser_ms: result.browser_ms,
+          estimated_browser_cost_usd: cost.estimated_browser_marginal_usd,
           latency_ms: result.latency_ms,
           software_version: task.software_version,
         });
@@ -296,6 +312,10 @@ export async function handleFastBatch(
         source_url: targetUrl,
         final_url: result.final_url,
         raw_payload_hash: contentHash || "",
+        cost_usd,
+        cost_basis,
+        browser_ms: result.browser_ms,
+        estimated_browser_cost_usd: cost.estimated_browser_marginal_usd,
         rights_status: result.rights_status || "TERMS_REVIEW_REQUIRED",
         commercial_use_status: result.commercial_use_status || "PROTOTYPE_ONLY",
       };
@@ -334,6 +354,8 @@ export async function handleFastBatch(
         latency_ms: Date.now() - start,
         browser_ms: result.browser_ms,
         cost_usd,
+        cost_basis,
+        estimated_browser_cost_usd: cost.estimated_browser_marginal_usd,
         raw_bytes: result.raw_bytes,
         identity_status: result.identity_status,
         price_extracted: result.observed_offer_min_price != null,
@@ -353,6 +375,8 @@ export async function handleFastBatch(
         price_basis: result.price_basis || "NONE",
         cost_usd,
         cost_basis,
+        browser_ms: result.browser_ms,
+        estimated_browser_cost_usd: cost.estimated_browser_marginal_usd,
         latency_ms: Date.now() - start,
         raw_key: result.raw_object_key,
         staging_key: stagingKey,

@@ -239,11 +239,11 @@ contract. A cheaper rail is used only when it yields usable extraction quality;
 otherwise the router escalates.
 
 ```
-RAIL_0_DIRECT_HTTP      Worker fetch()           free
-RAIL_1_BROWSER_CONTENT  Browser Run /content     free
-RAIL_2_BROWSER_SCRAPE   Browser Run /scrape      free
-RAIL_3_PLAYWRIGHT       @cloudflare/playwright   hook (not wired)
-RAIL_4_MONID            context.dev              $0.0009 (MEASURED)
+RAIL_0_DIRECT_HTTP      Worker fetch()           INCLUDED_WORKER_USAGE
+RAIL_1_BROWSER_CONTENT  Browser Run /content     CLOUDFLARE_BROWSER_INCLUDED_OR_METERED
+RAIL_2_BROWSER_SCRAPE   Browser Run /scrape      CLOUDFLARE_BROWSER_INCLUDED_OR_METERED
+RAIL_3_PLAYWRIGHT       @cloudflare/playwright   CLOUDFLARE_BROWSER_INCLUDED_OR_METERED (hook, not wired)
+RAIL_4_MONID            context.dev              $0.0009 (MEASURED_PAID_PROVIDER)
 RAIL_5_SPECIALIZED      Container/Crawlee        future fallback
 ```
 
@@ -260,10 +260,24 @@ failure (no identity evidence AND no economically relevant field extracted).
 
 ## Cost Semantics
 
-Free rails (direct/browser) commit `$0` with `cost_basis=FREE_RAIL`.
-Monid commits `$0.0009` with `cost_basis=MEASURED`. The Governor
-reserves worst-case cost up front and commits exact accounted cost —
-never more than reserved, never a fabricated zero.
+Browser Run is NOT free. Workers Paid includes **10 browser-hours/month**
+(Quick Actions consume browser time too); usage beyond that is metered at
+**$0.09 per browser-hour**.
+
+Cost basis per rail (`cloud-runtime/src/cost-model.ts`):
+
+| Rail | cost_basis | Governor ledger | Scorecard |
+|---|---|---|---|
+| RAIL_0_DIRECT_HTTP | `INCLUDED_WORKER_USAGE` | $0 cash | — |
+| RAIL_1/2/3 Browser | `CLOUDFLARE_BROWSER_INCLUDED_OR_METERED` | $0 cash | `browser_ms` + `estimated_browser_marginal_usd` ($0.09/hr) |
+| RAIL_4_MONID | `MEASURED_PAID_PROVIDER` | measured provider cost (tinyfish `$0`, context.dev `$0.0009`) | — |
+
+Only Monid is provider cash spend in the Governor budget ledger. Browser
+time is tracked as allowance usage + estimated marginal cost in the scorecard,
+so `cost/useful-observation` never falsely reports $0 as the dataset grows
+past the monthly browser allowance. The Governor reserves worst-case cost up
+front and commits exact accounted cost — never more than reserved, never a
+fabricated zero. `FREE_RAIL` is no longer a valid cost basis.
 
 ## Bootstrap vs Lifecycle
 
