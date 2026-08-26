@@ -143,11 +143,17 @@ def main() -> None:
 
     # ── TICKET_MARKET_DATA_MOAT_V2: targeted URL fetching (Monid / tickets.dev) ──
     print("\n## V2 — targeted URL fetching (Monid + tickets.dev hybrid policy)\n")
-    monid_html = 0.0009      # context.dev/web/scrape/html per call (measured)
-    tickets_dev = 0.03       # advertised $0.02-0.05, mid assumption (live key)
-    print("  FAST rail: Monid HTML @ $0.0009/call (event-level JSON-LD, measured)")
+    monid_html = 0.0009      # context.dev/web/scrape/html per call — MEASURED
+    tickets_dev = 0.03       # PUBLISHED_PRICE_ASSUMPTION ($0.05 Starter / $0.03
+                             # Developer / $0.02 Production — mid point; NOT yet
+                             # measured on a paid capture)
+    print("  FAST rail: Monid HTML @ $0.0009/call (event-level JSON-LD)")
+    print("            cost basis: MEASURED (live probes)")
     print("  DEEP rail: tickets.dev @ $0.03/capture (listing-level, live key)")
-    print("            Monid fallback @ $0.0009 when no live tickets.dev key")
+    print("            cost basis: PUBLISHED_PRICE_ASSUMPTION (not yet measured live)")
+    print("            tickets.dev sandbox: CONTRACT_VALIDATED_ONLY (fixtures, never")
+    print("            billed, never written to the production warehouse)")
+    print("  Monid fallback @ $0.0009 when no live tickets.dev key — MEASURED")
     for ev in (100, 500, 1000, 5000):
         fast = ev * 1 * 30 * monid_html
         deep_td = ev * 4 * tickets_dev

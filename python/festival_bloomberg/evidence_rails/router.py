@@ -25,10 +25,21 @@ from typing import Any
 
 # Measured economics (2026-08-25 probes).
 MEASURED_COST = {
-    "MONID_HTML": 0.0009,       # context.dev/web/scrape/html per call
-    "MONID_FETCH": 0.0,         # tinyfish/fetch free tier
-    "TICKETS_DEV_CAPTURE": 0.03,  # advertised $0.02-0.05; mid assumption
+    "MONID_HTML": 0.0009,       # context.dev/web/scrape/html per call — MEASURED live
+    "MONID_FETCH": 0.0,         # tinyfish/fetch free tier — MEASURED live
+    "TICKETS_DEV_CAPTURE": 0.03,  # PUBLISHED_PRICE_ASSUMPTION ($0.05 Starter / $0.03 Developer / $0.02 Production)
     "APIFY_ACTOR": 0.45,        # measured minimum charge per actor run
+}
+
+# Cost-basis labels — never call an assumed price "measured".
+#   MEASURED                 — observed on a real paid call
+#   CONTRACT_VALIDATED_ONLY  — sandbox fixture contract validated, never billed
+#   PUBLISHED_PRICE_ASSUMPTION — quoted by the provider, not yet measured live
+COST_BASIS = {
+    "MONID_HTML": "MEASURED",
+    "MONID_FETCH": "MEASURED",
+    "TICKETS_DEV_CAPTURE": "PUBLISHED_PRICE_ASSUMPTION",
+    "APIFY_ACTOR": "MEASURED",
 }
 
 RAIL_FAST = "FAST"
@@ -51,18 +62,20 @@ def route_observation(
     if needs_listings or cadence in ("weekly", "milestone", "T_minus"):
         if tickets_dev_live_key:
             return {
-                "method": "TICKETS_DEV_DEEP",
-                "rail": RAIL_DEEP,
-                "provider": "tickets.dev",
-                "cost_per_call": MEASURED_COST["TICKETS_DEV_CAPTURE"],
-                "reason": "listing-level capture required; tickets.dev returns the only normalized listing contract",
-            }
+                "method":    "TICKETS_DEV_DEEP",
+    "rail": RAIL_DEEP,
+    "provider": "tickets.dev",
+    "cost_per_call": MEASURED_COST["TICKETS_DEV_CAPTURE"],
+    "cost_basis": COST_BASIS["TICKETS_DEV_CAPTURE"],
+    "reason": "listing-level capture required; tickets.dev returns the only normalized listing contract",
+}
         if monid_available and has_mapped_url:
             return {
                 "method": "MONID_FAST_DEEP_FALLBACK",
                 "rail": RAIL_DEEP,
                 "provider": "monid",
                 "cost_per_call": MEASURED_COST["MONID_HTML"],
+                "cost_basis": COST_BASIS["MONID_HTML"],
                 "reason": "no live tickets.dev key; Monid HTML is the working fallback for event-level state",
             }
         return {
@@ -70,6 +83,7 @@ def route_observation(
             "rail": RAIL_DEEP,
             "provider": "apify",
             "cost_per_call": MEASURED_COST["APIFY_ACTOR"],
+            "cost_basis": COST_BASIS["APIFY_ACTOR"],
             "reason": "fallback only; actors measured at ~$0.45/run with filter-ignore risk",
         }
 
@@ -81,6 +95,7 @@ def route_observation(
                 "rail": RAIL_FAST,
                 "provider": "monid",
                 "cost_per_call": MEASURED_COST["MONID_HTML"],
+                "cost_basis": COST_BASIS["MONID_HTML"],
                 "reason": "known URL + event-level JSON-LD extraction is the cheapest measured path",
             }
         return {
@@ -88,6 +103,7 @@ def route_observation(
             "rail": RAIL_FAST,
             "provider": "monid",
             "cost_per_call": 0.0,
+            "cost_basis": "MEASURED",
             "reason": "no URL mapping yet; tinyfish/search is free but resolution is one-time work",
         }
     return {
@@ -95,6 +111,7 @@ def route_observation(
         "rail": RAIL_FAST,
         "provider": "apify",
         "cost_per_call": MEASURED_COST["APIFY_ACTOR"],
+        "cost_basis": COST_BASIS["APIFY_ACTOR"],
         "reason": "Monid unavailable; fallback to actor",
     }
 
@@ -132,12 +149,18 @@ def monthly_cost(
             "per_day": fast_per_day,
             "calls_per_month": events * fast_per_day * days,
             "cost_usd": round(fast_cost, 2),
+            "provider": "monid",
+            "cost_basis": COST_BASIS["MONID_HTML"],
         },
         "deep": {
             "per_month": deep_per_month,
             "calls_per_month": events * deep_per_month,
             "cost_usd": round(deep_cost, 2),
             "provider": "tickets.dev" if tickets_dev_live_key else "monid_fallback",
+            "cost_basis": (
+                COST_BASIS["TICKETS_DEV_CAPTURE"]
+                if tickets_dev_live_key else COST_BASIS["MONID_HTML"]
+            ),
         },
         "total_monthly_usd": round(fast_cost + deep_cost, 2),
         "cost_per_event_month": round((fast_cost + deep_cost) / events, 3) if events else 0,

@@ -191,11 +191,67 @@ def resolve_marketplace_url(event: dict[str, Any], marketplace: str,
 
 # ── Persistence ─────────────────────────────────────────────────────────
 
+# Status map: resolver statuses -> canonical identity-master statuses.
+_IDENTITY_STATUS = {
+    "MATCHED_EXACT": "EXACT_PAGE_MATCH",
+    "MATCHED_HIGH_CONFIDENCE": "HIGH_CONFIDENCE",
+    "AMBIGUOUS": "AMBIGUOUS",
+    "NOT_FOUND": "NOT_FOUND",
+    "STALE": "STALE",
+}
+
+
 def persist_mapping(conn, mapping: dict[str, Any]) -> str:
-    """Insert/replace a marketplace event mapping. Returns mapping_id."""
+    """Insert/replace a marketplace event mapping. Returns mapping_id.
+
+    Writes ONE canonical identity contract. `event_identifiers` is the
+    authoritative cross-market security master (migration 041);
+    `marketplace_event_mappings` (migration 040) is written through as a
+    legacy compatibility table so older scripts keep working. The collector
+    and the Buyer Workspace read `event_identifiers` only — there is a single
+    underlying row per (event_key, marketplace).
+    """
     material = f"{mapping.get('event_key')}|{mapping.get('marketplace')}"
     mid = "map::" + hashlib.sha256(material.encode()).hexdigest()[:16]
+    iid = "id::" + hashlib.sha256(material.encode()).hexdigest()[:24]
+    resolved_at = mapping.get("resolved_at", _now())
+    status = _IDENTITY_STATUS.get(mapping.get("resolution_status"), "HIGH_CONFIDENCE")
+    source_evidence = mapping.get("source_result_url") or mapping.get("source_query")
 
+    # Canonical security master.
+    conn.execute(
+        """INSERT INTO acquisition.event_identifiers (
+            identifier_id, event_key, marketplace, marketplace_event_id,
+            marketplace_event_url, mapping_status, mapping_method,
+            confidence, first_resolved_at, last_verified_at,
+            source_evidence, rights_status, commercial_use_status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (event_key, marketplace) DO UPDATE SET
+            marketplace_event_id = excluded.marketplace_event_id,
+            marketplace_event_url = excluded.marketplace_event_url,
+            mapping_status = excluded.mapping_status,
+            mapping_method = excluded.mapping_method,
+            confidence = excluded.confidence,
+            last_verified_at = excluded.last_verified_at,
+            source_evidence = excluded.source_evidence""",
+        [
+            iid,
+            mapping.get("event_key"),
+            mapping.get("marketplace"),
+            mapping.get("marketplace_event_id"),
+            mapping.get("marketplace_event_url"),
+            status,
+            mapping.get("resolution_method"),
+            mapping.get("resolution_confidence"),
+            resolved_at,
+            resolved_at,
+            source_evidence,
+            mapping.get("rights_status", "TERMS_REVIEW_REQUIRED"),
+            mapping.get("commercial_use_status", "PROTOTYPE_ONLY"),
+        ],
+    )
+
+    # Legacy compatibility table (migration 040) — same underlying mapping.
     conn.execute(
         """
         INSERT OR REPLACE INTO acquisition.marketplace_event_mappings (
@@ -221,7 +277,7 @@ def persist_mapping(conn, mapping: dict[str, Any]) -> str:
             mapping.get("validation_checked"),
             mapping.get("source_query"),
             mapping.get("source_result_url"),
-            mapping.get("resolved_at", _now()),
+            resolved_at,
             mapping.get("rights_status", "TERMS_REVIEW_REQUIRED"),
             mapping.get("commercial_use_status", "PROTOTYPE_ONLY"),
             mapping.get("notes"),

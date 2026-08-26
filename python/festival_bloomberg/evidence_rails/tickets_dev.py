@@ -4,19 +4,32 @@ tickets.dev is a real-time ticket scraping API that returns ONE normalized
 snapshot schema across Ticketmaster, SeatGeek, StubHub, Vivid Seats, TickPick,
 Gametime, Viagogo. This module implements two capabilities:
 
-  1. CATALOG (never billed)
+  1. CATALOG (never billed, documented endpoint)
      GET /v1/events?query=... — cross-marketplace event mapping. One catalog
      row carries the same event's Ticketmaster / Vivid / StubHub / SeatGeek
-     IDs and URLs. This is the cross-market event security master feed.
+     IDs and URLs. This feeds the cross-market event security master.
 
   2. CAPTURE (billed with a live key; free fixtures with the sandbox key)
      GET /v1/capture/{source}?url=... — a full normalized snapshot: event
      metadata + derived stats (get-in/median/avg/max, listing/ticket counts)
      + every listing (section/row/quantity/base price/fee/all-in).
 
-The public sandbox key `tk_test_sandbox` never bills and returns fixtures with
-the exact same schema as live captures, which lets the parser contract be
-developed and tested at zero cost.
+PRICE SEMANTICS (tickets.dev docs, verified 2026-08-25):
+    ticketPrice = face price per ticket, BEFORE fees
+    fee         = per-ticket fees
+    totalPrice  = ALL-IN price PER TICKET (excl. sales tax), normalized
+                  across marketplaces
+    stats       = per-ticket all-in on the same basis as totalPrice,
+                  computed per LISTING (a 10-seat listing counts once)
+
+    Therefore: all_in_price = totalPrice. NEVER divide by quantity.
+
+SANDBOX SEMANTICS:
+    The public sandbox key `tk_test_sandbox` never bills and returns fixtures
+    with the exact same schema as live captures. The response BODY does not
+    advertise sandbox (by design); the `Tickets-Sandbox: true` header does.
+    Sandbox fixtures must NEVER enter the production warehouse — the
+    collector gates DEEP on a live key (see collect_ticket_market.py).
 
 RIGHTS: marketplace page observation remains TERMS_REVIEW_REQUIRED for
 commercial redistribution. The capture endpoint scrapes live marketplace
@@ -71,7 +84,9 @@ def _request(method: str, path: str, query: dict[str, Any] | None = None) -> dic
     )
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
-            return json.loads(resp.read().decode())
+            data = json.loads(resp.read().decode())
+            data["_sandbox"] = resp.headers.get("Tickets-Sandbox", "").lower() == "true"
+            return data
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")[:500]
         return {"error": f"HTTP {e.code}", "detail": body}
@@ -80,7 +95,12 @@ def _request(method: str, path: str, query: dict[str, Any] | None = None) -> dic
 
 
 def is_sandbox() -> bool:
-    """True when no live TICKETS_DEV_API_KEY is configured."""
+    """True when no live TICKETS_DEV_API_KEY is configured.
+
+    The sandbox key can never spend credits, so the configured-key check is
+    the reliable gate. The `Tickets-Sandbox: true` response header is also
+    captured onto parsed payloads (`_sandbox` key) for verification.
+    """
     load_local_env()
     return not os.environ.get("TICKETS_DEV_API_KEY")
 
@@ -172,6 +192,57 @@ def catalog_mappings_for_event(
     }
 
 
+def persist_catalog_mappings(
+    conn,
+    *,
+    event_key: str,
+    mappings: list[dict[str, Any]],
+    mapping_method: str = "TICKETS_DEV_CATALOG",
+    rights_status: str = "TERMS_REVIEW_REQUIRED",
+    commercial_use_status: str = "PROTOTYPE_ONLY",
+) -> int:
+    """Persist catalog mappings into the canonical event_identifiers master.
+
+    The catalog returns provider-verified event IDs, so MATCHED mappings are
+    EXACT_PROVIDER_ID (not fuzzy page matches). Writes to the same
+    event_identifiers contract the URL resolver and the Buyer Workspace read.
+    """
+    written = 0
+    for m in mappings:
+        marketplace = m.get("marketplace")
+        if not marketplace:
+            continue
+        iid = "id::" + _h(f"{event_key}|{marketplace}")
+        conn.execute(
+            """INSERT INTO acquisition.event_identifiers (
+                identifier_id, event_key, marketplace, marketplace_event_id,
+                marketplace_event_url, mapping_status, mapping_method,
+                confidence, first_resolved_at, last_verified_at,
+                source_evidence, rights_status, commercial_use_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (event_key, marketplace) DO UPDATE SET
+                marketplace_event_id = excluded.marketplace_event_id,
+                marketplace_event_url = excluded.marketplace_event_url,
+                mapping_status = excluded.mapping_status,
+                mapping_method = excluded.mapping_method,
+                confidence = excluded.confidence,
+                last_verified_at = excluded.last_verified_at,
+                source_evidence = excluded.source_evidence,
+                rights_status = excluded.rights_status,
+                commercial_use_status = excluded.commercial_use_status""",
+            [
+                iid, event_key, marketplace, m.get("marketplace_event_id"),
+                m.get("marketplace_event_url"),
+                "EXACT_PROVIDER_ID" if m.get("matched") else "HIGH_CONFIDENCE",
+                mapping_method, 1.0 if m.get("matched") else 0.6,
+                _now(), _now(), m.get("source_evidence"),
+                rights_status, commercial_use_status,
+            ],
+        )
+        written += 1
+    return written
+
+
 # ── 2. Capture (billed with live key, free fixtures with sandbox) ────────
 
 def capture(url: str, *, source: str | None = None,
@@ -184,6 +255,9 @@ def capture(url: str, *, source: str | None = None,
       ticketCount, getInPrice, medianPrice, avgPrice, maxPrice},
       listings[{listingId, inventoryType, section, row, quantity,
       ticketPrice, fee, totalPrice, sellableQuantities, ...}].
+
+    sandbox=True on the result when the Tickets-Sandbox header (or the
+    absence of a live key) says the payload is a fixture.
     """
     q: dict[str, Any] = {"url": url}
     if source:
@@ -194,7 +268,8 @@ def capture(url: str, *, source: str | None = None,
     data = _request("GET", path, q)
     if "error" in data:
         return {"status": "ERROR", "url": url, **data}
-    return {"status": "OK", "url": url, "sandbox": is_sandbox(), "snapshot": data}
+    sandbox = is_sandbox() or bool(data.pop("_sandbox", False))
+    return {"status": "OK", "url": url, "sandbox": sandbox, "snapshot": data}
 
 
 # ── 3. Normalization into the rail contract ─────────────────────────────
@@ -284,16 +359,15 @@ def listings_from_snapshot(
 ) -> list[dict[str, Any]]:
     """Extract listing-level rows from a capture snapshot (DEEP rail).
 
+    PRICE SEMANTICS: tickets.dev totalPrice is the ALL-IN price PER TICKET,
+    so all_in_price = totalPrice (never divided by quantity). ticketPrice is
+    the per-ticket face price and fee is the per-ticket fee.
+
     Never interpret disappearance as a sale. Callers classify only
     LISTING_APPEARED / DISAPPEARED / PRICE_CHANGED / QUANTITY_CHANGED.
     """
     rows = []
     for l in snapshot.get("listings", []):
-        quantity = _int(l.get("quantity"))
-        total = _num(l.get("totalPrice"))
-        ticket_price = _num(l.get("ticketPrice"))
-        fee = _num(l.get("fee"))
-        all_in = total / quantity if (total is not None and quantity) else None
         rows.append({
             "event_key": event_key,
             "marketplace": f"{snapshot.get('source')}.com"
@@ -304,10 +378,10 @@ def listings_from_snapshot(
             "section": l.get("section"),
             "row_label": l.get("row"),
             "seats": l.get("seats"),
-            "quantity": quantity,
-            "ticket_price": ticket_price,
-            "fee": fee,
-            "all_in_price": all_in,
+            "quantity": _int(l.get("quantity")),
+            "ticket_price": _num(l.get("ticketPrice")),
+            "fee": _num(l.get("fee")),
+            "all_in_price": _num(l.get("totalPrice")),  # all-in PER TICKET
             "currency": snapshot.get("currency"),
             "observed_at": observed_at or snapshot.get("capturedAt") or _now(),
             "wave_label": wave_label,
@@ -315,63 +389,91 @@ def listings_from_snapshot(
     return rows
 
 
-def persist_listings(conn, rows: list[dict[str, Any]]) -> int:
-    """Insert/update listing lifecycle rows. Returns count written.
+def _listing_key(event_key: str, marketplace: str, row: dict[str, Any]) -> str:
+    """Stable listing key: provider id when present, else deterministic
+    synthetic key over (section, row, quantity, all_in_price)."""
+    pid = row.get("provider_listing_id") or ""
+    if pid:
+        return f"lst::{_h(f'{event_key}|{marketplace}|{pid}')}"
+    _mat = "|".join(str(row.get(k)) for k in ("section", "row_label", "quantity", "all_in_price"))
+    return f"lst::{_h(f'{event_key}|{marketplace}|{_mat}')}"
 
-    Stable listing IDs (when present) drive first_seen/last_seen + price
-    history. Unstable/empty IDs get a synthetic deterministic id keyed on
-    (event, marketplace, section, row, quantity, price) so repeated captures
-    of the same listing group still track lifecycle.
+
+def persist_listings(
+    conn,
+    rows: list[dict[str, Any]],
+    *,
+    source_snapshot_id: str | None = None,
+    raw_payload_hash: str | None = None,
+) -> int:
+    """Append listing observations (immutable) + update current-state cache.
+
+    - marketplace_listing_observations: ONE append-only row per observed
+      listing per capture. Never updated or deleted. This is the historical
+      truth — there is no truncation.
+    - marketplace_listings: current-state cache with lifecycle transitions:
+      LISTING_APPEARED / LISTING_PRICE_CHANGED / LISTING_QUANTITY_CHANGED /
+      LISTING_REAPPEARED. A repeated UNCHANGED listing keeps its previous
+      status (never resets to LISTING_APPEARED).
+    - last_seen_at always stays the last observation CONTAINING the listing.
+    Returns count of listings written.
     """
     written = 0
+    now = _now()
     for r in rows:
         ekey = r["event_key"]
         mp = r["marketplace"]
-        pid = r.get("provider_listing_id") or ""
-        if pid:
-            lid = f"lst::{_h(f'{ekey}|{mp}|{pid}')}"
-        else:
-            _mat = "|".join(str(r.get(k)) for k in ("section", "row_label", "quantity", "all_in_price"))
-            lid = f"lst::{_h(f'{ekey}|{mp}|{_mat}')}"
+        lid = _listing_key(ekey, mp, r)
         observed_at = r["observed_at"]
 
+        # 1) Append-only observation row (immutable truth).
+        conn.execute(
+            """INSERT INTO acquisition.marketplace_listing_observations (
+                listing_observation_id, event_key, marketplace,
+                provider_listing_id, listing_key, observed_at,
+                inventory_type, section, row_label, seats, quantity,
+                ticket_price, fee, all_in_price, currency, status,
+                source_snapshot_id, raw_payload_hash,
+                rights_status, commercial_use_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OBSERVED', ?, ?, ?, ?)""",
+            [
+                f"lobs::{_h(f'{lid}|{observed_at}')}",
+                ekey, mp, r.get("provider_listing_id") or "", lid,
+                observed_at, r.get("inventory_type"), r.get("section"),
+                r.get("row_label"), r.get("seats"), r.get("quantity"),
+                r.get("ticket_price"), r.get("fee"), r.get("all_in_price"),
+                r.get("currency"), source_snapshot_id, raw_payload_hash,
+                "TERMS_REVIEW_REQUIRED", "PROTOTYPE_ONLY",
+            ],
+        )
+
+        # 2) Current-state cache with correct lifecycle semantics.
         existing = conn.execute(
-            "SELECT * FROM acquisition.marketplace_listings WHERE listing_id = ?",
+            "SELECT status, first_missing_at, disappeared_at FROM acquisition.marketplace_listings WHERE listing_id = ?",
             [lid],
         ).fetchone()
-        cols = [c[0] for c in conn.description] if conn.description else []
 
         if existing:
-            ex = dict(zip(cols, existing))
-            price_changed = (
-                _num(ex.get("all_in_price")) is not None
-                and r.get("all_in_price") is not None
-                and abs(_num(ex.get("all_in_price")) - r["all_in_price"]) > 0.005
-            )
-            qty_changed = (
-                ex.get("quantity") is not None
-                and r.get("quantity") is not None
-                and ex["quantity"] != r["quantity"]
-            )
-            history = json.loads(ex.get("price_history_json") or "[]")
-            history.append({
-                "price": r.get("all_in_price"),
-                "ticket_price": r.get("ticket_price"),
-                "fee": r.get("fee"),
-                "observed_at": observed_at,
-            })
-            status = "PRICE_CHANGED" if price_changed else (
-                "QUANTITY_CHANGED" if qty_changed else "LISTING_APPEARED"
-            )
+            prev_status = existing[0]
+            price_changed = _price_changed(conn, lid, r.get("all_in_price"))
+            qty_changed = _qty_changed(conn, lid, r.get("quantity"))
+            if prev_status == "LISTING_DISAPPEARED":
+                status = "LISTING_REAPPEARED"
+            elif price_changed:
+                status = "LISTING_PRICE_CHANGED"
+            elif qty_changed:
+                status = "LISTING_QUANTITY_CHANGED"
+            else:
+                status = prev_status  # unchanged: keep previous status
             conn.execute(
                 """UPDATE acquisition.marketplace_listings SET
                    last_seen_at = ?, last_observed_at = ?, status = ?,
-                   quantity = ?, ticket_price = ?, fee = ?, all_in_price = ?,
-                   price_history_json = ?
+                   first_missing_at = NULL, disappeared_at = NULL,
+                   quantity = ?, ticket_price = ?, fee = ?, all_in_price = ?
                    WHERE listing_id = ?""",
-                [observed_at, observed_at, status, r.get("quantity"),
-                 r.get("ticket_price"), r.get("fee"), r.get("all_in_price"),
-                 json.dumps(history[-50:]), lid],
+                [observed_at, observed_at, status,
+                 r.get("quantity"), r.get("ticket_price"), r.get("fee"),
+                 r.get("all_in_price"), lid],
             )
         else:
             conn.execute(
@@ -380,30 +482,61 @@ def persist_listings(conn, rows: list[dict[str, Any]]) -> int:
                     inventory_type, section, row_label, seats, quantity,
                     ticket_price, fee, all_in_price, currency,
                     first_seen_at, last_seen_at, last_observed_at, status,
-                    price_history_json, rights_status, commercial_use_status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                [lid, ekey, mp, pid, r.get("inventory_type"), r.get("section"),
-                 r.get("row_label"), r.get("seats"), r.get("quantity"),
-                 r.get("ticket_price"), r.get("fee"), r.get("all_in_price"),
-                 r.get("currency"), observed_at, observed_at, observed_at,
-                 "LISTING_APPEARED",
-                 json.dumps([{
-                     "price": r.get("all_in_price"),
-                     "ticket_price": r.get("ticket_price"),
-                     "fee": r.get("fee"),
-                     "observed_at": observed_at,
-                 }]),
+                    rights_status, commercial_use_status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                [lid, ekey, mp, r.get("provider_listing_id") or "",
+                 r.get("inventory_type"), r.get("section"), r.get("row_label"),
+                 r.get("seats"), r.get("quantity"), r.get("ticket_price"),
+                 r.get("fee"), r.get("all_in_price"), r.get("currency"),
+                 observed_at, observed_at, observed_at, "LISTING_APPEARED",
                  "TERMS_REVIEW_REQUIRED", "PROTOTYPE_ONLY"],
             )
         written += 1
     return written
 
 
+def _price_changed(conn, listing_id: str, new_price: float | None) -> bool:
+    row = conn.execute(
+        "SELECT all_in_price FROM acquisition.marketplace_listings WHERE listing_id = ?",
+        [listing_id],
+    ).fetchone()
+    if row is None:
+        return False
+    old = row[0]
+    if old is None or new_price is None:
+        return False
+    return abs(float(old) - float(new_price)) > 0.005
+
+
+def _qty_changed(conn, listing_id: str, new_qty: int | None) -> bool:
+    row = conn.execute(
+        "SELECT quantity FROM acquisition.marketplace_listings WHERE listing_id = ?",
+        [listing_id],
+    ).fetchone()
+    if row is None:
+        return False
+    old = row[0]
+    if old is None or new_qty is None:
+        return False
+    return int(old) != int(new_qty)
+
+
 def mark_disappeared_listings(conn, event_key: str, marketplace: str,
                               seen_ids: set[str], observed_at: str) -> int:
     """Mark listings no longer present as LISTING_DISAPPEARED.
 
-    NOT a sale — a listing may be withdrawn, repriced/relisted, or transferred.
+    Semantics (review-corrected):
+      - last_seen_at is UNTOUCHED — it stays the last observation that
+        CONTAINED the listing.
+      - first_missing_at = the first observation where the listing was absent
+        (set once, never overwritten).
+      - disappeared_at = the latest observation where it is still absent.
+      - A DISAPPEARED observation row is appended to the immutable
+        marketplace_listing_observations log (status='DISAPPEARED', null
+        prices) so the lifecycle transition is preserved.
+
+    NOT a sale — a listing may be withdrawn, repriced/relisted, or
+    transferred.
     """
     rows = conn.execute(
         """SELECT listing_id, provider_listing_id FROM acquisition.marketplace_listings
@@ -418,12 +551,75 @@ def mark_disappeared_listings(conn, event_key: str, marketplace: str,
             continue  # synthetic ids can't be reliably matched; leave alone
         conn.execute(
             """UPDATE acquisition.marketplace_listings
-               SET status = 'LISTING_DISAPPEARED', last_seen_at = ?
+               SET status = 'LISTING_DISAPPEARED',
+                   first_missing_at = COALESCE(first_missing_at, ?),
+                   disappeared_at = ?
                WHERE listing_id = ?""",
-            [observed_at, lid],
+            [observed_at, observed_at, lid],
+        )
+        # Immutable transition log entry (prices null — the listing was absent).
+        conn.execute(
+            """INSERT INTO acquisition.marketplace_listing_observations (
+                listing_observation_id, event_key, marketplace,
+                provider_listing_id, listing_key, observed_at,
+                inventory_type, section, row_label, seats, quantity,
+                ticket_price, fee, all_in_price, currency, status,
+                rights_status, commercial_use_status
+            ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL,
+                      NULL, NULL, NULL, NULL, 'DISAPPEARED', ?, ?)""",
+            [
+                f"lobs::{_h(f'{lid}|{observed_at}|gone')}",
+                event_key, marketplace, pid, lid, observed_at,
+                "TERMS_REVIEW_REQUIRED", "PROTOTYPE_ONLY",
+            ],
         )
         n += 1
     return n
+
+
+# ── Raw evidence store (content-addressed, hash-deduped) ────────────────
+
+def persist_raw_evidence(
+    conn,
+    *,
+    event_key: str,
+    marketplace: str,
+    payload: Any,
+    payload_type: str = "SNAPSHOT_JSON",
+    rights_status: str = "TERMS_REVIEW_REQUIRED",
+    commercial_use_status: str = "PROTOTYPE_ONLY",
+) -> dict[str, Any]:
+    """Upsert a canonicalized raw payload into raw_evidence_store by hash.
+
+    Identical payloads reuse ONE raw row (ref_count += 1, last_seen_at
+    bumped). New observation/snapshot rows are still created separately —
+    this store only dedupes the raw evidence itself.
+
+    Returns {payload_hash, is_new, ref_count}.
+    """
+    canonical = json.dumps(payload, default=str, sort_keys=True).encode("utf-8")
+    h = hashlib.sha256(canonical).hexdigest()[:24]
+    now = _now()
+    existing = conn.execute(
+        "SELECT ref_count FROM acquisition.raw_evidence_store WHERE payload_hash = ?",
+        [h],
+    ).fetchone()
+    if existing:
+        conn.execute(
+            "UPDATE acquisition.raw_evidence_store SET ref_count = ref_count + 1, last_seen_at = ? WHERE payload_hash = ?",
+            [now, h],
+        )
+        return {"payload_hash": h, "is_new": False, "ref_count": int(existing[0]) + 1}
+    conn.execute(
+        """INSERT INTO acquisition.raw_evidence_store (
+            payload_hash, marketplace, event_key, payload_type, payload,
+            byte_size, first_seen_at, last_seen_at, ref_count,
+            rights_status, commercial_use_status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)""",
+        [h, marketplace, event_key, payload_type, canonical,
+         len(canonical), now, now, rights_status, commercial_use_status],
+    )
+    return {"payload_hash": h, "is_new": True, "ref_count": 1}
 
 
 def _h(material: str, n: int = 24) -> str:

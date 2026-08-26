@@ -23,8 +23,6 @@
         <string>/usr/local/bin:/usr/bin:/bin</string>
         <key>PYTHONPATH</key>
         <string>{{REPO_ROOT}}/python</string>
-        <key>TICKET_MARKET_FAST_PER_DAY</key>
-        <string>2</string>
         <key>TICKET_MARKET_DEEP</key>
         <string>0</string>
         <key>TICKET_MARKET_MAX_COST</key>

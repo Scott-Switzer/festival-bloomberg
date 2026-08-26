@@ -16,8 +16,9 @@ if [ ! -x "$PY" ]; then
     PY=python3
 fi
 
-# Cadence env: FAST=1 2x/day, DEEP=0 (deep is weekly / T-minus milestones).
-FAST_PER_DAY="${TICKET_MARKET_FAST_PER_DAY:-2}"
+# Cadence is fixed by the LaunchAgent StartInterval (43200s = 2x/day).
+# DEEP=1 enables the deep rail when a live TICKETS_DEV_API_KEY is present;
+# without one the collector reports DEEP_UNAVAILABLE (sandbox never ships).
 DEEP="${TICKET_MARKET_DEEP:-0}"
 
 BUDGET="${TICKET_MARKET_MAX_COST:-2.00}"
@@ -33,5 +34,5 @@ fi
     >> "$LOG_DIR/ticket-market-collector.stdout.log" 2>&1 \
     || echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) collector exit=$?" >> "$LOG_DIR/ticket-market-collector.stderr.log"
 
-echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) wave complete (fast=${FAST_PER_DAY}x/day deep=${DEEP})" \
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) wave complete (fast 2x/day via StartInterval, deep=${DEEP})" \
     >> "$LOG_DIR/ticket-market-collector.stdout.log"

@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS acquisition.marketplace_listings (
     quantity                 INTEGER,
     ticket_price             DOUBLE,                -- per-ticket base price
     fee                      DOUBLE,                -- per-ticket fee
-    all_in_price             DOUBLE,                -- per-ticket all-in (total / quantity)
+    all_in_price             DOUBLE,                -- per-ticket all-in (= totalPrice; NEVER divided by quantity)
     currency                 VARCHAR,
     first_seen_at            TIMESTAMP NOT NULL,
     last_seen_at             TIMESTAMP NOT NULL,

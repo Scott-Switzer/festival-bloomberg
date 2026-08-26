@@ -851,13 +851,19 @@ def _market_history_columns(
             if not past:
                 col[label] = {"available": False, "reason": "no observation in window"}
                 continue
-            oldest = past[0]
+            # The window baseline is the LATEST observation at-or-before the
+            # cutoff (MAX(observed_at) <= cutoff) — never the oldest ever.
+            baseline = past[-1]
             col[label] = {
                 "available": True,
-                "previous": _price_col(oldest),
-                "delta": _window_delta(oldest, current),
+                "previous": _price_col(baseline),
+                "delta": _window_delta(baseline, current),
+                "baseline_observed_at": (
+                    str(baseline.get("observed_at"))[:19]
+                    if baseline.get("observed_at") else None
+                ),
                 "elapsed_hours": round(
-                    (now_ts - _parse_ts(oldest.get("observed_at"))).total_seconds() / 3600, 1
+                    (now_ts - _parse_ts(baseline.get("observed_at"))).total_seconds() / 3600, 1
                 ),
             }
         out[platform] = col
@@ -967,18 +973,41 @@ def _event_identifiers(evidence_conn, event_key: str) -> dict[str, Any]:
 
 
 def _source_health_by_method(evidence_conn, event_key: str) -> dict[str, Any]:
-    """Source health by acquisition method (migration 041)."""
+    """Source health by acquisition method (migration 041), scoped to the
+    marketplaces that actually matter for THIS event.
+
+    The health rows shown on an event page are filtered to the marketplaces
+    present in the event's identifiers / snapshots, so a buyer looking at
+    Event A never sees unrelated source health from other events.
+    """
     try:
+        # Marketplaces relevant to this event (identifiers + observed snapshots).
+        mps = [r["marketplace"] for r in _rows(
+            evidence_conn,
+            "SELECT DISTINCT marketplace FROM acquisition.event_identifiers WHERE event_key = ?",
+            [event_key],
+        )]
+        mps += [r["source_platform"] for r in _rows(
+            evidence_conn,
+            "SELECT DISTINCT source_platform FROM acquisition.ticket_market_snapshots WHERE event_key = ?",
+            [event_key],
+        )]
+        mps = sorted({m for m in mps if m})
+        if not mps:
+            return {"status": "NO_RUNS", "scope": "EVENT_MARKETPLACES", "runs": []}
+        placeholders = ",".join(["?"] * len(mps))
         rows = _rows(
             evidence_conn,
-            """
+            f"""
             SELECT method, marketplace, status, error_category, events_requested,
                    events_resolved, observations_ingested, latency_ms, cost_usd,
                    schema_version, started_at, finished_at
             FROM acquisition.source_health_by_method
+            WHERE marketplace IN ({placeholders})
             ORDER BY started_at DESC
             LIMIT 50
             """,
+            mps,
         )
     except Exception:
         return {"status": "UNKNOWN", "reason": "source_health_by_method table not available"}
@@ -987,7 +1016,12 @@ def _source_health_by_method(evidence_conn, event_key: str) -> dict[str, Any]:
         for k, v in r.items():
             if hasattr(v, "isoformat"):
                 r[k] = v.isoformat()
-    return {"status": "OBSERVED" if rows else "NO_RUNS", "runs": rows}
+    return {
+        "status": "OBSERVED" if rows else "NO_RUNS",
+        "scope": "EVENT_MARKETPLACES",
+        "marketplaces": mps,
+        "runs": rows,
+    }
 
 
 def _market_change(first: dict[str, Any], latest: dict[str, Any], timing: dict[str, Any]) -> dict[str, Any]:

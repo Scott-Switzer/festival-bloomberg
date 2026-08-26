@@ -14,18 +14,24 @@ normalized capture → immutable snapshot → listing lifecycle → time series
 
 ## What shipped
 
-### Migration 041 — `ticket_market_moat_v2`
-- `acquisition.event_identifiers` — the cross-market security master:
-  one row per (event_key × marketplace) with provider ID/URL, mapping status
-  (EXACT_PROVIDER_ID / EXACT_PAGE_MATCH / HIGH_CONFIDENCE / AMBIGUOUS / STALE /
-  NOT_FOUND), method, confidence, first_resolved / last_verified.
-- `acquisition.marketplace_listings` — listing-level lifecycle (DEEP rail):
-  first_seen / last_seen, price history JSON, status transitions
-  (LISTING_APPEARED / DISAPPEARED / PRICE_CHANGED / QUANTITY_CHANGED).
-  **Disappearance is never inferred as a sale.**
-- `acquisition.raw_evidence_store` — content-addressed raw payloads
-  (hash dedup: identical pages reuse one row, new timestamps still get new
-  snapshot rows).
+### Migrations 041 + 042 — `ticket_market_moat_v2` (+ corrections)
+- `acquisition.event_identifiers` — the CANONICAL cross-market security
+  master: one row per (event_key × marketplace) with provider ID/URL, mapping
+  status (EXACT_PROVIDER_ID / EXACT_PAGE_MATCH / HIGH_CONFIDENCE / AMBIGUOUS /
+  STALE / NOT_FOUND), method, confidence, first_resolved / last_verified.
+  The URL resolver writes through to this table (migration 040
+  `marketplace_event_mappings` remains as a legacy compatibility write); the
+  collector, tickets.dev catalog and Buyer Workspace all read it.
+- `acquisition.marketplace_listings` — CURRENT-STATE cache only (DEEP rail):
+  first_seen / last_seen, lifecycle status (LISTING_APPEARED / DISAPPEARED /
+  PRICE_CHANGED / QUANTITY_CHANGED / REAPPEARED), first_missing_at /
+  disappeared_at. **Disappearance is never inferred as a sale.**
+- `acquisition.marketplace_listing_observations` (042) — the IMMUTABLE
+  listing history: one append-only row per observed listing per capture,
+  never updated or deleted, no truncation. Historical truth lives here.
+- `acquisition.raw_evidence_store` — content-addressed raw payloads wired
+  into FAST + DEEP acquisition (hash dedup: identical payloads reuse one row,
+  ref_count += 1; new snapshots still get new observation timestamps).
 - `acquisition.source_health_by_method` — health ledger keyed by acquisition
   method (MONID_HTML, MONID_FETCH, TICKETS_DEV, APIFY_ACTOR) × marketplace,
   because method matters more than platform.
@@ -69,21 +75,75 @@ normalized capture → immutable snapshot → listing lifecycle → time series
 - All V2 additions are guarded: with only migration 039 present the section
   still renders (verified by test).
 
+## REVIEW-CORRECTED (2026-08-26) — what changed after independent review
+
+PR #46 was reviewed before merge and several correctness defects were fixed:
+
+1. **tickets.dev price semantics.** `totalPrice` is the ALL-IN price PER
+   TICKET (per the vendor docs), so `all_in_price = totalPrice` — it is never
+   divided by quantity. Fixtures and tests were corrected (a 2-ticket listing
+   at $418 all-in per ticket stays $418); regression test added.
+2. **Sandbox fixtures never enter the warehouse.** The collector now honors
+   the router for DEEP: without a live `TICKETS_DEV_API_KEY` the rail reports
+   `DEEP_UNAVAILABLE` and makes NO tickets.dev call. Prior-milestone sandbox
+   fixture rows were purged from the evidence DB (verified 0 remain).
+   Hard invariant covered by a regression test.
+3. **Append-only listing history.** New migration 042 adds
+   `acquisition.marketplace_listing_observations` — one immutable row per
+   observed listing per capture, never updated/deleted, no truncation.
+   `marketplace_listings` is explicitly a current-state cache.
+4. **Lifecycle semantics.** `last_seen_at` stays the last observation
+   CONTAINING the listing; `first_missing_at` / `disappeared_at` were added;
+   `LISTING_REAPPEARED` transition; unchanged listings keep their status
+   (never reset to LISTING_APPEARED).
+5. **Buyer 1D/7D windows** now select the LATEST observation at-or-before the
+   cutoff (`MAX(observed_at) <= NOW - horizon`), not the oldest ever. Tests
+   prove 1D uses T-1d and 7D uses T-7d (not T-10d).
+6. **Hard budget is pre-authorized.** Every paid call checks
+   `spent + expected_cost <= max_cost` before any network I/O; actual
+   measured cost is persisted after the call. Boundary tests added.
+7. **Bounded retries.** One retry on retryable failures (timeout, 502/503,
+   transport); auth/mismatch/budget are never retried; attempts recorded in
+   source health.
+8. **Raw evidence store is wired.** FAST and DEEP acquisition persist
+   content-addressed payloads into `raw_evidence_store` (hash dedup,
+   ref_count) and snapshots carry `raw_payload_hash`. Dedup test: 1 row,
+   ref_count=2 for an identical payload.
+9. **One security master.** `event_identifiers` is the canonical identity
+   contract; the URL resolver writes through to it (migration 040 table stays
+   as a legacy compatibility write), the collector reads it, the tickets.dev
+   catalog persists into it, and the Buyer Workspace drills into it — one
+   underlying row per (event_key × marketplace). Proven by test.
+10. **Source health is event-scoped.** `_source_health_by_method` filters to
+    the marketplaces that actually appear for the event; health persistence
+    failures surface as collector warnings instead of being swallowed.
+11. **Cost-basis labels.** Monid = MEASURED; tickets.dev live =
+    PUBLISHED_PRICE_ASSUMPTION ($0.05/$0.03/$0.02 tiers — not yet measured on
+    a paid capture); tickets.dev sandbox = CONTRACT_VALIDATED_ONLY.
+12. **Scheduler.** Removed the cosmetic `TICKET_MARKET_FAST_PER_DAY`;
+    cadence is fixed by the LaunchAgent `StartInterval` (43200s = 2x/day).
+
 ## Real observations this milestone (no simulation)
 
 Wave C (FAST, real network): **6 fetches, 6 snapshots, $0.0054, zero errors.**
-Wave C-deep (tickets.dev sandbox): **4 captures, 16 listing rows persisted,
-$0.00** (fixtures; live key required for real deep pricing).
+Wave C-corrected (this pass): **7 fetches, 7 snapshots, $0.0063, zero errors,
+7 × DEEP_UNAVAILABLE recorded** (no live tickets.dev key — sandbox never
+called). The earlier Wave C-deep sandbox fixtures were **purged** from the
+warehouse (0 tickets.dev rows remain); the sandbox proved the parser contract
+and lifecycle logic at zero cost in tests only.
 
 | wave | snapshots | with price | method |
 |------|-----------|-----------|--------|
 | wave_A | 19 | 8 | Monid HTML (real) |
 | wave_B | 17 | 8 | Monid HTML re-fetch (real, 0 price changes) |
 | wave_C | 6 | 5 | Monid HTML via collector (real) |
-| wave_C_deep | 4 | 4 | tickets.dev sandbox (fixtures) |
+| wave_c_corrected | 7 | 6 | Monid HTML via corrected collector (real) |
 
-Price history exists for 17 URLs with 2+ real observations. Listing lifecycle
-rows: 16 (all LISTING_APPEARED; transition logic unit-tested).
+Price history exists for events with 2+ real observations (e.g. Jodeci @ Arie
+Crown: SeatGeek $101 ×4, TickPick $92 ×2, Vivid $35.56 ×1 — real Monid data,
+3 marketplaces, verified in the buyer view). Listing lifecycle rows in the
+production DB: **0** (listing-level captures require a live tickets.dev key;
+the append-only observation contract is covered by tests).
 
 ## Same-URL benchmark (Monid vs tickets.dev)
 
@@ -142,10 +202,11 @@ daily. Targeted URL fetching is ~2 orders of magnitude cheaper.
 
 ## Gates
 
-- Python: **816 passed, 1 skipped** (17 new V2 tests)
+- Python: **829 passed, 1 skipped** (30 V2 tests, incl. all review regressions)
 - Node: **76/76**
 - TypeScript: clean
-- Secret scan: `.env.example` only (placeholders), no tokens in tracked files
+- Secret scan: no findings in changed files (gitleaks; the 36 findings are in
+  gitignored `.env` and untracked `reports/*.json`, absent from CI checkout)
 - CI: exact-head run on this branch
 
 ## Answer: what ticket-market information are we now accumulating that a
@@ -175,5 +236,10 @@ repeatedly since 2026-08-25.**
 
 - No Census / Common Crawl / social / ML — explicitly out of scope.
 - tickets.dev live captures not run (no live key; sandbox validated the
-  contract at zero cost).
+  contract at zero cost, and sandbox fixtures are now guaranteed never to
+  enter the production warehouse).
 - Multi-key Apify rotation not ported — one credential, clean attribution.
+- Disk note: the machine disk was 100% full during this pass; the git-ignored
+  serving snapshot and MusicBrainz dumps were removed (documented in
+  `docs/data-artifacts-registry.md` with regeneration instructions). The
+  licensed boxscore corpus was kept.
