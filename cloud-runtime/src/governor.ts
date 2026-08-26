@@ -5,29 +5,45 @@
  * Tracks CONTROL STATE ONLY — no canonical evidence here.
  *
  * Hard invariant:
- *   spent + expected_next_cost <= authorized_budget
+ *   spent + SUM(reservations) + expected_next_cost <= authorized_budget
  *
  * must be checked BEFORE any paid network request.
+ *
+ * Provider ≠ marketplace:
+ *   Governor budgets/rate limits operate on acquisition_provider.
+ *   Marketplace remains evidence provenance.
  */
+
+/** Per-task reservation — tracks the exact reserved amount */
+export interface TaskReservation {
+  task_key: string;
+  acquisition_provider: string;
+  expected_cost_usd: number;
+  reserved_at: string;
+  expires_at: string;
+}
+
+/** Per-event×marketplace observation state */
+export interface ObservationState {
+  event_key: string;
+  marketplace: string;
+  rail: string;
+  last_successful_observation_at: string;
+  last_successful_logical_window: string;
+  last_failure_at: string;
+  consecutive_failures: number;
+}
 
 /** Provider-specific rate limits */
 export interface ProviderRateLimit {
   provider: string;
-  /** Max requests per minute */
   requests_per_minute: number;
-  /** Max requests per day */
   requests_per_day: number;
-  /** Max cost per day in USD */
   cost_per_day_usd: number;
-  /** Current minute count */
   current_minute_count: number;
-  /** Current day count */
   current_day_count: number;
-  /** Current day cost */
   current_day_cost_usd: number;
-  /** Minute window start */
   minute_window_start: string;
-  /** Day window start */
   day_window_start: string;
 }
 
@@ -39,9 +55,7 @@ export interface CircuitBreaker {
   state: CircuitState;
   failure_count: number;
   last_failure_at: string;
-  /** Cooldown before transitioning from OPEN to HALF_OPEN */
   cooldown_seconds: number;
-  /** Successes needed in HALF_OPEN to close */
   half_open_success_threshold: number;
   half_open_success_count: number;
 }
@@ -49,10 +63,9 @@ export interface CircuitBreaker {
 /** Task lease — prevents concurrent execution of the same task */
 export interface TaskLease {
   task_key: string;
-  leased_to: string; // container/worker ID
+  leased_to: string;
   leased_at: string;
   expires_at: string;
-  /** Maximum lease duration in seconds */
   max_lease_seconds: number;
 }
 
@@ -63,26 +76,32 @@ export interface TaskLease {
 export interface GovernorState {
   /** Budget tracking */
   daily_spend_usd: number;
-  reserved_spend_usd: number;  // atomic reservation ledger
+  reserved_spend_usd: number;
   monthly_spend_usd: number;
   authorized_daily_budget_usd: number;
   authorized_monthly_budget_usd: number;
 
   /** Period tracking */
-  current_day: string; // YYYY-MM-DD
-  current_month: string; // YYYY-MM
+  current_day: string;
+  current_month: string;
 
-  /** Per-provider rate limits */
+  /** Explicit per-task reservations with amounts */
+  reservations: Record<string, TaskReservation>;
+
+  /** Current observation state per event×marketplace×rail */
+  observation_state: Record<string, ObservationState>;
+
+  /** Per-provider rate limits (keyed by acquisition_provider) */
   provider_rate_limits: Record<string, ProviderRateLimit>;
 
-  /** Circuit breakers */
+  /** Circuit breakers (keyed by acquisition_provider) */
   circuit_breakers: Record<string, CircuitBreaker>;
 
   /** Active task leases */
   active_leases: Record<string, TaskLease>;
 
   /** Task dedup/idempotency */
-  recent_task_keys: Record<string, string>; // task_key -> first_seen_at
+  recent_task_keys: Record<string, string>;
 
   /** Last successful scheduling window */
   last_scheduled_window: string;
@@ -96,6 +115,51 @@ export interface GovernorState {
     until: string;
     reason: string;
   }>;
+}
+
+/**
+ * Quick pre-flight check (non-atomic — Governor DO's reserveTask is the source of truth).
+ * Used for testing and workflow planning.
+ */
+export function canExecute(
+  state: GovernorState,
+  task_key: string,
+  acquisition_provider: string,
+  expected_cost_usd: number
+): { allowed: boolean; reason?: string } {
+  if (state.recent_task_keys[task_key]) {
+    return { allowed: false, reason: "DUPLICATE_TASK" };
+  }
+  const totalReserved = Object.values(state.reservations || {}).reduce(
+    (sum, r) => sum + r.expected_cost_usd, 0
+  );
+  if (state.daily_spend_usd + totalReserved + expected_cost_usd > state.authorized_daily_budget_usd) {
+    return { allowed: false, reason: "DAILY_BUDGET_EXCEEDED" };
+  }
+  if (state.monthly_spend_usd + totalReserved + expected_cost_usd > state.authorized_monthly_budget_usd) {
+    return { allowed: false, reason: "MONTHLY_BUDGET_EXCEEDED" };
+  }
+  const breaker = state.circuit_breakers[acquisition_provider];
+  if (breaker?.state === "OPEN") {
+    return { allowed: false, reason: "CIRCUIT_BREAKER_OPEN" };
+  }
+  const cooldown = state.provider_cooldowns[acquisition_provider];
+  if (cooldown && new Date(cooldown.until) > new Date()) {
+    return { allowed: false, reason: `PROVIDER_COOLDOWN: ${cooldown.reason}` };
+  }
+  const rateLimit = state.provider_rate_limits[acquisition_provider];
+  if (rateLimit) {
+    if (rateLimit.current_minute_count >= rateLimit.requests_per_minute) {
+      return { allowed: false, reason: "RATE_LIMIT_MINUTE" };
+    }
+    if (rateLimit.current_day_count >= rateLimit.requests_per_day) {
+      return { allowed: false, reason: "RATE_LIMIT_DAY" };
+    }
+  }
+  if (state.active_containers >= state.max_concurrent_containers) {
+    return { allowed: false, reason: "MAX_CONCURRENT_REACHED" };
+  }
+  return { allowed: true };
 }
 
 /** Create initial governor state */
@@ -112,6 +176,8 @@ export function createInitialGovernorState(
     authorized_monthly_budget_usd: monthlyBudget,
     current_day: now.toISOString().slice(0, 10),
     current_month: now.toISOString().slice(0, 7),
+    reservations: {},
+    observation_state: {},
     provider_rate_limits: {},
     circuit_breakers: {},
     active_leases: {},
@@ -121,60 +187,4 @@ export function createInitialGovernorState(
     active_containers: 0,
     provider_cooldowns: {},
   };
-}
-
-/**
- * Check if a task is allowed under current budget/rate constraints.
- * This is the pre-flight check that MUST happen before any paid request.
- */
-export function canExecute(
-  state: GovernorState,
-  task_key: string,
-  provider: string,
-  expected_cost_usd: number
-): { allowed: boolean; reason?: string } {
-  // Check idempotency — same task key already completed recently
-  if (state.recent_task_keys[task_key]) {
-    return { allowed: false, reason: "DUPLICATE_TASK" };
-  }
-
-  // Check daily budget
-  if (state.daily_spend_usd + expected_cost_usd > state.authorized_daily_budget_usd) {
-    return { allowed: false, reason: "DAILY_BUDGET_EXCEEDED" };
-  }
-
-  // Check monthly budget
-  if (state.monthly_spend_usd + expected_cost_usd > state.authorized_monthly_budget_usd) {
-    return { allowed: false, reason: "MONTHLY_BUDGET_EXCEEDED" };
-  }
-
-  // Check circuit breaker
-  const breaker = state.circuit_breakers[provider];
-  if (breaker?.state === "OPEN") {
-    return { allowed: false, reason: "CIRCUIT_BREAKER_OPEN" };
-  }
-
-  // Check provider cooldown
-  const cooldown = state.provider_cooldowns[provider];
-  if (cooldown && new Date(cooldown.until) > new Date()) {
-    return { allowed: false, reason: `PROVIDER_COOLDOWN: ${cooldown.reason}` };
-  }
-
-  // Check provider rate limits
-  const rateLimit = state.provider_rate_limits[provider];
-  if (rateLimit) {
-    if (rateLimit.current_minute_count >= rateLimit.requests_per_minute) {
-      return { allowed: false, reason: "RATE_LIMIT_MINUTE" };
-    }
-    if (rateLimit.current_day_count >= rateLimit.requests_per_day) {
-      return { allowed: false, reason: "RATE_LIMIT_DAY" };
-    }
-  }
-
-  // Check concurrency
-  if (state.active_containers >= state.max_concurrent_containers) {
-    return { allowed: false, reason: "MAX_CONCURRENT_REACHED" };
-  }
-
-  return { allowed: true };
 }

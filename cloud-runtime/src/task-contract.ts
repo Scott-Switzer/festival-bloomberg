@@ -6,6 +6,13 @@
  *
  * Cloudflare Queues are at-least-once: duplicate delivery MUST NOT create
  * duplicate economic truth.
+ *
+ * Provider ≠ marketplace:
+ *   acquisition_provider: monid (the entity making the HTTP call)
+ *   marketplace: seatgeek / stubhub / vividseats / tickpick / gametime / ticketmaster
+ *
+ * Governor budgets/rate limits/circuit breakers operate on acquisition_provider.
+ * Marketplace remains evidence provenance only.
  */
 
 /** Acquisition rail classification */
@@ -23,42 +30,45 @@ export type TaskStatus =
   | "COMPLETED"
   | "FAILED"
   | "DLQ"
-  | "SUPPRESSED"  // duplicate delivery detected
+  | "SUPPRESSED"
   | "BUDGET_BLOCKED"
   | "RIGHTS_BLOCKED";
 
-/** Source/provider identifier */
-export type SourceProvider =
-  | "monid"
-  | "tickets_dev"
-  | "ticketmaster"
-  | "seatgeek"
-  | "stubhub"
-  | "vividseats"
-  | "tickpick"
-  | "gametime"
-  | "dice"
-  | "eventbrite"
-  | "bandsintown"
-  | "songkick"
-  | "other";
+/** Acquisition provider — the entity making the HTTP call */
+export type AcquisitionProvider = "monid" | "tickets_dev" | "other";
+
+/** Marketplace — evidence provenance */
+export type Marketplace =
+  | "ticketmaster.com"
+  | "ticketweb.com"
+  | "axs.com"
+  | "seatgeek.com"
+  | "stubhub.com"
+  | "vividseats.com"
+  | "tickpick.com"
+  | "gametime.com"
+  | "dice.fm"
+  | "eventbrite.com"
+  | "bandsintown.com"
+  | "songkick.com"
+  | "unknown";
 
 /**
  * The core acquisition task — everything needed to execute a single fetch.
  * No secrets. No credentials. No budget state.
  */
 export interface AcquisitionTask {
-  /** Deterministic idempotency key: hash of event_key + marketplace + rail + window + mapping_version */
+  /** Deterministic idempotency key */
   task_key: string;
 
   /** Canonical event identifier from acquisition.event_identifiers */
   event_key: string;
 
-  /** Source provider */
-  source: SourceProvider;
+  /** Acquisition provider (monid, tickets_dev) — Governor budgets on this */
+  acquisition_provider: AcquisitionProvider;
 
-  /** Target marketplace */
-  marketplace: string;
+  /** Target marketplace — evidence provenance only */
+  marketplace: Marketplace;
 
   /** Acquisition rail */
   rail: AcquisitionRail;
@@ -66,7 +76,7 @@ export interface AcquisitionTask {
   /** Exact mapped URL or provider-specific event/object ID */
   target_url: string;
 
-  /** Scheduled observation window (ISO-8601) */
+  /** Scheduled observation window (ISO-8601 hour-level) */
   scheduled_window: string;
 
   /** Task priority (1=highest) */
@@ -81,8 +91,8 @@ export interface AcquisitionTask {
   /** Software version that created this task */
   software_version: string;
 
-  /** Mapping version if relevant for dedup */
-  mapping_version?: string;
+  /** Mapping version for dedup */
+  mapping_version: string;
 
   /** Event metadata for context (non-secret) */
   event_metadata?: {
@@ -128,7 +138,7 @@ export interface TaskResult {
 
   /** Cost accounting */
   actual_cost_usd: number;
-  cost_basis?: string;  // MEASURED | PUBLISHED_PRICE_ASSUMPTION | CONTRACT_VALIDATED_ONLY
+  cost_basis?: string;
 
   /** Error details if failed */
   error_category?:
@@ -161,7 +171,6 @@ export function generateTaskKey(
   mapping_version: string = "v1"
 ): string {
   const raw = `${event_key}|${marketplace}|${rail}|${scheduled_window}|${mapping_version}`;
-  // Use a simple deterministic hash (not cryptographic — just for dedup)
   let hash = 0;
   for (let i = 0; i < raw.length; i++) {
     const char = raw.charCodeAt(i);
@@ -179,29 +188,24 @@ export interface AcquisitionRun {
   completed_at?: string;
   status: "RUNNING" | "COMPLETED" | "FAILED" | "PARTIAL";
 
-  /** Planning summary */
   events_planned: number;
   tasks_planned: number;
   tasks_queued: number;
   tasks_suppressed: number;
   tasks_budget_blocked: number;
 
-  /** Execution summary */
   tasks_completed: number;
   tasks_failed: number;
   tasks_dlq: number;
   tasks_retried: number;
 
-  /** Data summary */
   raw_objects_written: number;
   raw_bytes_written: number;
   observations_written: number;
   snapshots_appended: number;
 
-  /** Cost */
   total_cost_usd: number;
 
-  /** Errors */
   errors: Array<{
     task_key: string;
     error_category: string;

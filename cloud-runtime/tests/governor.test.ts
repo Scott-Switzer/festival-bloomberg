@@ -15,6 +15,8 @@ describe("Governor", () => {
       expect(state.monthly_spend_usd).toBe(0);
       expect(state.active_containers).toBe(0);
       expect(state.max_concurrent_containers).toBe(3);
+      expect(state.reservations).toEqual({});
+      expect(state.observation_state).toEqual({});
     });
   });
 
@@ -110,24 +112,91 @@ describe("Governor", () => {
     });
   });
 
-  describe("Race condition simulation", () => {
-    it("canExecute checks budget without reserving (DO handles atomicity)", () => {
+  describe("Reservation accounting", () => {
+    it("existing reservations count against available budget", () => {
       const state = createInitialGovernorState(10, 200);
+      state.reservations["task_a"] = {
+        task_key: "task_a",
+        acquisition_provider: "monid",
+        expected_cost_usd: 5.00,
+        reserved_at: "2026-08-26T12:00:00Z",
+        expires_at: "2026-08-26T12:05:00Z",
+      };
 
-      // canExecute is a pre-check — the Governor DO's reserveTask is atomic.
-      // Without reservation, all 5 pre-checks pass (expected behavior).
-      // The DO's reserveTask prevents actual overcommitment.
-      const results = [];
-      for (let i = 0; i < 5; i++) {
-        results.push(canExecute(state, `task_${i}`, "monid", 3.00));
-      }
+      // 10 - 5.00 reserved = 5.00 available
+      const result = canExecute(state, "task_b", "monid", 5.01);
+      expect(result.allowed).toBe(false);
+      expect(result.reason).toBe("DAILY_BUDGET_EXCEEDED");
 
-      // All pre-checks pass because canExecute doesn't reserve
-      const allowed = results.filter((r) => r.allowed);
-      expect(allowed.length).toBe(5);
+      // But 5.00 fits exactly
+      const result2 = canExecute(state, "task_b", "monid", 5.00);
+      expect(result2.allowed).toBe(true);
+    });
 
-      // Atomic reservation is tested via the Governor DO integration tests
-      // (Phase 13+ real pilot)
+    it("spent + reservations are tracked independently", () => {
+      const state = createInitialGovernorState(10, 200);
+      state.daily_spend_usd = 3.00;
+      state.reservations["task_a"] = {
+        task_key: "task_a",
+        acquisition_provider: "monid",
+        expected_cost_usd: 4.00,
+        reserved_at: "2026-08-26T12:00:00Z",
+        expires_at: "2026-08-26T12:05:00Z",
+      };
+
+      // 3.00 spent + 4.00 reserved = 7.00 committed. Budget = 10.
+      // 10 - 7.00 = 3.00 available
+      const result = canExecute(state, "task_b", "monid", 3.01);
+      expect(result.allowed).toBe(false);
+
+      const result2 = canExecute(state, "task_b", "monid", 3.00);
+      expect(result2.allowed).toBe(true);
+    });
+  });
+
+  describe("Provider != marketplace", () => {
+    it("canExecute uses acquisition_provider for circuit breaker", () => {
+      const state = createInitialGovernorState(10, 200);
+      state.circuit_breakers["monid"] = {
+        provider: "monid",
+        state: "OPEN",
+        failure_count: 5,
+        last_failure_at: "2026-08-26T12:00:00Z",
+        cooldown_seconds: 300,
+        half_open_success_threshold: 3,
+        half_open_success_count: 0,
+      };
+
+      // Blocking monid should NOT block seatgeek
+      const result1 = canExecute(state, "task_1", "monid", 0);
+      expect(result1.allowed).toBe(false);
+
+      const result2 = canExecute(state, "task_2", "seatgeek", 0);
+      expect(result2.allowed).toBe(true);
+    });
+
+    it("rate limits are per acquisition_provider, not per marketplace", () => {
+      const state = createInitialGovernorState(10, 200);
+      state.provider_rate_limits["monid"] = {
+        provider: "monid",
+        requests_per_minute: 1,
+        requests_per_day: 1000,
+        cost_per_day_usd: 5.0,
+        current_minute_count: 1,
+        current_day_count: 0,
+        current_day_cost_usd: 0,
+        minute_window_start: new Date().toISOString(),
+        day_window_start: new Date().toISOString(),
+      };
+
+      // monid is rate-limited
+      const result1 = canExecute(state, "task_1", "monid", 0);
+      expect(result1.allowed).toBe(false);
+      expect(result1.reason).toBe("RATE_LIMIT_MINUTE");
+
+      // seatgeek is not (no rate limit set for it)
+      const result2 = canExecute(state, "task_2", "seatgeek", 0);
+      expect(result2.allowed).toBe(true);
     });
   });
 });

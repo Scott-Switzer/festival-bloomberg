@@ -6,6 +6,11 @@
  * - AcquisitionGovernor: Durable Object
  * - AcquisitionContainer: Container-enabled Durable Object
  * - AcquisitionWorkflow: Workflow entrypoint
+ *
+ * Security:
+ * - /health: public, no auth required
+ * - All admin endpoints: require ADMIN_TOKEN header
+ * - /test-fetch, /test-monid: staging-only, should be removed after acceptance
  */
 
 import { AcquisitionGovernor } from "./governor-do";
@@ -36,11 +41,30 @@ interface Env {
   SOFTWARE_VERSION: string;
   DAILY_BUDGET_USD: string;
   MONTHLY_BUDGET_USD: string;
+  ENABLE_DEEP_RAIL: string;
+  ADMIN_TOKEN: string;
+}
+
+/** Check if request has valid admin auth */
+function isAdminAuth(request: Request, env: Env): boolean {
+  const authHeader = request.headers.get("Authorization");
+  const tokenHeader = request.headers.get("X-Admin-Token");
+  const expected = env.ADMIN_TOKEN;
+  if (!expected) return true; // If no token configured, allow (development)
+  return authHeader === `Bearer ${expected}` || tokenHeader === expected;
+}
+
+/** Extract SHA-256 hex string */
+async function sha256Hex(data: Uint8Array): Promise<string> {
+  const hash = await crypto.subtle.digest("SHA-256", data.buffer as ArrayBuffer);
+  return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+
+    // ── PUBLIC ENDPOINTS ──────────────────────────────────────
 
     if (url.pathname === "/health") {
       return Response.json({
@@ -50,6 +74,20 @@ export default {
       });
     }
 
+    // ── ADMIN ENDPOINTS (require auth) ───────────────────────
+
+    // Admin token check for all non-health endpoints
+    if (!isAdminAuth(request, env)) {
+      return Response.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    if (url.pathname === "/governor") {
+      const governorId = env.GOVERNOR.idFromName("acquisition-governor");
+      const governor = env.GOVERNOR.get(governorId) as any;
+      const summary = await governor.getReservationSummary();
+      return Response.json(summary);
+    }
+
     if (url.pathname === "/reset-governor" && request.method === "POST") {
       const governorId = env.GOVERNOR.idFromName("acquisition-governor");
       const governor = env.GOVERNOR.get(governorId) as any;
@@ -57,62 +95,145 @@ export default {
       return Response.json({ status: "governor_reset" });
     }
 
-    if (url.pathname === "/governor") {
-      const governorId = env.GOVERNOR.idFromName("acquisition-governor");
-      const governor = env.GOVERNOR.get(governorId) as any;
-      // RPC call — governor stub has typed methods
-      const summary = await (governor as any).getReservationSummary();
-      return Response.json(summary);
-    }
-
     if (url.pathname === "/trigger" && request.method === "POST") {
       const instance = await env.ACQUISITION_WORKFLOW.create();
       return Response.json({ instance_id: instance.id, status: "triggered" });
     }
 
+    if (url.pathname === "/trigger-immediate" && request.method === "POST") {
+      // Trigger immediate workflow run (for pilot)
+      const instance = await env.ACQUISITION_WORKFLOW.create();
+      return Response.json({ instance_id: instance.id, status: "triggered_immediate" });
+    }
+
+    if (url.pathname === "/observation-state" && request.method === "GET") {
+      // Query observation state for a specific event
+      const eventKey = url.searchParams.get("event_key");
+      const marketplace = url.searchParams.get("marketplace");
+      const rail = url.searchParams.get("rail") || "FAST";
+      if (!eventKey || !marketplace) {
+        return Response.json({ error: "event_key and marketplace required" }, { status: 400 });
+      }
+      const governorId = env.GOVERNOR.idFromName("acquisition-governor");
+      const governor = env.GOVERNOR.get(governorId) as any;
+      const state = await governor.getObservationState({ event_key: eventKey, marketplace, rail });
+      return Response.json({ event_key: eventKey, marketplace, rail, state });
+    }
+
+    // ── STAGING-ONLY ENDPOINTS (remove after acceptance) ─────
+
+    if (url.pathname === "/test-monid" && request.method === "POST") {
+      try {
+        const body = await request.json() as { url: string };
+        const targetUrl = body.url;
+        if (!targetUrl) return Response.json({ error: "url required" }, { status: 400 });
+
+        const apiKey = env.MONID_API_KEY;
+        const resp = await fetch(`${MONID_BASE}/v1/run`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            provider: "context.dev",
+            endpoint: "/web/scrape/html",
+            queryParams: { url: targetUrl },
+          }),
+        });
+
+        const data: any = await resp.json();
+        if (data.status === "COMPLETED") {
+          return Response.json({
+            status: "IMMEDIATE_COMPLETE",
+            html_length: data.output?.html?.length || 0,
+            has_json_ld: (data.output?.html || "").includes("application/ld+json"),
+          });
+        }
+
+        const runId = data.runId || data.run_id;
+        if (runId) {
+          await new Promise((r) => setTimeout(r, 8000));
+          const pollResp = await fetch(`${MONID_BASE}/v1/runs/${runId}`, {
+            headers: { Authorization: `Bearer ${apiKey}` },
+          });
+          const pollData: any = await pollResp.json();
+          return Response.json({
+            status: pollData.status,
+            html_length: pollData.output?.html?.length || 0,
+          });
+        }
+
+        return Response.json({ status: data.status || "UNKNOWN" });
+      } catch (e: any) {
+        return Response.json({ error: e.message || String(e) }, { status: 500 });
+      }
+    }
+
     if (url.pathname === "/test-fetch" && request.method === "POST") {
-      // Direct test: fetch a marketplace page via Monid, write to R2.
-      // Bypasses Governor/Queue to prove the Monid→R2 pipeline works.
       try {
         const body = await request.json() as { url: string; event_key?: string; marketplace?: string };
         if (!body.url) return Response.json({ error: "url required" }, { status: 400 });
 
-        // Import monid-client inline to avoid module issues
-        const { fetchPage, extractFromPage } = await import("./monid-client");
+        const { fetchPage } = await import("./monid-client");
         const page = await fetchPage(env.MONID_API_KEY, body.url);
 
         if (page.status !== "FETCHED") {
           return Response.json({ error: page.status, latency_ms: page.latency_ms });
         }
 
-        const extracted = extractFromPage(page.html, body.marketplace || "unknown");
+        const extracted = JSON.parse(JSON.stringify(page)); // simplified
         const now = new Date().toISOString();
-
-        // Write raw evidence
         const htmlBytes = new TextEncoder().encode(page.html);
-        const hashBuf = await crypto.subtle.digest("SHA-256", htmlBytes.buffer as ArrayBuffer);
-        const contentHash = [...new Uint8Array(hashBuf)].map(b => b.toString(16).padStart(2, "0")).join("");
+        const contentHash = await sha256Hex(htmlBytes);
         const h0 = contentHash.slice(0, 2), h1 = contentHash.slice(2, 4);
-        const ek = body.event_key || "test";
-        const mp = body.marketplace || "unknown";
         const rawKey = `raw/monid/${h0}/${h1}/${contentHash}.json`;
+        const mp = body.marketplace || "unknown";
+        const ek = body.event_key || "test";
 
-        const rawPayload = JSON.stringify({ url: body.url, marketplace: mp, event_key: ek, provider: page.provider, html: page.html.slice(0, 50_000), extracted, fetched_at: now, cost_usd: page.cost_usd });
+        const rawPayload = JSON.stringify({
+          url: body.url, marketplace: mp, event_key: ek,
+          acquisition_provider: "monid", provider: page.provider,
+          html: page.html, // FULL — no truncation
+          fetched_at: now, cost_usd: page.cost_usd, cost_basis: "MEASURED",
+        });
         await env.RAW_BUCKET.put(rawKey, rawPayload, {
           httpMetadata: { contentType: "application/json" },
           customMetadata: { source: "monid", marketplace: mp, event_key: ek, content_hash: contentHash },
         });
 
-        // Write normalized observation to lake staging
+        // Parse JSON-LD for observation
+        const ldRegex = /<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi;
+        let match;
+        const obs: Record<string, any> = {};
+        while ((match = ldRegex.exec(page.html)) !== null) {
+          try {
+            const ld = JSON.parse(match[1]);
+            if (ld?.["@type"] === "Event" || ld?.["@type"] === "MusicEvent" || ld?.["@type"] === "Concert") {
+              const offers = ld.offers;
+              if (offers && !Array.isArray(offers)) {
+                obs.observed_offer_min_price = parseFloat(offers.price) || null;
+                obs.currency = offers.priceCurrency;
+                obs.price_basis = "PUBLIC_PAGE_JSON_LD_OFFER";
+                obs.inventory_basis = "UNKNOWN";
+              }
+              obs.name = ld.name;
+              obs.venue = ld.location?.name;
+              obs.city = ld.location?.address?.addressLocality;
+              break;
+            }
+          } catch {}
+        }
+
         const observation = {
           schema_version: "ticket_market_snapshot_v1",
           event_key: ek, source_platform: mp,
-          actor_or_endpoint: `monid_${page.provider}`,
+          acquisition_provider: "monid", actor_or_endpoint: `monid_${page.provider}`,
           observed_at: now, retrieved_at: now, knowledge_time: now,
-          currency: extracted.currency || null,
-          resale_min_price: extracted.price ?? extracted.price_min ?? null,
-          sold_out_flag: String(extracted.availability || "").toLowerCase().includes("soldout"),
-          identity_match_status: "MATCHED",
+          observed_offer_min_price: obs.observed_offer_min_price ?? null,
+          currency: obs.currency || null,
+          price_basis: obs.price_basis || "NONE",
+          inventory_basis: "UNKNOWN",
           source_url: body.url, raw_payload_hash: contentHash,
           rights_status: "TERMS_REVIEW_REQUIRED",
           commercial_use_status: "PROTOTYPE_ONLY",
@@ -130,202 +251,7 @@ export default {
           provider: page.provider,
           cost_usd: page.cost_usd,
           latency_ms: page.latency_ms,
-          extracted,
-        });
-      } catch (e: any) {
-        return Response.json({ error: e.message || String(e) }, { status: 500 });
-      }
-    }
-
-    if (url.pathname === "/test-monid" && request.method === "POST") {
-      // Diagnostic: call Monid API directly, inspect response structure
-      try {
-        const body = await request.json() as { url: string };
-        const targetUrl = body.url;
-        if (!targetUrl) return Response.json({ error: "url required" }, { status: 400 });
-
-        const apiKey = env.MONID_API_KEY;
-        const runResp = await fetch("https://api.monid.ai/v1/run", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            provider: "context.dev",
-            endpoint: "/web/scrape/html",
-            queryParams: { url: targetUrl },
-          }),
-        });
-
-        const runText = await runResp.text();
-        let runData: any;
-        try { runData = JSON.parse(runText); } catch { runData = { raw: runText.slice(0, 500) }; }
-
-        const runId = runData.runId || runData.run_id;
-        const status = runData.status || "UNKNOWN";
-
-        // Debug: what keys do we have?
-        const debugKeys = Object.keys(runData);
-        const outputKeys = runData.output ? Object.keys(runData.output) : [];
-        const htmlLen = runData.output?.html?.length || 0;
-
-        if (status === "COMPLETED" && htmlLen > 0) {
-          const html = runData.output.html;
-          return Response.json({
-            status: "IMMEDIATE_COMPLETE",
-            run_id: runId,
-            html_length: html.length,
-            has_json_ld: html.includes("application/ld+json"),
-            has_structured: html.includes("schema.org"),
-            output_keys: outputKeys,
-            cost: runData.price || runData.cost || null,
-          });
-        }
-
-        // Not complete yet — poll
-        if (runId && status !== "FAILED" && status !== "ERROR") {
-          await new Promise(r => setTimeout(r, 8000));
-          const pollResp = await fetch(`https://api.monid.ai/v1/runs/${runId}`, {
-            headers: { Authorization: `Bearer ${apiKey}` },
-          });
-          const pollText = await pollResp.text();
-          let pollData: any;
-          try { pollData = JSON.parse(pollText); } catch { pollData = { raw: pollText.slice(0, 500) }; }
-          const pollHtmlLen = pollData.output?.html?.length || 0;
-          return Response.json({
-            status: pollData.status,
-            run_id: runId,
-            html_length: pollHtmlLen,
-            has_json_ld: (pollData.output?.html || "").includes("application/ld+json"),
-            output_keys: pollData.output ? Object.keys(pollData.output) : [],
-            cost: pollData.price || pollData.cost || null,
-          });
-        }
-
-        return Response.json({
-          debug: true, status, run_id: runId, debug_keys: debugKeys, output_keys: outputKeys,
-          html_len: htmlLen, response_status: runResp.status,
-        });
-      } catch (e: any) {
-        return Response.json({ error: e.message || String(e) }, { status: 500 });
-      }
-    }
-
-    if (url.pathname === "/run-pilot" && request.method === "POST") {
-      // Direct pilot: fetch N events synchronously, no queue needed.
-      // Proves the pipeline end-to-end for real acquisition.
-      try {
-        const body = await request.json() as { max_events?: number; max_cost?: number };
-        const maxEvents = body.max_events || 5;
-        const maxCost = body.max_cost || 0.01;
-        const MONID_BASE = "https://api.monid.ai";
-        const results: any[] = [];
-        let totalCost = 0;
-        let fetched = 0;
-
-        // Load universe
-        const universeObj = await env.BACKUP_BUCKET.get("canonical/2026-08-26T01-00-58Z/watch_universe_v1.json");
-        if (!universeObj) return Response.json({ error: "No universe" }, { status: 500 });
-        const universe: any = await universeObj.json();
-        const events = universe.events || [];
-
-        let attempts = 0;
-        for (const ev of events) {
-          if (fetched >= maxEvents) break;
-          if (totalCost >= maxCost) break;
-          if (attempts >= maxEvents * 3) break; // safety: stop after 3x failures
-          attempts++;
-
-          const targetUrl = ev.canonical_url || ev.url || "";
-          if (!targetUrl) continue;
-          const ek = ev.event_key || ev.id;
-          const mp = "ticketmaster.com";
-
-          // Rate-limit: 2s delay between Monid calls to avoid 502
-          if (attempts > 1) await new Promise(r => setTimeout(r, 2000));
-
-          try {
-            const start = Date.now();
-            const resp = await fetch(`${MONID_BASE}/v1/run`, {
-              method: "POST",
-              headers: { Authorization: `Bearer ${env.MONID_API_KEY}`, "Content-Type": "application/json" },
-              body: JSON.stringify({ provider: "context.dev", endpoint: "/web/scrape/html", queryParams: { url: targetUrl } }),
-            });
-            const data: any = await resp.json();
-            if (data.status !== "COMPLETED") continue;
-            const html = data.output?.html || "";
-            if (!html) continue;
-
-            // Extract JSON-LD
-            const extracted: Record<string, any> = {};
-            const ldRegex = /<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi;
-            let match;
-            while ((match = ldRegex.exec(html)) !== null) {
-              try {
-                const ld = JSON.parse(match[1]);
-                if (ld?.["@type"] === "Event" || ld?.["@type"] === "MusicEvent" || ld?.["@type"] === "Concert") {
-                  const offers = ld.offers;
-                  if (offers && !Array.isArray(offers)) {
-                    extracted.price = offers.price;
-                    extracted.currency = offers.priceCurrency;
-                    extracted.availability = offers.availability;
-                  }
-                  extracted.name = ld.name;
-                  extracted.venue = ld.location?.name;
-                  extracted.city = ld.location?.address?.addressLocality;
-                  break;
-                }
-              } catch {}
-            }
-
-            // SHA-256 for content-addressed storage
-            const htmlBytes = new TextEncoder().encode(html);
-            const hashBuf = await crypto.subtle.digest("SHA-256", htmlBytes.buffer as ArrayBuffer);
-            const contentHash = [...new Uint8Array(hashBuf)].map(b => b.toString(16).padStart(2, "0")).join("");
-            const h0 = contentHash.slice(0, 2), h1 = contentHash.slice(2, 4);
-
-            // Write raw evidence to R2
-            const rawKey = `raw/monid/${h0}/${h1}/${contentHash}.json`;
-            await env.RAW_BUCKET.put(rawKey, JSON.stringify({ url: targetUrl, marketplace: mp, event_key: ek, provider: "context.dev", html: html.slice(0, 100_000), extracted, fetched_at: new Date().toISOString(), cost_usd: 0.0009 }), {
-              httpMetadata: { contentType: "application/json" },
-              customMetadata: { source: "monid", event_key: ek, content_hash: contentHash },
-            });
-
-            // Write normalized observation to R2 lake
-            const now = new Date().toISOString();
-            const observation = {
-              schema_version: "ticket_market_snapshot_v1",
-              event_key: ek, source_platform: mp, actor_or_endpoint: "monid_context.dev",
-              observed_at: now, retrieved_at: now, knowledge_time: now,
-              currency: extracted.currency || null, resale_min_price: extracted.price ?? null,
-              sold_out_flag: String(extracted.availability || "").toLowerCase().includes("soldout"),
-              identity_match_status: "MATCHED", source_url: targetUrl, raw_payload_hash: contentHash,
-              rights_status: "TERMS_REVIEW_REQUIRED", commercial_use_status: "PROTOTYPE_ONLY",
-            };
-            const stagingKey = `staging/ticket_market/date=${now.slice(0, 10)}/hour=${now.slice(11, 13)}/${ek.replace(/[^a-zA-Z0-9]/g, "_")}.json`;
-            await env.LAKE_BUCKET.put(stagingKey, JSON.stringify(observation, null, 2), {
-              httpMetadata: { contentType: "application/json" },
-            });
-
-            totalCost += 0.0009;
-            fetched++;
-            results.push({
-              event_key: ek, url: targetUrl, price: extracted.price ?? null,
-              currency: extracted.currency || null, venue: extracted.venue || null,
-              raw_key: rawKey, staging_key: stagingKey, cost_usd: 0.0009,
-              latency_ms: Date.now() - start, content_hash: contentHash,
-            });
-          } catch (e: any) {
-            results.push({ event_key: ek, error: e.message || String(e) });
-          }
-        }
-
-        return Response.json({
-          status: "PILOT_COMPLETE",
-          events_fetched: fetched,
-          total_cost_usd: totalCost,
-          results,
+          observation,
         });
       } catch (e: any) {
         return Response.json({ error: e.message || String(e) }, { status: 500 });
@@ -356,3 +282,5 @@ export default {
     }
   },
 };
+
+const MONID_BASE = "https://api.monid.ai";

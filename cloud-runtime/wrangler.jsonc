@@ -6,6 +6,8 @@
   "compatibility_flags": ["nodejs_compat"],
 
   // --- Queues ---
+  // FAST: max_batch_size=1, max_concurrency=1 to serialize Monid calls
+  // and avoid 502 rate limits. Short batch timeout so tasks process promptly.
   "queues": {
     "producers": [
       { "queue": "fi-acquisition-fast", "binding": "FAST_QUEUE" },
@@ -16,16 +18,19 @@
     "consumers": [
       {
         "queue": "fi-acquisition-fast",
-        "max_batch_size": 5,
-        "max_batch_timeout": 60,
+        "max_batch_size": 1,
+        "max_batch_timeout": 5,
         "max_retries": 3,
-        "dead_letter_queue": "fi-acquisition-dlq"
+        "max_concurrency": 1,
+        "dead_letter_queue": "fi-acquisition-dlq",
+        "retry_delay": 15
       },
       {
         "queue": "fi-acquisition-deep",
-        "max_batch_size": 2,
-        "max_batch_timeout": 55,
+        "max_batch_size": 1,
+        "max_batch_timeout": 10,
         "max_retries": 3,
+        "max_concurrency": 1,
         "dead_letter_queue": "fi-acquisition-dlq"
       },
       {
@@ -61,12 +66,12 @@
 
   "migrations": [
     {
-      "tag": "v1",
+      "tag": "v2",
       "new_sqlite_classes": ["AcquisitionGovernor", "AcquisitionContainer"]
     }
   ],
 
-  // --- Containers ---
+  // --- Containers (deferred — not on critical path for FAST-only pilot) ---
   "containers": [
     {
       "class_name": "AcquisitionContainer",
@@ -76,12 +81,18 @@
     }
   ],
 
-  // --- Workflow ---
+  // --- Workflow with schedule ---
   "workflows": [
     {
       "name": "fi-acquisition-workflow",
       "binding": "ACQUISITION_WORKFLOW",
       "class_name": "AcquisitionWorkflow",
+      "schedules": [
+        {
+          "cron": "*/15 * * * *",
+          "enabled": true
+        }
+      ]
     }
   ],
 
