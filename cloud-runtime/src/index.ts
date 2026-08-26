@@ -26,6 +26,7 @@ import {
   selectBestMapping,
   ACCEPTED_MAPPING_STATUSES,
 } from "./mapping";
+import { runMappingFactory } from "./mapping-factory-v2";
 
 export { AcquisitionGovernor, AcquisitionContainer, AcquisitionWorkflow };
 
@@ -215,6 +216,34 @@ export default {
       const governor = env.GOVERNOR.get(governorId) as any;
       const state = await governor.getObservationState({ event_key: eventKey, marketplace, rail });
       return Response.json({ event_key: eventKey, marketplace, rail, state });
+    }
+
+    if (url.pathname === "/admin/mapping-factory-v2" && request.method === "POST") {
+      // EVENT_MAPPING_FACTORY_V2 — three discovery sources, one identity contract.
+      // Source 1: provider-ID promotion (zero scraper cost).
+      // Source 2: venue/promoter calendars (bounded /links + sitemaps).
+      // Source 3: Common Crawl URL index (bounded, candidate evidence only).
+      try {
+        const body = await request.json() as {
+          max_events?: number;
+          offset?: number;
+          dry_run?: boolean;
+          include_provider_id?: boolean;
+          include_calendars?: boolean;
+          include_common_crawl?: boolean;
+        };
+        const report = await runMappingFactory(env, {
+          max_events: body.max_events ?? 100,
+          offset: body.offset ?? 0,
+          dry_run: !!body.dry_run,
+          include_provider_id: body.include_provider_id !== false,
+          include_calendars: body.include_calendars !== false,
+          include_common_crawl: !!body.include_common_crawl,
+        });
+        return Response.json(report);
+      } catch (e: any) {
+        return Response.json({ error: e.message || String(e) }, { status: 500 });
+      }
     }
 
     if (url.pathname === "/scorecard" && request.method === "GET") {

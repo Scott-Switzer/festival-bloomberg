@@ -73,6 +73,8 @@ export interface MappingRecord {
   marketplace_event_url: string;
   mapping_status: MappingStatus;
   mapping_method: string;
+  /** Explicit mapping pipeline version (v1 = links discovery, v2 = factory). */
+  mapping_version?: string;
   confidence: number;
   first_resolved_at: string;
   last_verified_at: string;
