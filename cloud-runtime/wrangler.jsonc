@@ -5,6 +5,13 @@
   "compatibility_date": "2026-08-26",
   "compatibility_flags": ["nodejs_compat"],
 
+  // --- Cron Trigger (production scheduler) ---
+  // Temporary acceptance cadence: every 15 minutes.
+  // After acceptance, switch to hourly: ["0 * * * *"]
+  "triggers": {
+    "crons": ["*/15 * * * *"]
+  },
+
   // --- Queues ---
   // FAST: max_batch_size=1, max_concurrency=1 to serialize Monid calls
   // and avoid 502 rate limits. Short batch timeout so tasks process promptly.
@@ -90,8 +97,12 @@
   "vars": {
     "POLICY_VERSION": "1.0.0",
     "SOFTWARE_VERSION": "cloud-acquisition-runtime-v1",
-    "DAILY_BUDGET_USD": "10.00",
-    "MONTHLY_BUDGET_USD": "200.00",
+    // Budget policy — AUTOMATED caps
+    // Monid balance ≈ $10.90. Reserve for failures/mapping/manual research.
+    "DAILY_BUDGET_USD": "0.25",
+    "MONTHLY_BUDGET_USD": "7.50",
+    // Absolute project hard stop
+    "ABSOLUTE_HARD_STOP_USD": "10.00",
     "ENABLE_DEEP_RAIL": "false"
   }
 }

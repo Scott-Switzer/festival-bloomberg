@@ -29,7 +29,10 @@ import {
   createInitialGovernorState,
 } from "./governor";
 
-interface GovernorEnv {}
+interface GovernorEnv {
+  DAILY_BUDGET_USD?: string;
+  MONTHLY_BUDGET_USD?: string;
+}
 
 export class AcquisitionGovernor extends DurableObject<GovernorEnv> {
   private gov!: GovernorState;
@@ -58,11 +61,17 @@ export class AcquisitionGovernor extends DurableObject<GovernorEnv> {
         // Ensure new fields exist on older state
         if (!stored.reservations) stored.reservations = {};
         if (!stored.observation_state) stored.observation_state = {};
+        // Apply budget overrides from env (keep existing spend/recent keys)
+        if (env.DAILY_BUDGET_USD) stored.authorized_daily_budget_usd = parseFloat(env.DAILY_BUDGET_USD);
+        if (env.MONTHLY_BUDGET_USD) stored.authorized_monthly_budget_usd = parseFloat(env.MONTHLY_BUDGET_USD);
         this.gov = stored;
         // Expire stale leases on startup (after this.gov is set)
         this.expireStaleLeases();
       } else {
-        this.gov = createInitialGovernorState();
+        this.gov = createInitialGovernorState(
+          env.DAILY_BUDGET_USD ? parseFloat(env.DAILY_BUDGET_USD) : 0.25,
+          env.MONTHLY_BUDGET_USD ? parseFloat(env.MONTHLY_BUDGET_USD) : 7.50,
+        );
       }
     });
   }
@@ -351,7 +360,10 @@ export class AcquisitionGovernor extends DurableObject<GovernorEnv> {
 
   /** Reset governor to clean state (for recovery from stale leases) */
   async resetState(): Promise<void> {
-    this.gov = createInitialGovernorState();
+    this.gov = createInitialGovernorState(
+      (this.env as any)?.DAILY_BUDGET_USD ? parseFloat((this.env as any).DAILY_BUDGET_USD) : 0.25,
+      (this.env as any)?.MONTHLY_BUDGET_USD ? parseFloat((this.env as any).MONTHLY_BUDGET_USD) : 7.50,
+    );
     await this.save();
   }
 

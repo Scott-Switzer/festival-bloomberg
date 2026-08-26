@@ -17,6 +17,7 @@ import { AcquisitionGovernor } from "./governor-do";
 import { AcquisitionContainer } from "./container-do";
 import { AcquisitionWorkflow } from "./workflow";
 import { handleFastBatch, handleDeepBatch, handleProcessingBatch } from "./queue-consumer";
+import { planTasks, loadUniverse } from "./planner";
 
 export { AcquisitionGovernor, AcquisitionContainer, AcquisitionWorkflow };
 
@@ -101,71 +102,24 @@ export default {
 
     if (url.pathname === "/dispatch" && request.method === "POST") {
       // Direct dispatch: read universe, create tasks, send to FAST queue.
-      // Proves the autonomous pipeline without Workflow.
+      // Uses the shared planner. Auth-protected.
       try {
-        const body = await request.json() as { max_events?: number; max_cost?: number };
-        const maxEvents = body.max_events || 25;
+        const body = await request.json() as { max_events?: number; force?: boolean };
+        const maxTasks = body.max_events || 25;
 
-        // Load universe
-        const universeObj = await env.BACKUP_BUCKET.get("canonical/2026-08-26T01-00-58Z/watch_universe_v1.json");
-        if (!universeObj) return Response.json({ error: "No universe" }, { status: 500 });
-        const universe: any = await universeObj.json();
-        const events = universe.events || [];
-        const now = new Date();
-        const window = now.toISOString().slice(0, 13);
-
-        // Import generateTaskKey
-        const { generateTaskKey } = await import("./task-contract");
-
-        let dispatched = 0;
-        const dispatchedTasks: any[] = [];
-
-        for (const ev of events) {
-          if (dispatched >= maxEvents) break;
-          const targetUrl = ev.canonical_url || "";
-          if (!targetUrl) continue;
-          const eventKey = ev.event_key || ev.id;
-          const eventDate = new Date(ev.event_date || "2099-01-01");
-          const daysToShow = (eventDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24);
-          if (daysToShow < 0) continue;
-
-          const taskKey = generateTaskKey(eventKey, "ticketmaster.com", "FAST", window, "v1");
-
-          const task = {
-            task_key: taskKey,
-            event_key: eventKey,
-            acquisition_provider: "monid",
-            marketplace: "ticketmaster.com",
-            rail: "FAST",
-            target_url: targetUrl,
-            scheduled_window: window,
-            priority: daysToShow <= 7 ? 1 : daysToShow <= 30 ? 2 : 3,
-            expected_max_cost_usd: 0.0009,
-            created_at: now.toISOString(),
-            software_version: env.SOFTWARE_VERSION,
-            mapping_version: "v1",
-            event_metadata: {
-              artist_name: ev.artist_name,
-              venue_name: ev.venue_name,
-              city: ev.city,
-              event_date: ev.event_date,
-              time_to_show_days: Math.round(daysToShow),
-            },
-            trigger: "SCHEDULED",
-            run_id: `dispatch_${Date.now()}`,
-          };
-
-          await env.FAST_QUEUE.send(task);
-          dispatched++;
-          dispatchedTasks.push({ task_key: taskKey, event_key: eventKey, url: targetUrl });
-        }
+        const result = await planTasks(env, {
+          max_tasks: maxTasks,
+          // Admin /dispatch can force-ignore cadence for manual pilot runs
+          getLastObservedHoursAgo: body.force ? async () => null : undefined,
+        });
 
         return Response.json({
           status: "DISPATCHED",
-          events_universe: events.length,
-          tasks_dispatched: dispatched,
-          window,
-          tasks: dispatchedTasks,
+          candidate_pairs: result.candidate_pairs,
+          due_pairs: result.due_pairs,
+          tasks_dispatched: result.queued,
+          window: result.window,
+          tasks: result.tasks,
         });
       } catch (e: any) {
         return Response.json({ error: e.message || String(e) }, { status: 500 });
@@ -351,6 +305,73 @@ export default {
         for (const msg of batch.messages) {
           msg.ack();
         }
+    }
+  },
+
+  /**
+   * Production scheduler — Cloudflare Cron Trigger.
+   *
+   * Plan due event×marketplace pairs and enqueue to the FAST queue.
+   * Does NOT call Monid, does NOT reserve budget, does NOT mutate evidence.
+   * The FAST queue consumer is the sole execution point.
+   */
+  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+    try {
+      // Query Governor observation-state for cadence-aware due determination
+      let getLastObservedHoursAgo: (event_key: string, marketplace: string) => Promise<number | null> = async () => null;
+      try {
+        const governorId = env.GOVERNOR.idFromName("acquisition-governor");
+        const governor = env.GOVERNOR.get(governorId) as any;
+        getLastObservedHoursAgo = async (eventKey, marketplace) => {
+          try {
+            const obs = await governor.getObservationState({
+              event_key: eventKey, marketplace, rail: "FAST",
+            });
+            if (obs && obs.last_successful_observation_at) {
+              return (Date.now() - new Date(obs.last_successful_observation_at).getTime()) / (1000 * 60 * 60);
+            }
+            return null;
+          } catch {
+            return null;
+          }
+        };
+      } catch {
+        // Governor unavailable — treat all as due
+      }
+
+      const plan = await planTasks(env, {
+        max_tasks: 25, // pilot cap
+        getLastObservedHoursAgo,
+      });
+
+      console.log(JSON.stringify({
+        event: "CRON_RUN_PLANNED",
+        window: plan.window,
+        candidate_pairs: plan.candidate_pairs,
+        due_pairs: plan.due_pairs,
+        queued: plan.queued,
+      }));
+
+      // Persist a run record (control-plane pointer)
+      const runId = `sched_${plan.window}`;
+      await env.BACKUP_BUCKET.put(
+        `control/runs/${runId}.json`,
+        JSON.stringify({
+          run_id: runId,
+          type: "cron_triggered",
+          started_at: new Date().toISOString(),
+          candidate_pairs: plan.candidate_pairs,
+          due_pairs: plan.due_pairs,
+          tasks_queued: plan.queued,
+          status: "COMPLETED",
+          triggered_at: new Date().toISOString(),
+        }, null, 2)
+      );
+    } catch (e: unknown) {
+      console.error(JSON.stringify({
+        event: "CRON_RUN_ERROR",
+        error: e instanceof Error ? e.message : String(e),
+      }));
     }
   },
 };
