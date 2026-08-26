@@ -1,0 +1,108 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "fi-acquisition-runtime",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-26",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // --- Cron Trigger (production scheduler) ---
+  // Temporary acceptance cadence: every 15 minutes.
+  // After acceptance, switch to hourly: ["0 * * * *"]
+  "triggers": {
+    "crons": ["*/15 * * * *"]
+  },
+
+  // --- Queues ---
+  // FAST: max_batch_size=1, max_concurrency=1 to serialize Monid calls
+  // and avoid 502 rate limits. Short batch timeout so tasks process promptly.
+  "queues": {
+    "producers": [
+      { "queue": "fi-acquisition-fast", "binding": "FAST_QUEUE" },
+      { "queue": "fi-acquisition-deep", "binding": "DEEP_QUEUE" },
+      { "queue": "fi-acquisition-processing", "binding": "PROCESSING_QUEUE" },
+      { "queue": "fi-acquisition-dlq", "binding": "DLQ_QUEUE" }
+    ],
+    "consumers": [
+      {
+        "queue": "fi-acquisition-fast",
+        "max_batch_size": 1,
+        "max_batch_timeout": 5,
+        "max_retries": 3,
+        "max_concurrency": 1,
+        "dead_letter_queue": "fi-acquisition-dlq",
+        "retry_delay": 15
+      },
+      {
+        "queue": "fi-acquisition-deep",
+        "max_batch_size": 1,
+        "max_batch_timeout": 10,
+        "max_retries": 3,
+        "max_concurrency": 1,
+        "dead_letter_queue": "fi-acquisition-dlq"
+      },
+      {
+        "queue": "fi-acquisition-processing",
+        "max_batch_size": 10,
+        "max_batch_timeout": 30,
+        "max_retries": 5,
+        "dead_letter_queue": "fi-acquisition-dlq"
+      }
+    ]
+  },
+
+  // --- R2 Buckets ---
+  "r2_buckets": [
+    { "binding": "RAW_BUCKET", "bucket_name": "festival-intelligence-raw" },
+    { "binding": "LAKE_BUCKET", "bucket_name": "festival-intelligence-lake" },
+    { "binding": "BACKUP_BUCKET", "bucket_name": "festival-intelligence-backups" }
+  ],
+
+  // --- Durable Objects ---
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "GOVERNOR",
+        "class_name": "AcquisitionGovernor"
+      },
+      {
+        "name": "ACQUISITION_CONTAINER",
+        "class_name": "AcquisitionContainer"
+      }
+    ]
+  },
+
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["AcquisitionGovernor", "AcquisitionContainer"]
+    }
+  ],
+
+  // --- Containers (deferred — not on critical path for FAST-only pilot) ---
+  // Containers section removed from deploy — native Worker Monid fetch is the production path.
+  // Container DO still exported for future use.
+
+  // --- Workflow ---
+  "workflows": [
+    {
+      "name": "fi-acquisition-workflow",
+      "binding": "ACQUISITION_WORKFLOW",
+      "class_name": "AcquisitionWorkflow",
+      // Schedule enabled after initial deployment
+      // "schedules": ["*/15 * * * *"]
+    }
+  ],
+
+  // --- Environment Variables (non-secret) ---
+  "vars": {
+    "POLICY_VERSION": "1.0.0",
+    "SOFTWARE_VERSION": "cloud-acquisition-runtime-v1",
+    // Budget policy — AUTOMATED caps
+    // Monid balance ≈ $10.90. Reserve for failures/mapping/manual research.
+    "DAILY_BUDGET_USD": "0.25",
+    "MONTHLY_BUDGET_USD": "7.50",
+    // Absolute project hard stop
+    "ABSOLUTE_HARD_STOP_USD": "10.00",
+    "ENABLE_DEEP_RAIL": "false"
+  }
+}

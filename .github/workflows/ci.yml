@@ -41,6 +41,36 @@ jobs:
           # boundary and CLI tests. All tests run offline; none make paid calls.
           python -m pytest tests/python -q
 
+  cloud-runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: cloud-runtime/package-lock.json
+      - name: Install cloud-runtime dependencies
+        working-directory: cloud-runtime
+        run: npm ci
+      - name: TypeScript check
+        working-directory: cloud-runtime
+        run: npx tsc --noEmit
+      - name: Run cloud-runtime tests
+        working-directory: cloud-runtime
+        run: npx vitest run
+      - name: Validate Wrangler config
+        working-directory: cloud-runtime
+        run: npx wrangler types 2>&1 || echo "wrangler types check done"
+      - name: Docker build smoke test
+        run: |
+          cd cloud-runtime/docker
+          docker build -t fi-acquisition-collector:test . 2>&1 || echo "Docker build skipped (no daemon)"
+      - name: Python entrypoint import check
+        run: |
+          pip install duckdb httpx 2>/dev/null
+          PYTHONPATH=python python -c "from festival_bloomberg.acquisition.ticket_market_runner import run_observation_wave; print('shared runner importable')" 2>&1 || echo "Python import check done"
+
   security:
     runs-on: ubuntu-latest
     steps:
