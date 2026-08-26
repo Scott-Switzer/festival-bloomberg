@@ -6,10 +6,10 @@
   "compatibility_flags": ["nodejs_compat"],
 
   // --- Cron Trigger (production scheduler) ---
-  // Temporary acceptance cadence: every 15 minutes.
-  // After acceptance, switch to hourly: ["0 * * * *"]
+  // Hourly wake-up. The planner decides which event×marketplace pairs are due;
+  // the cron is only a wake-up mechanism, not a cadence driver.
   "triggers": {
-    "crons": ["*/15 * * * *"]
+    "crons": ["0 * * * *"]
   },
 
   // --- Queues ---
