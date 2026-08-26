@@ -1,0 +1,96 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "fi-acquisition-runtime",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-26",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // --- Queues ---
+  "queues": {
+    "producers": [
+      { "queue": "fi-acquisition-fast", "binding": "FAST_QUEUE" },
+      { "queue": "fi-acquisition-deep", "binding": "DEEP_QUEUE" },
+      { "queue": "fi-acquisition-processing", "binding": "PROCESSING_QUEUE" },
+      { "queue": "fi-acquisition-dlq", "binding": "DLQ_QUEUE" }
+    ],
+    "consumers": [
+      {
+        "queue": "fi-acquisition-fast",
+        "max_batch_size": 5,
+        "max_batch_timeout": 60,
+        "max_retries": 3,
+        "dead_letter_queue": "fi-acquisition-dlq"
+      },
+      {
+        "queue": "fi-acquisition-deep",
+        "max_batch_size": 2,
+        "max_batch_timeout": 55,
+        "max_retries": 3,
+        "dead_letter_queue": "fi-acquisition-dlq"
+      },
+      {
+        "queue": "fi-acquisition-processing",
+        "max_batch_size": 10,
+        "max_batch_timeout": 30,
+        "max_retries": 5,
+        "dead_letter_queue": "fi-acquisition-dlq"
+      }
+    ]
+  },
+
+  // --- R2 Buckets ---
+  "r2_buckets": [
+    { "binding": "RAW_BUCKET", "bucket_name": "festival-intelligence-raw" },
+    { "binding": "LAKE_BUCKET", "bucket_name": "festival-intelligence-lake" },
+    { "binding": "BACKUP_BUCKET", "bucket_name": "festival-intelligence-backups" }
+  ],
+
+  // --- Durable Objects ---
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "GOVERNOR",
+        "class_name": "AcquisitionGovernor"
+      },
+      {
+        "name": "ACQUISITION_CONTAINER",
+        "class_name": "AcquisitionContainer"
+      }
+    ]
+  },
+
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["AcquisitionGovernor", "AcquisitionContainer"]
+    }
+  ],
+
+  // --- Containers ---
+  "containers": [
+    {
+      "class_name": "AcquisitionContainer",
+      "image": "./docker/Dockerfile",
+      "max_instances": 3,
+      "instance_type": "standard-1"
+    }
+  ],
+
+  // --- Workflow ---
+  "workflows": [
+    {
+      "name": "fi-acquisition-workflow",
+      "binding": "ACQUISITION_WORKFLOW",
+      "class_name": "AcquisitionWorkflow",
+    }
+  ],
+
+  // --- Environment Variables (non-secret) ---
+  "vars": {
+    "POLICY_VERSION": "1.0.0",
+    "SOFTWARE_VERSION": "cloud-acquisition-runtime-v1",
+    "DAILY_BUDGET_USD": "10.00",
+    "MONTHLY_BUDGET_USD": "200.00",
+    "ENABLE_DEEP_RAIL": "false"
+  }
+}
