@@ -66,33 +66,23 @@
 
   "migrations": [
     {
-      "tag": "v2",
+      "tag": "v1",
       "new_sqlite_classes": ["AcquisitionGovernor", "AcquisitionContainer"]
     }
   ],
 
   // --- Containers (deferred — not on critical path for FAST-only pilot) ---
-  "containers": [
-    {
-      "class_name": "AcquisitionContainer",
-      "image": "./docker/Dockerfile",
-      "max_instances": 3,
-      "instance_type": "standard-1"
-    }
-  ],
+  // Containers section removed from deploy — native Worker Monid fetch is the production path.
+  // Container DO still exported for future use.
 
-  // --- Workflow with schedule ---
+  // --- Workflow ---
   "workflows": [
     {
       "name": "fi-acquisition-workflow",
       "binding": "ACQUISITION_WORKFLOW",
       "class_name": "AcquisitionWorkflow",
-      "schedules": [
-        {
-          "cron": "*/15 * * * *",
-          "enabled": true
-        }
-      ]
+      // Schedule enabled after initial deployment
+      // "schedules": ["*/15 * * * *"]
     }
   ],
 

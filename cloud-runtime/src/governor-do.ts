@@ -58,9 +58,9 @@ export class AcquisitionGovernor extends DurableObject<GovernorEnv> {
         // Ensure new fields exist on older state
         if (!stored.reservations) stored.reservations = {};
         if (!stored.observation_state) stored.observation_state = {};
-        // Expire stale leases on startup
-        this.expireStaleLeases();
         this.gov = stored;
+        // Expire stale leases on startup (after this.gov is set)
+        this.expireStaleLeases();
       } else {
         this.gov = createInitialGovernorState();
       }

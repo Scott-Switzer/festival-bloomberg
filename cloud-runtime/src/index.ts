@@ -29,7 +29,6 @@ interface Env {
   LAKE_BUCKET: R2Bucket;
   BACKUP_BUCKET: R2Bucket;
   GOVERNOR: DurableObjectNamespace;
-  ACQUISITION_CONTAINER: DurableObjectNamespace;
   ACQUISITION_WORKFLOW: Workflow;
   MONID_API_KEY: string;
   TICKETMASTER_API_KEY: string;
@@ -98,6 +97,79 @@ export default {
     if (url.pathname === "/trigger" && request.method === "POST") {
       const instance = await env.ACQUISITION_WORKFLOW.create();
       return Response.json({ instance_id: instance.id, status: "triggered" });
+    }
+
+    if (url.pathname === "/dispatch" && request.method === "POST") {
+      // Direct dispatch: read universe, create tasks, send to FAST queue.
+      // Proves the autonomous pipeline without Workflow.
+      try {
+        const body = await request.json() as { max_events?: number; max_cost?: number };
+        const maxEvents = body.max_events || 25;
+
+        // Load universe
+        const universeObj = await env.BACKUP_BUCKET.get("canonical/2026-08-26T01-00-58Z/watch_universe_v1.json");
+        if (!universeObj) return Response.json({ error: "No universe" }, { status: 500 });
+        const universe: any = await universeObj.json();
+        const events = universe.events || [];
+        const now = new Date();
+        const window = now.toISOString().slice(0, 13);
+
+        // Import generateTaskKey
+        const { generateTaskKey } = await import("./task-contract");
+
+        let dispatched = 0;
+        const dispatchedTasks: any[] = [];
+
+        for (const ev of events) {
+          if (dispatched >= maxEvents) break;
+          const targetUrl = ev.canonical_url || "";
+          if (!targetUrl) continue;
+          const eventKey = ev.event_key || ev.id;
+          const eventDate = new Date(ev.event_date || "2099-01-01");
+          const daysToShow = (eventDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24);
+          if (daysToShow < 0) continue;
+
+          const taskKey = generateTaskKey(eventKey, "ticketmaster.com", "FAST", window, "v1");
+
+          const task = {
+            task_key: taskKey,
+            event_key: eventKey,
+            acquisition_provider: "monid",
+            marketplace: "ticketmaster.com",
+            rail: "FAST",
+            target_url: targetUrl,
+            scheduled_window: window,
+            priority: daysToShow <= 7 ? 1 : daysToShow <= 30 ? 2 : 3,
+            expected_max_cost_usd: 0.0009,
+            created_at: now.toISOString(),
+            software_version: env.SOFTWARE_VERSION,
+            mapping_version: "v1",
+            event_metadata: {
+              artist_name: ev.artist_name,
+              venue_name: ev.venue_name,
+              city: ev.city,
+              event_date: ev.event_date,
+              time_to_show_days: Math.round(daysToShow),
+            },
+            trigger: "SCHEDULED",
+            run_id: `dispatch_${Date.now()}`,
+          };
+
+          await env.FAST_QUEUE.send(task);
+          dispatched++;
+          dispatchedTasks.push({ task_key: taskKey, event_key: eventKey, url: targetUrl });
+        }
+
+        return Response.json({
+          status: "DISPATCHED",
+          events_universe: events.length,
+          tasks_dispatched: dispatched,
+          window,
+          tasks: dispatchedTasks,
+        });
+      } catch (e: any) {
+        return Response.json({ error: e.message || String(e) }, { status: 500 });
+      }
     }
 
     if (url.pathname === "/trigger-immediate" && request.method === "POST") {
