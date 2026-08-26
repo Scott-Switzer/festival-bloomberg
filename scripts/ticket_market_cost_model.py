@@ -141,6 +141,29 @@ def main() -> None:
     print("  => The SeatGeek actors also ignore filters, so even paying does not")
     print("     currently enable targeted watch-universe observation.")
 
+    # ── TICKET_MARKET_DATA_MOAT_V2: targeted URL fetching (Monid / tickets.dev) ──
+    print("\n## V2 — targeted URL fetching (Monid + tickets.dev hybrid policy)\n")
+    monid_html = 0.0009      # context.dev/web/scrape/html per call — MEASURED
+    tickets_dev = 0.03       # PUBLISHED_PRICE_ASSUMPTION ($0.05 Starter / $0.03
+                             # Developer / $0.02 Production — mid point; NOT yet
+                             # measured on a paid capture)
+    print("  FAST rail: Monid HTML @ $0.0009/call (event-level JSON-LD)")
+    print("            cost basis: MEASURED (live probes)")
+    print("  DEEP rail: tickets.dev @ $0.03/capture (listing-level, live key)")
+    print("            cost basis: PUBLISHED_PRICE_ASSUMPTION (not yet measured live)")
+    print("            tickets.dev sandbox: CONTRACT_VALIDATED_ONLY (fixtures, never")
+    print("            billed, never written to the production warehouse)")
+    print("  Monid fallback @ $0.0009 when no live tickets.dev key — MEASURED")
+    for ev in (100, 500, 1000, 5000):
+        fast = ev * 1 * 30 * monid_html
+        deep_td = ev * 4 * tickets_dev
+        deep_monid = ev * 4 * monid_html
+        print(f"  {ev:>5d} events: FAST 1x/day ${fast:>7.2f} | +DEEP weekly "
+              f"${deep_td:>7.2f} (TD) / ${deep_monid:>6.2f} (Monid) | total ~"
+              f"${fast + deep_monid:>7.2f}-${fast + deep_td:>7.2f}/mo")
+    print("\n  => Targeted URL fetching is ~2 orders of magnitude cheaper than the")
+    print("     broken Apify search-Actor path (~$1,350/mo for 100 events daily).")
+
     print("\n## Storage growth (approx)")
     per_obs_kb = 1.5  # raw payload + normalized + metadata
     for ev, freq in [(100, 1), (100, 2), (500, 1)]:
