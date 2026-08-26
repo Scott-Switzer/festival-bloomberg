@@ -191,6 +191,9 @@ CREATE SCHEMA IF NOT EXISTS core;
 CREATE SCHEMA IF NOT EXISTS metrics;
 CREATE SCHEMA IF NOT EXISTS model;
 CREATE SCHEMA IF NOT EXISTS audit;
+-- Named artist_security: DuckDB reserves `security` as a built-in catalog
+-- (group/user management), so a schema named `security` would clash.
+CREATE SCHEMA IF NOT EXISTS artist_security;
 
 -- ===========================================================================
 -- core.artists - canonical artist dimension (MBID-resolved)
