@@ -82,6 +82,15 @@ export class AcquisitionGovernor extends DurableObject<GovernorEnv> {
       return { allowed: false, reason: "TASK_LEASED" };
     }
 
+    // Expire stale leases (lease timeout)
+    const now = Date.now();
+    for (const [lk, lease] of Object.entries(this.gov.active_leases)) {
+      if (new Date(lease.expires_at).getTime() < now) {
+        delete this.gov.active_leases[lk];
+        this.gov.active_containers = Math.max(0, this.gov.active_containers - 1);
+      }
+    }
+
     // Atomic budget check: spent + reserved + expected <= budget
     const totalCommitted = this.gov.daily_spend_usd + this.gov.reserved_spend_usd + expected_max_cost_usd;
     if (totalCommitted > this.gov.authorized_daily_budget_usd) {
@@ -116,7 +125,8 @@ export class AcquisitionGovernor extends DurableObject<GovernorEnv> {
       }
     }
 
-    // Concurrency check
+    // Concurrency check (recount after expiry)
+    this.gov.active_containers = Object.keys(this.gov.active_leases).length;
     if (this.gov.active_containers >= this.gov.max_concurrent_containers) {
       return { allowed: false, reason: "MAX_CONCURRENT_REACHED" };
     }
@@ -260,6 +270,12 @@ export class AcquisitionGovernor extends DurableObject<GovernorEnv> {
     const rl = this.gov.provider_rate_limits[provider];
     rl.current_day_count++;
     rl.current_minute_count++;
+    await this.save();
+  }
+
+  /** Reset governor to clean state (for recovery from stale leases) */
+  async resetState(): Promise<void> {
+    this.gov = createInitialGovernorState();
     await this.save();
   }
 
