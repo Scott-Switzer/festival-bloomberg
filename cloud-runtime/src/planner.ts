@@ -37,7 +37,11 @@ export interface PlanResult {
   due_pairs: number;
   queued: number;
   window: string;
-  tasks: Array<{ task_key: string; event_key: string; url: string; days_to_show: number }>;
+  tasks: Array<{ task_key: string; event_key: string; url: string; days_to_show: number; lifecycle_bucket: string }>;
+  /** Count of due pairs that were NOT selected because max_tasks capped the run */
+  deferred_due: number;
+  /** deterministic digest of selected task keys for audit */
+  selected_task_digest: string;
   budget_blocked: number;
 }
 
@@ -57,6 +61,19 @@ function hoursBetweenFor(daysToShow: number): number {
     if (daysToShow >= r.min_days && daysToShow < r.max_days) return r.hours_between;
   }
   return 24 * 7;
+}
+
+/** Human-readable lifecycle bucket label for audit */
+function lifecycleBucketFor(daysToShow: number): string {
+  if (daysToShow < 0) return "POST_SHOW";
+  if (daysToShow < 1) return "SHOW_DAY";
+  if (daysToShow < 3) return "1_3D";
+  if (daysToShow < 7) return "3_7D";
+  if (daysToShow < 14) return "7_14D";
+  if (daysToShow < 30) return "14_30D";
+  if (daysToShow < 60) return "30_60D";
+  if (daysToShow < 120) return "60_120D";
+  return "120D_PLUS";
 }
 
 const EXACT_STATUSES = ["EXACT_PROVIDER_ID", "EXACT_PAGE_MATCH", "HIGH_CONFIDENCE"];
@@ -148,13 +165,16 @@ export async function planTasks(
 
   const now = new Date();
   const window = now.toISOString().slice(0, 13);
-  const tasks: Array<{ task_key: string; event_key: string; url: string; days_to_show: number; event_date?: string }> = [];
+  const tasks: Array<{ task_key: string; event_key: string; url: string; days_to_show: number; event_date?: string; lifecycle_bucket: string }> = [];
   let candidatePairs = 0;
   let duePairs = 0;
+  let deferredDue = 0;
   let budgetBlocked = 0;
 
+  // Scan the FULL universe so candidate_pairs / due_pairs reflect the real
+  // estate, not just the events inspected before hitting the selection cap.
+  // Only the number of SELECTED tasks is capped by max_tasks.
   for (const event of events) {
-    if (tasks.length >= max_tasks) break;
     const eventKey = event.event_key;
     const eventDate = new Date(event.event_date || "2099-01-01");
     const daysToShow = (eventDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24);
@@ -180,6 +200,12 @@ export async function planTasks(
     if (lastObservedHoursAgo < required) continue; // not yet due
     duePairs++;
 
+    // Selection is capped at max_tasks, but we keep counting candidates/dues.
+    if (tasks.length >= max_tasks) {
+      deferredDue++;
+      continue;
+    }
+
     const taskKey = generateTaskKey(eventKey, event.marketplace, "FAST", window, "v1");
 
     tasks.push({
@@ -188,8 +214,15 @@ export async function planTasks(
       url,
       days_to_show: Math.round(daysToShow),
       event_date: eventDate.toISOString().slice(0, 10),
+      lifecycle_bucket: lifecycleBucketFor(daysToShow),
     });
   }
+
+  // Deterministic digest of the selected task keys for audit comparison.
+  const selectedTaskDigest = tasks
+    .map((t) => t.task_key)
+    .sort()
+    .join("|");
 
   // Enqueue tasks to FAST queue (planner does NOT reserve budget)
   let queued = 0;
@@ -225,6 +258,7 @@ export async function planTasks(
     queued++;
   }
 
+  // Attach lifecycle bucket to each task (primarily for audit / /dispatch output)
   return {
     status: "PLANNED",
     candidate_pairs: candidatePairs,
@@ -232,6 +266,8 @@ export async function planTasks(
     queued,
     window,
     tasks,
+    deferred_due: deferredDue,
+    selected_task_digest: selectedTaskDigest,
     budget_blocked: budgetBlocked,
   };
 }

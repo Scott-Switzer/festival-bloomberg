@@ -352,17 +352,31 @@ export default {
         queued: plan.queued,
       }));
 
-      // Persist a run record (control-plane pointer)
-      const runId = `sched_${plan.window}`;
+      // Persist a run record — precise per-fire id so each */15 minute mark
+      // is a distinct, verifiable cron cycle. (Tasks still dedupe on the
+      // hour-level logical window via Governor.idempotent commit.)
+      const runId = `sched_${new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "")}`;
+      // Audit info: selected task keys + lifecycle buckets prove why the
+      // planner selected what it did (P2 requirement).
+      const selected = plan.tasks.slice(0, 25).map((t) => ({
+        task_key: t.task_key,
+        event_key: t.event_key,
+        days_to_show: t.days_to_show,
+        lifecycle_bucket: t.lifecycle_bucket || "",
+      }));
       await env.BACKUP_BUCKET.put(
         `control/runs/${runId}.json`,
         JSON.stringify({
           run_id: runId,
           type: "cron_triggered",
           started_at: new Date().toISOString(),
+          logical_window: plan.window,
           candidate_pairs: plan.candidate_pairs,
           due_pairs: plan.due_pairs,
           tasks_queued: plan.queued,
+          deferred_due: plan.deferred_due,
+          selected_task_digest: plan.selected_task_digest,
+          selected: selected.length > 0 ? selected : undefined,
           status: "COMPLETED",
           triggered_at: new Date().toISOString(),
         }, null, 2)

@@ -99,4 +99,45 @@ describe("Planner", () => {
     const result = await planTasks(env, { max_tasks: 5 });
     expect(result.queued).toBe(5);
   });
+
+  it("counts all candidates across the full universe even when selection is capped (P2)", async () => {
+    // 100 candidates, max_tasks=25 → candidate_pairs must be 100, not "candidates
+    // scanned before the selection cap".  The old bug broke the scan loop early
+    // and under-reported candidate_pairs.
+    const events = Array.from({ length: 100 }, (_, i) => legEvent(`evt_${i}`, "2099-01-01"));
+    const env = makeEnv(events);
+    const result = await planTasks(env, { max_tasks: 25 });
+    expect(result.candidate_pairs).toBe(100);
+    expect(result.queued).toBe(25);
+    // The unselected dues are reported as deferred, not silently dropped.
+    expect(result.deferred_due).toBe(75);
+    // Digest is deterministic
+    expect(result.selected_task_digest.length).toBeGreaterThan(0);
+  });
+
+  it("a pair observed 15 minutes ago is NOT re-selected for a weekly/daily cadence event", async () => {
+    // 45 days out → daily cadence (24h required).
+    const future = new Date(Date.now() + 45 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const env = makeEnv([legEvent("evt_1", future)]);
+    // Observed 0.25h ago (15 min) → NOT due again within 24h
+    const reRun = await planTasks(env, {
+      max_tasks: 25,
+      getLastObservedHoursAgo: async () => 0.25,
+    });
+    expect(reRun.queued).toBe(0);
+    expect(reRun.due_pairs).toBe(0);
+  });
+
+  it("different */15 invocations in the same hour share the logical window but still dispatch", async () => {
+    const future = new Date(Date.now() + 45 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const env = makeEnv([legEvent("evt_1", future)]);
+    // Never observed → due. Two planner runs in the same hour produce the SAME
+    // logical window and SAME task_key (idempotency), as required: the second
+    // would be suppressed by Governor.commitTask dedup on the same window.
+    const run1 = await planTasks(env, { max_tasks: 25, getLastObservedHoursAgo: async () => null });
+    const run2 = await planTasks(env, { max_tasks: 25, getLastObservedHoursAgo: async () => null });
+    expect(run1.window).toBe(run2.window);
+    expect(run1.tasks[0].task_key).toBe(run2.tasks[0].task_key);
+    expect(run1.queued).toBe(1);
+  });
 });
