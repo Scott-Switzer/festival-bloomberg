@@ -226,4 +226,75 @@ Review cost, rights, parser health between stages.
 | Containers (bursty) | ~$5–15 |
 | R2 storage (6 GB) | ~$0.09 |
 | R2 operations | ~$0.01 |
+
+---
+
+# CLOUDFLARE_ACQUISITION_ROUTER_V1 (PR #50)
+
+## Architecture
+
+The acquisition router replaces always-Monid FAST collection with a
+cheapest-acceptable-rail hierarchy, all producing ONE shared `AcquisitionResult`
+contract. A cheaper rail is used only when it yields usable extraction quality;
+otherwise the router escalates.
+
+```
+RAIL_0_DIRECT_HTTP      Worker fetch()           free
+RAIL_1_BROWSER_CONTENT  Browser Run /content     free
+RAIL_2_BROWSER_SCRAPE   Browser Run /scrape      free
+RAIL_3_PLAYWRIGHT       @cloudflare/playwright   hook (not wired)
+RAIL_4_MONID            context.dev              $0.0009 (MEASURED)
+RAIL_5_SPECIALIZED      Container/Crawlee        future fallback
+```
+
+Escalation triggers: FAILED / UNSUPPORTED / RIGHTS_BLOCKED / extraction-quality
+failure (no identity evidence AND no economically relevant field extracted).
+
+## New Endpoints (ADMIN_TOKEN protected)
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /admin/bootstrap-wave` | Queue never-observed accepted pairs immediately; `never_observed_only=true`, `max_cost_usd`, `dry_run` |
+| `POST /admin/mapping-wave` | Sitemap + Browser `/links` discovery; deterministic artist+date+venue+city match; artist-only rejected |
+| `GET /scorecard` | Per-marketplace × rail telemetry (success, useful rate, cost, latency, 403/429/5xx) |
+
+## Cost Semantics
+
+Free rails (direct/browser) commit `$0` with `cost_basis=FREE_RAIL`.
+Monid commits `$0.0009` with `cost_basis=MEASURED`. The Governor
+reserves worst-case cost up front and commits exact accounted cost —
+never more than reserved, never a fabricated zero.
+
+## Bootstrap vs Lifecycle
+
+- **Bootstrap** (`never_observed_only=true`): a pair with no prior successful
+  observation is immediately eligible — no cadence wait.
+- **Lifecycle refresh** (scheduled cron): a pair is due only when its
+  last-successful-observation age exceeds the lifecycle cadence threshold.
+
+## Live Pilot Evidence (2026-08-26)
+
+| Metric | Value |
+|---|---|
+| Bootstrap tasks queued | 80 |
+| Fetch success | 100% (97 rows) |
+| Useful-observation rate | 30.9% |
+| Monid spend | $0.00 (bootstrap); +$0.0054 (6 escalations after quality fix) |
+| Rail mix | 30 direct HTTP, 67 browser content (then 15 direct / 6 Monid after fix) |
+| Raw objects | 114 |
+| Normalized staging | 178 |
+| Scorecard rows | 103 |
+| Governor state | 0 reserved, 0 leases (no leaks) |
+
+## Mapping Factory Status
+
+Discovery via marketplace sitemaps returned NOT_FOUND for current canonical
+events — the factory fails closed rather than accepting artist-only matches.
+Next iteration should target venue/promoter calendars with title-rich pages.
+
+## Verdict
+
+`CLOUDFLARE_ACQUISITION_ROUTER_V1 = LIVE` (deployed + proven on real
+infrastructure). `COHORT_500` expansion requires better mapping discovery
+sources and a 48h+ stability gate before scaling beyond 100 pairs.
 | **Total** | **~$10–20** |
