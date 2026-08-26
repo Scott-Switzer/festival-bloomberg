@@ -231,14 +231,7 @@ export async function planTasks(
       task_key: t.task_key,
       event_key: t.event_key,
       acquisition_provider: "monid" as AcquisitionProvider,
-      marketplace: t.url.startsWith("seatgeek") ? "seatgeek.com"
-        : t.url.startsWith("stubhub") ? "stubhub.com"
-        : t.url.startsWith("vivid") ? "vividseats.com"
-        : t.url.startsWith("tickpick") ? "tickpick.com"
-        : t.url.startsWith("gametime") ? "gametime.com"
-        : t.url.includes("axs.com") ? "axs.com"
-        : t.url.includes("ticketweb") ? "ticketweb.com"
-        : "ticketmaster.com" as Marketplace,
+      marketplace: marketplaceFromUrl(t.url),
       rail: "FAST" as AcquisitionRail,
       target_url: t.url,
       scheduled_window: window,
@@ -269,5 +262,178 @@ export async function planTasks(
     deferred_due: deferredDue,
     selected_task_digest: selectedTaskDigest,
     budget_blocked: budgetBlocked,
+  };
+}
+
+/** Resolve marketplace from a URL (shared by planners). Hostname-aware. */
+function marketplaceFromUrl(url: string): Marketplace {
+  if (/seatgeek\.com/i.test(url)) return "seatgeek.com";
+  if (/stubhub\.com/i.test(url)) return "stubhub.com";
+  if (/vividseats\.com/i.test(url)) return "vividseats.com";
+  if (/tickpick\.com/i.test(url)) return "tickpick.com";
+  if (/gametime\.co/i.test(url)) return "gametime.com";
+  if (/(^|[/.:])axs\.com/i.test(url)) return "axs.com";
+  if (/ticketweb\.com/i.test(url)) return "ticketweb.com";
+  return "ticketmaster.com";
+}
+
+/** Build a FAST AcquisitionTask (shared by bootstraps and scheduled planner). */
+function buildFastTask(
+  env: PlannerEnv,
+  u: { event_key: string; url: string; event_date?: string; days_to_show: number },
+  window: string,
+  trigger: "SCHEDULED" | "EVENT_DRIVEN",
+  runId: string
+): AcquisitionTask {
+  return {
+    task_key: generateTaskKey(u.event_key, marketplaceFromUrl(u.url), "FAST", window, "v1"),
+    event_key: u.event_key,
+    acquisition_provider: "monid" as AcquisitionProvider,
+    marketplace: marketplaceFromUrl(u.url),
+    rail: "FAST" as AcquisitionRail,
+    target_url: u.url,
+    scheduled_window: window,
+    priority: u.days_to_show <= 7 ? 1 : u.days_to_show <= 30 ? 2 : 3,
+    expected_max_cost_usd: 0.0009,
+    created_at: new Date().toISOString(),
+    software_version: env.SOFTWARE_VERSION,
+    mapping_version: "v1",
+    event_metadata: {
+      event_date: u.event_date || undefined,
+      time_to_show_days: u.days_to_show,
+    },
+    trigger,
+    run_id: runId,
+  };
+}
+
+/**
+ * Bootstrap planner — queue never-observed accepted pairs immediately.
+ *
+ * Separates INITIAL COLLECTION from LIFECYCLE REFRESH:
+ *   - never_observed_only (default true): only pairs with no prior observation
+ *     are eligible immediately (no cadence wait).
+ *   - max_cost_usd: hard gate on projected cost for this call.
+ *   - dry_run: plan but do NOT enqueue.
+ *
+ * Reuses the SAME queue path as production; only the due-semantics differ.
+ */
+export async function planBootstrapWave(
+  env: PlannerEnv & { governorBudget?: () => Promise<{ daily_spend: number; reserved: number; daily_budget: number }> },
+  opts: {
+    max_tasks?: number;
+    max_cost_usd?: number;
+    marketplace?: string;
+    lifecycle_bucket?: string;
+    never_observed_only?: boolean;
+    dry_run?: boolean;
+    /** Query whether a pair already has a successful observation (for never_observed_only). */
+    lastObserved?: (event_key: string, marketplace: string) => Promise<boolean>;
+  }
+): Promise<PlanResult & { selected: Array<{ task_key: string; event_key: string; url: string; days_to_show: number; lifecycle_bucket: string }>; dry_run: boolean }> {
+  const {
+    max_tasks = 100,
+    max_cost_usd = 0.10,
+    marketplace,
+    lifecycle_bucket,
+    never_observed_only = true,
+    dry_run = false,
+    lastObserved,
+  } = opts;
+
+  const { events } = await loadUniverse(env);
+  const now = new Date();
+  const window = now.toISOString().slice(0, 13);
+  const runId = `bootstrap_${now.toISOString().slice(0, 13)}`;
+
+  const selected: Array<{ task_key: string; event_key: string; url: string; days_to_show: number; lifecycle_bucket: string }> = [];
+  let candidatePairs = 0;
+  let duePairs = 0;
+
+  const unitCost = 0.0009;
+
+  for (const event of events) {
+    if (selected.length >= max_tasks) break;
+
+    const eventKey = event.event_key;
+    const eventDate = new Date(event.event_date || "2099-01-01");
+    const daysToShow = (eventDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24);
+    if (daysToShow < 0) continue; // post-show
+
+    // Only exact/high-confidence mappings
+    if (!EXACT_STATUSES.includes(event.mapping_status)) continue;
+    const url = event.marketplace_event_url;
+    if (!url) continue;
+
+    // Optional marketplace filter
+    if (marketplace && marketplaceFromUrl(url) !== marketplace) continue;
+    const bucket = lifecycleBucketFor(daysToShow);
+    if (lifecycle_bucket && bucket !== lifecycle_bucket) continue;
+
+    candidatePairs++;
+
+    // Bootstrap semantics: if never_observed_only, only pairs WITHOUT a prior
+    // successful observation are eligible (immediately, no cadence wait).
+    let eligible = true;
+    if (never_observed_only && lastObserved) {
+      const observed = await lastObserved(eventKey, event.marketplace);
+      eligible = !observed; // never observed → eligible
+    }
+    if (!eligible) continue;
+    duePairs++;
+
+    // Projected cost gate within this call
+    if (selected.length * unitCost >= max_cost_usd) break;
+
+    selected.push({
+      task_key: generateTaskKey(eventKey, marketplaceFromUrl(url), "FAST", window, "v1"),
+      event_key: eventKey,
+      url,
+      days_to_show: Math.round(daysToShow),
+      lifecycle_bucket: bucket,
+    });
+  }
+
+  // Optional budget pre-check against Governor daily spend (informational)
+  let budgetBlocked = 0;
+  if (env.governorBudget && !dry_run) {
+    try {
+      const b = await env.governorBudget();
+      const projected = selected.length * unitCost;
+      if (b.daily_spend + b.reserved + projected > b.daily_budget) {
+        // Over daily budget — trim selection to affordable count
+        const affordable = Math.max(0, Math.floor((b.daily_budget - b.daily_spend - b.reserved) / unitCost));
+        budgetBlocked = selected.length - affordable;
+        selected.splice(affordable);
+      }
+    } catch {
+      // Gov unavailable — proceed (not authoritative fail-closed for bootstrap)
+    }
+  }
+
+  const selectedDigest = selected.map((t) => t.task_key).sort().join("|");
+
+  // Enqueue (unless dry run)
+  let queued = 0;
+  if (!dry_run) {
+    for (const t of selected) {
+      const task = buildFastTask(env, t, window, "EVENT_DRIVEN" as "EVENT_DRIVEN", runId);
+      await env.FAST_QUEUE.send(task);
+      queued++;
+    }
+  }
+
+  return {
+    status: "PLANNED",
+    candidate_pairs: candidatePairs,
+    due_pairs: duePairs,
+    queued,
+    window,
+    tasks: selected.map((t) => ({ task_key: t.task_key, event_key: t.event_key, url: t.url, days_to_show: t.days_to_show, lifecycle_bucket: t.lifecycle_bucket })),
+    deferred_due: 0,
+    selected_task_digest: selectedDigest,
+    budget_blocked: budgetBlocked,
+    selected,
+    dry_run,
   };
 }

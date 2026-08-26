@@ -20,6 +20,8 @@
  */
 
 import { AcquisitionTask } from "./task-contract";
+import { acquireUrl, AcquisitionResult, RouterDeps } from "./acquisition";
+import { fetchPage } from "./monid-client";
 
 interface Env {
   FAST_QUEUE: Queue;
@@ -30,181 +32,85 @@ interface Env {
   LAKE_BUCKET: R2Bucket;
   BACKUP_BUCKET: R2Bucket;
   GOVERNOR: DurableObjectNamespace;
+  BROWSER: any;
   MONID_API_KEY: string;
   TICKETS_DEV_API_KEY: string;
 }
 
-const MONID_BASE = "https://api.monid.ai";
-
 /**
- * Call Monid context.dev directly — returns COMPLETED immediately.
- * No tinyfish fallback (that was causing timeouts).
+ * Build the router dependencies from env.
+ * BROWSER is optional — if the account lacks Browser Run, direct+Monid rails still work.
  */
-async function fetchPageDirect(
-  apiKey: string,
-  url: string
-): Promise<{ status: string; html: string; cost_usd: number; provider: string; latency_ms: number; http_status: number }> {
-  const start = Date.now();
-  try {
-    const resp = await fetch(`${MONID_BASE}/v1/run`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        provider: "context.dev",
-        endpoint: "/web/scrape/html",
-        queryParams: { url },
-      }),
-    });
-
-    if (!resp.ok) {
-      const errText = await resp.text();
+function buildRouterDeps(env: Env): RouterDeps {
+  return {
+    browser: env.BROWSER ? (env.BROWSER as any) : null,
+    monidApiKey: env.MONID_API_KEY || null,
+    monidFetchPage: async (apiKey, url) => {
+      const page = await fetchPage(apiKey, url);
       return {
-        status: resp.status === 429 ? "RATE_LIMIT" : "FETCH_FAILED",
-        html: "",
-        provider: "none",
-        cost_usd: 0,
-        latency_ms: Date.now() - start,
-        http_status: resp.status,
+        status: page.status,
+        html: page.html,
+        provider: page.provider,
+        cost_usd: page.cost_usd,
+        latency_ms: page.latency_ms,
       };
-    }
+    },
+  };
+}
 
-    const data: any = await resp.json();
-
-    if (data.status === "COMPLETED") {
-      const output = data.output || {};
-      const html = output.html || output.content || output.text || "";
-      return {
-        status: "FETCHED",
-        html,
-        provider: "context.dev",
-        cost_usd: 0.0009,
-        latency_ms: Date.now() - start,
-        http_status: resp.status,
-      };
-    }
-
-    // If not immediately complete, poll once (context.dev is usually immediate)
-    const runId = data.runId || data.run_id;
-    if (runId) {
-      await new Promise((r) => setTimeout(r, 5000));
-      const pollResp = await fetch(`${MONID_BASE}/v1/runs/${runId}`, {
-        headers: { Authorization: `Bearer ${apiKey}` },
-      });
-      if (pollResp.ok) {
-        const pollData: any = await pollResp.json();
-        if (pollData.status === "COMPLETED") {
-          const output = pollData.output || {};
-          return {
-            status: "FETCHED",
-            html: output.html || "",
-            provider: "context.dev",
-            cost_usd: 0.0009,
-            latency_ms: Date.now() - start,
-            http_status: pollResp.status,
-          };
-        }
-      }
-    }
-
-    return {
-      status: "FETCH_FAILED",
-      html: "",
-      provider: "none",
-      cost_usd: 0,
-      latency_ms: Date.now() - start,
-      http_status: 0,
-    };
-  } catch (e: any) {
-    return {
-      status: "FETCH_FAILED",
-      html: "",
-      provider: "none",
-      cost_usd: 0,
-      latency_ms: Date.now() - start,
-      http_status: 0,
-    };
+/** Resolve actual accounted cost based on the rail/provider used (free rails cost $0). */
+function accountedCostFor(res: AcquisitionResult): { cost_usd: number; cost_basis: string } {
+  // Only Monid is a paid rail. Direct/browser rails are free.
+  if (res.error_category) return { cost_usd: 0, cost_basis: "NONE" };
+  if (res.acquisition_provider === "monid" || res.acquisition_rail === "RAIL_4_MONID") {
+    return { cost_usd: 0.0009, cost_basis: "MEASURED" };
   }
+  return { cost_usd: 0, cost_basis: "FREE_RAIL" };
 }
 
 /**
- * Extract ticket-market data from HTML — JSON-LD priority.
- *
- * Price semantics:
- *   observed_offer_min_price: lowest offer price from JSON-LD
- *   price_basis: PUBLIC_PAGE_JSON_LD_OFFER
- *   inventory_basis: UNKNOWN (can't distinguish primary vs resale from JSON-LD alone)
- *   resale_min_price: NOT set — JSON-LD offer != automatically resale
+ * USEFUL_OBSERVATION = fetch succeeded AND identity valid AND at least one
+ * economically relevant field (price, currency, or availability) extracted.
+ * An empty normalized shell is NOT useful.
  */
-function extractFromPage(html: string, _marketplace: string): Record<string, any> {
-  if (!html) return { has_structured_data: false, price_basis: "NONE" };
-  const extracted: Record<string, any> = {};
-
-  // 1. JSON-LD extraction
-  const ldRegex = /<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi;
-  let match;
-  while ((match = ldRegex.exec(html)) !== null) {
-    try {
-      const ldData = JSON.parse(match[1]);
-      if (ldData?.["@type"] === "Event" || ldData?.["@type"] === "MusicEvent" || ldData?.["@type"] === "Concert") {
-        const offers = ldData.offers;
-        if (offers && !Array.isArray(offers)) {
-          extracted.observed_offer_min_price = parseFloat(offers.price) || null;
-          extracted.currency = offers.priceCurrency;
-          extracted.availability = offers.availability;
-          extracted.price_basis = "PUBLIC_PAGE_JSON_LD_OFFER";
-        } else if (Array.isArray(offers) && offers.length > 0) {
-          const prices = offers.map((o: any) => parseFloat(o.price)).filter((p: number) => !isNaN(p));
-          if (prices.length > 0) {
-            extracted.observed_offer_min_price = Math.min(...prices);
-            extracted.price_basis = "PUBLIC_PAGE_JSON_LD_OFFER";
-          }
-        }
-        extracted.name = ldData.name;
-        extracted.startDate = ldData.startDate;
-        const loc = ldData.location;
-        if (loc) {
-          extracted.venue_name = loc.name;
-          extracted.venue_city = loc.address?.addressLocality;
-        }
-        break;
-      }
-    } catch { /* continue */ }
-  }
-
-  // 2. __NEXT_DATA__ fallback
-  if (!extracted.observed_offer_min_price && !extracted.name) {
-    const nextMatch = html.match(
-      /<script[^>]*id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/
-    );
-    if (nextMatch) {
-      try {
-        const nd = JSON.parse(nextMatch[1]);
-        const props = nd?.props?.pageProps;
-        if (props) {
-          extracted.observed_offer_min_price = props.event?.price || props.price || null;
-          extracted.name = props.event?.name || props.title;
-          extracted.venue_name = props.event?.venue?.name || props.venue?.name;
-          if (extracted.observed_offer_min_price) {
-            extracted.price_basis = "PUBLIC_PAGE_NEXT_DATA";
-          }
-        }
-      } catch { /* parse error */ }
-    }
-  }
-
-  extracted.has_structured_data = !!(extracted.observed_offer_min_price || extracted.name);
-  extracted.inventory_basis = "UNKNOWN";
-  // Do NOT set resale_min_price — JSON-LD offer != automatically resale
-  return extracted;
+function isUsefulObservation(res: AcquisitionResult): boolean {
+  if (res.error_category) return false;
+  if (res.identity_status === "FAILED" || res.identity_status === "UNKNOWN") return false;
+  const priceOk = res.observed_offer_min_price != null;
+  const currencyOk = !!res.currency;
+  const availOk = !!res.availability_state && res.availability_state !== "UNKNOWN";
+  return priceOk || currencyOk || availOk;
 }
 
-/** SHA-256 hash for content-addressed storage. */
-async function sha256Hex(data: Uint8Array): Promise<string> {
-  const hash = await crypto.subtle.digest("SHA-256", data.buffer as ArrayBuffer);
-  return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, "0")).join("");
+interface ScorecardTelemetry {
+  task_key: string;
+  event_key: string;
+  marketplace: string;
+  rail: string;
+  provider: string;
+  ok: boolean;
+  http_status: number;
+  latency_ms: number;
+  browser_ms: number;
+  cost_usd: number;
+  raw_bytes: number;
+  identity_status: string;
+  price_extracted: boolean;
+  availability_extracted: boolean;
+  useful: boolean;
+  error_category?: string;
+}
+
+/**
+ * Write one immutable scorecard telemetry object per task (atomic, race-free).
+ * The /scorecard admin endpoint aggregates these by listing the prefix.
+ */
+async function writeScorecardTelemetry(env: Env, t: ScorecardTelemetry): Promise<void> {
+  const day = new Date().toISOString().slice(0, 10);
+  const key = `control/scorecard/date=${day}/${t.task_key}.json`;
+  await env.BACKUP_BUCKET.put(key, JSON.stringify({ ...t, recorded_at: new Date().toISOString() }), {
+    httpMetadata: { contentType: "application/json" },
+  });
 }
 
 /**
@@ -257,7 +163,7 @@ export async function handleFastBatch(
         continue;
       }
 
-      // 2. Fetch page via Monid context.dev
+      // 2. Fetch page via the acquisition ROUTER (cheapest acceptable rail first)
       const targetUrl = task.target_url;
       if (!targetUrl) {
         await governor.releaseTask({ task_key: task.task_key });
@@ -274,80 +180,98 @@ export async function handleFastBatch(
         started: new Date().toISOString(),
       }));
 
-      const page = await fetchPageDirect(env.MONID_API_KEY, targetUrl);
+      const routerDeps = buildRouterDeps(env);
+      const result = await acquireUrl(
+        routerDeps,
+        task.event_key,
+        task.marketplace,
+        targetUrl,
+        task.software_version,
+        { mode: "cheapest" }
+      );
 
-      // Handle HTTP-level failures
-      if (page.status !== "FETCHED" || !page.html) {
+      // --------- FAILED acquisition handling (all rails failed) ---------
+      if (result.error_category && result.acquisition_rail === "RAIL_UNSUPPORTED") {
         await governor.releaseTask({ task_key: task.task_key });
-
-        // 429: retry with backoff (Queue will retry per max_retries)
-        if (page.http_status === 429 || page.status === "RATE_LIMIT") {
-          console.error(JSON.stringify({
-            event: "RATE_LIMITED",
-            task_key: task.task_key,
-            http_status: page.http_status,
-          }));
-          msg.retry({ delaySeconds: 15 });
-          continue;
-        }
-
-        // 502/503: retry with backoff
-        if (page.http_status === 502 || page.http_status === 503) {
-          console.error(JSON.stringify({
-            event: "SERVER_ERROR",
-            task_key: task.task_key,
-            http_status: page.http_status,
-          }));
-          msg.retry({ delaySeconds: 30 });
-          continue;
-        }
-
-        // Other failures: DLQ after retries exhausted
+        console.error(JSON.stringify({
+          event: "ACQUISITION_FAILED_ALL_RAILS",
+          task_key: task.task_key,
+          error: result.error_detail,
+        }));
+        await writeScorecardTelemetry(env, {
+          task_key: task.task_key,
+          event_key: task.event_key,
+          marketplace: task.marketplace,
+          rail: result.acquisition_rail,
+          provider: result.acquisition_provider,
+          ok: false,
+          http_status: result.http_status,
+          latency_ms: Date.now() - start,
+          browser_ms: result.browser_ms,
+          cost_usd: 0,
+          raw_bytes: 0,
+          identity_status: "FAILED",
+          price_extracted: false,
+          availability_extracted: false,
+          useful: false,
+          error_category: result.error_category,
+        });
         if (msg.attempts >= 2) {
           await env.DLQ_QUEUE.send(task);
           await governor.recordFailure({
             acquisition_provider: task.acquisition_provider || "monid",
-            reason: page.status,
+            reason: result.error_category || "FAILED",
           });
         }
         msg.retry();
         continue;
       }
 
-      // 3. Extract structured data from HTML
-      const extracted = extractFromPage(page.html, task.marketplace);
+      // --------- SUCCESS: raw evidence + normalized observation ---------
+
+      // 3. Determine accounted cost from the rail actually used
+      const { cost_usd, cost_basis } = accountedCostFor(result);
 
       // 4. Write FULL raw evidence to R2 (NO TRUNCATION)
-      const htmlBytes = new TextEncoder().encode(page.html);
-      const contentHash = await sha256Hex(htmlBytes);
-      const rawKey = `raw/monid/${contentHash.slice(0, 2)}/${contentHash.slice(2, 4)}/${contentHash}.json`;
-
-      // Full raw evidence — the hash must match these exact bytes
-      const rawPayload = JSON.stringify({
-        url: targetUrl,
-        marketplace: task.marketplace,
-        event_key: task.event_key,
-        acquisition_provider: task.acquisition_provider || "monid",
-        provider: page.provider,
-        html: page.html,  // FULL HTML — no truncation
-        extracted,
-        fetched_at: new Date().toISOString(),
-        cost_usd: page.cost_usd,
-        cost_basis: "MEASURED",
-        latency_ms: page.latency_ms,
-        http_status: page.http_status,
-        software_version: task.software_version,
-      });
-
-      await env.RAW_BUCKET.put(rawKey, rawPayload, {
-        httpMetadata: { contentType: "application/json" },
-        customMetadata: {
-          source: "monid",
+      // raw_sha256 was computed over result.raw_body — the exact canonical bytes.
+      // The raw object stores those full bytes so the hash always matches.
+      const contentHash = result.raw_sha256;
+      if (contentHash) {
+        const rawKey = `raw/${result.acquisition_provider}/${contentHash.slice(0, 2)}/${contentHash.slice(2, 4)}/${contentHash}.json`;
+        const rawPayload = JSON.stringify({
+          url: targetUrl,
           marketplace: task.marketplace,
           event_key: task.event_key,
-          content_hash: contentHash,
-        },
-      });
+          acquisition_provider: result.acquisition_provider,
+          acquisition_rail: result.acquisition_rail,
+          final_url: result.final_url,
+          http_status: result.http_status,
+          html: result.raw_body, // FULL canonical evidence bytes — no truncation
+          observed_offer_min_price: result.observed_offer_min_price ?? null,
+          currency: result.currency ?? null,
+          price_basis: result.price_basis,
+          inventory_basis: result.inventory_basis,
+          availability_state: result.availability_state,
+          identity_status: result.identity_status,
+          fetched_at: new Date().toISOString(),
+          cost_usd,
+          cost_basis,
+          latency_ms: result.latency_ms,
+          software_version: task.software_version,
+        });
+
+        await env.RAW_BUCKET.put(rawKey, rawPayload, {
+          httpMetadata: { contentType: "application/json" },
+          customMetadata: {
+            source: result.acquisition_provider,
+            rail: result.acquisition_rail,
+            marketplace: task.marketplace,
+            event_key: task.event_key,
+            content_hash: contentHash,
+          },
+        });
+        result.raw_object_key = rawKey;
+      }
 
       // 5. Write normalized observation to R2 lake staging
       const now = new Date().toISOString();
@@ -355,25 +279,25 @@ export async function handleFastBatch(
         schema_version: "ticket_market_snapshot_v1",
         event_key: task.event_key,
         source_platform: task.marketplace,
-        acquisition_provider: task.acquisition_provider || "monid",
-        actor_or_endpoint: `monid_${page.provider}`,
+        acquisition_provider: result.acquisition_provider,
+        acquisition_rail: result.acquisition_rail,
+        actor_or_endpoint: `${result.acquisition_provider}_${result.acquisition_rail}`,
         wave_label: task.scheduled_window || "cloud_wave",
         observed_at: now,
         retrieved_at: now,
         knowledge_time: now,
         // Price semantics — neutral evidence, not auto-resale
-        observed_offer_min_price: extracted.observed_offer_min_price ?? null,
-        currency: extracted.currency || null,
-        price_basis: extracted.price_basis || "NONE",
-        inventory_basis: extracted.inventory_basis || "UNKNOWN",
-        // resale_min_price NOT set — JSON-LD offer != automatically resale
-        sold_out_flag: String(extracted.availability || "").toLowerCase().includes("soldout"),
-        availability_flag: String(extracted.availability || "").toLowerCase().includes("instock"),
-        identity_match_status: "MATCHED",
+        observed_offer_min_price: result.observed_offer_min_price ?? null,
+        currency: result.currency || null,
+        price_basis: result.price_basis || "NONE",
+        inventory_basis: result.inventory_basis || "UNKNOWN",
+        availability_state: result.availability_state || "UNKNOWN",
+        identity_status: result.identity_status || "UNKNOWN",
         source_url: targetUrl,
-        raw_payload_hash: contentHash,
-        rights_status: "TERMS_REVIEW_REQUIRED",
-        commercial_use_status: "PROTOTYPE_ONLY",
+        final_url: result.final_url,
+        raw_payload_hash: contentHash || "",
+        rights_status: result.rights_status || "TERMS_REVIEW_REQUIRED",
+        commercial_use_status: result.commercial_use_status || "PROTOTYPE_ONLY",
       };
 
       const stagingKey = `staging/ticket_market/date=${now.slice(0, 10)}/hour=${now.slice(11, 13)}/${task.task_key}.json`;
@@ -382,11 +306,11 @@ export async function handleFastBatch(
         customMetadata: { event_key: task.event_key, marketplace: task.marketplace },
       });
 
-      // 6. Commit spend and mark idempotent
+      // 6. Commit spend and mark idempotent (EXACT accounted cost)
       await governor.commitTask({
         task_key: task.task_key,
-        actual_cost_usd: page.cost_usd,
-        cost_basis: "MEASURED",
+        actual_cost_usd: cost_usd,
+        cost_basis,
       });
 
       // 7. Record observation state for scheduler
@@ -398,19 +322,41 @@ export async function handleFastBatch(
         logical_window: task.scheduled_window,
       });
 
+      // Scorecard telemetry — one immutable object per task (atomic, no races).
+      await writeScorecardTelemetry(env, {
+        task_key: task.task_key,
+        event_key: task.event_key,
+        marketplace: task.marketplace,
+        rail: result.acquisition_rail,
+        provider: result.acquisition_provider,
+        ok: true,
+        http_status: result.http_status,
+        latency_ms: Date.now() - start,
+        browser_ms: result.browser_ms,
+        cost_usd,
+        raw_bytes: result.raw_bytes,
+        identity_status: result.identity_status,
+        price_extracted: result.observed_offer_min_price != null,
+        availability_extracted: result.availability_state !== "UNKNOWN",
+        useful: isUsefulObservation(result),
+        error_category: undefined,
+      });
+
       console.log(JSON.stringify({
         event: "FAST_TASK_COMPLETED",
         task_key: task.task_key,
         event_key: task.event_key,
         marketplace: task.marketplace,
-        acquisition_provider: task.acquisition_provider || "monid",
-        observed_offer_min_price: extracted.observed_offer_min_price ?? null,
-        price_basis: extracted.price_basis || "NONE",
-        cost_usd: page.cost_usd,
+        acquisition_provider: result.acquisition_provider,
+        acquisition_rail: result.acquisition_rail,
+        observed_offer_min_price: result.observed_offer_min_price ?? null,
+        price_basis: result.price_basis || "NONE",
+        cost_usd,
+        cost_basis,
         latency_ms: Date.now() - start,
-        raw_key: rawKey,
+        raw_key: result.raw_object_key,
         staging_key: stagingKey,
-        raw_bytes: rawPayload.length,
+        raw_bytes: observation.raw_payload_hash.length,
       }));
 
       msg.ack();
