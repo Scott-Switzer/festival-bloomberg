@@ -5,6 +5,12 @@
   "compatibility_date": "2026-08-26",
   "compatibility_flags": ["nodejs_compat"],
 
+  // --- Browser Run (Browser Automation API) ---
+  // For JS-rendered pages and structured quick actions (/content, /scrape).
+  "browser": {
+    "binding": "BROWSER"
+  },
+
   // --- Cron Trigger (production scheduler) ---
   // Hourly wake-up. The planner decides which event×marketplace pairs are due;
   // the cron is only a wake-up mechanism, not a cadence driver.

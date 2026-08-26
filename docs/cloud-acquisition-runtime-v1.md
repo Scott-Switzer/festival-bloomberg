@@ -226,4 +226,89 @@ Review cost, rights, parser health between stages.
 | Containers (bursty) | ~$5–15 |
 | R2 storage (6 GB) | ~$0.09 |
 | R2 operations | ~$0.01 |
+
+---
+
+# CLOUDFLARE_ACQUISITION_ROUTER_V1 (PR #50)
+
+## Architecture
+
+The acquisition router replaces always-Monid FAST collection with a
+cheapest-acceptable-rail hierarchy, all producing ONE shared `AcquisitionResult`
+contract. A cheaper rail is used only when it yields usable extraction quality;
+otherwise the router escalates.
+
+```
+RAIL_0_DIRECT_HTTP      Worker fetch()           INCLUDED_WORKER_USAGE
+RAIL_1_BROWSER_CONTENT  Browser Run /content     CLOUDFLARE_BROWSER_INCLUDED_OR_METERED
+RAIL_2_BROWSER_SCRAPE   Browser Run /scrape      CLOUDFLARE_BROWSER_INCLUDED_OR_METERED
+RAIL_3_PLAYWRIGHT       @cloudflare/playwright   CLOUDFLARE_BROWSER_INCLUDED_OR_METERED (hook, not wired)
+RAIL_4_MONID            context.dev              $0.0009 (MEASURED_PAID_PROVIDER)
+RAIL_5_SPECIALIZED      Container/Crawlee        future fallback
+```
+
+Escalation triggers: FAILED / UNSUPPORTED / RIGHTS_BLOCKED / extraction-quality
+failure (no identity evidence AND no economically relevant field extracted).
+
+## New Endpoints (ADMIN_TOKEN protected)
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /admin/bootstrap-wave` | Queue never-observed accepted pairs immediately; `never_observed_only=true`, `max_cost_usd`, `dry_run` |
+| `POST /admin/mapping-wave` | Sitemap + Browser `/links` discovery; deterministic artist+date+venue+city match; artist-only rejected |
+| `GET /scorecard` | Per-marketplace × rail telemetry (success, useful rate, cost, latency, 403/429/5xx) |
+
+## Cost Semantics
+
+Browser Run is NOT free. Workers Paid includes **10 browser-hours/month**
+(Quick Actions consume browser time too); usage beyond that is metered at
+**$0.09 per browser-hour**.
+
+Cost basis per rail (`cloud-runtime/src/cost-model.ts`):
+
+| Rail | cost_basis | Governor ledger | Scorecard |
+|---|---|---|---|
+| RAIL_0_DIRECT_HTTP | `INCLUDED_WORKER_USAGE` | $0 cash | — |
+| RAIL_1/2/3 Browser | `CLOUDFLARE_BROWSER_INCLUDED_OR_METERED` | $0 cash | `browser_ms` + `estimated_browser_marginal_usd` ($0.09/hr) |
+| RAIL_4_MONID | `MEASURED_PAID_PROVIDER` | measured provider cost (tinyfish `$0`, context.dev `$0.0009`) | — |
+
+Only Monid is provider cash spend in the Governor budget ledger. Browser
+time is tracked as allowance usage + estimated marginal cost in the scorecard,
+so `cost/useful-observation` never falsely reports $0 as the dataset grows
+past the monthly browser allowance. The Governor reserves worst-case cost up
+front and commits exact accounted cost — never more than reserved, never a
+fabricated zero. `FREE_RAIL` is no longer a valid cost basis.
+
+## Bootstrap vs Lifecycle
+
+- **Bootstrap** (`never_observed_only=true`): a pair with no prior successful
+  observation is immediately eligible — no cadence wait.
+- **Lifecycle refresh** (scheduled cron): a pair is due only when its
+  last-successful-observation age exceeds the lifecycle cadence threshold.
+
+## Live Pilot Evidence (2026-08-26)
+
+| Metric | Value |
+|---|---|
+| Bootstrap tasks queued | 80 |
+| Fetch success | 100% (97 rows) |
+| Useful-observation rate | 30.9% |
+| Monid spend | $0.00 (bootstrap); +$0.0054 (6 escalations after quality fix) |
+| Rail mix | 30 direct HTTP, 67 browser content (then 15 direct / 6 Monid after fix) |
+| Raw objects | 114 |
+| Normalized staging | 178 |
+| Scorecard rows | 103 |
+| Governor state | 0 reserved, 0 leases (no leaks) |
+
+## Mapping Factory Status
+
+Discovery via marketplace sitemaps returned NOT_FOUND for current canonical
+events — the factory fails closed rather than accepting artist-only matches.
+Next iteration should target venue/promoter calendars with title-rich pages.
+
+## Verdict
+
+`CLOUDFLARE_ACQUISITION_ROUTER_V1 = LIVE` (deployed + proven on real
+infrastructure). `COHORT_500` expansion requires better mapping discovery
+sources and a 48h+ stability gate before scaling beyond 100 pairs.
 | **Total** | **~$10–20** |

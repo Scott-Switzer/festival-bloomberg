@@ -17,7 +17,15 @@ import { AcquisitionGovernor } from "./governor-do";
 import { AcquisitionContainer } from "./container-do";
 import { AcquisitionWorkflow } from "./workflow";
 import { handleFastBatch, handleDeepBatch, handleProcessingBatch } from "./queue-consumer";
-import { planTasks, loadUniverse } from "./planner";
+import { planTasks, loadUniverse, planBootstrapWave } from "./planner";
+import {
+  EventIdentity,
+  MappingRecord,
+  DiscoveryTarget,
+  discoverCandidates,
+  selectBestMapping,
+  ACCEPTED_MAPPING_STATUSES,
+} from "./mapping";
 
 export { AcquisitionGovernor, AcquisitionContainer, AcquisitionWorkflow };
 
@@ -31,6 +39,7 @@ interface Env {
   BACKUP_BUCKET: R2Bucket;
   GOVERNOR: DurableObjectNamespace;
   ACQUISITION_WORKFLOW: Workflow;
+  BROWSER: any;
   MONID_API_KEY: string;
   TICKETMASTER_API_KEY: string;
   TICKETS_DEV_API_KEY: string;
@@ -126,6 +135,68 @@ export default {
       }
     }
 
+    if (url.pathname === "/admin/bootstrap-wave" && request.method === "POST") {
+      // Authenticated bootstrap — queue never-observed accepted pairs immediately.
+      // Reuses the SAME planner/queue/Governor execution path as scheduled
+      // collection. Separates INITIAL COLLECTION from lifecycle refresh.
+      try {
+        const body = await request.json() as {
+          max_tasks?: number;
+          max_cost_usd?: number;
+          marketplace?: string;
+          lifecycle_bucket?: string;
+          never_observed_only?: boolean;
+          dry_run?: boolean;
+        };
+
+        const governorId = env.GOVERNOR.idFromName("acquisition-governor");
+        const governor = env.GOVERNOR.get(governorId) as any;
+
+        // lastObserved: true if the pair already has a successful observation.
+        const lastObserved = async (eventKey: string, marketplace: string) => {
+          try {
+            const obs = await governor.getObservationState({
+              event_key: eventKey, marketplace, rail: "FAST",
+            });
+            return !!(obs && obs.last_successful_observation_at);
+          } catch {
+            return false;
+          }
+        };
+
+        // Governor budget projection for the max_cost_usd gate.
+        const governorBudget = async () => {
+          const s = await governor.getReservationSummary();
+          return { daily_spend: s.daily_spend, reserved: s.reserved, daily_budget: s.daily_budget };
+        };
+
+        const result = await planBootstrapWave(
+          { ...env, governorBudget },
+          {
+            max_tasks: body.max_tasks ?? 100,
+            max_cost_usd: body.max_cost_usd ?? 0.10,
+            marketplace: body.marketplace,
+            lifecycle_bucket: body.lifecycle_bucket,
+            never_observed_only: body.never_observed_only !== false,
+            dry_run: !!body.dry_run,
+            lastObserved,
+          }
+        );
+
+        return Response.json({
+          status: result.dry_run ? "PLANNED_DRY" : "BOOTSTRAP_QUEUED",
+          candidate_pairs: result.candidate_pairs,
+          eligible: result.due_pairs,
+          tasks_queued: result.queued,
+          budget_blocked: result.budget_blocked,
+          window: result.window,
+          selected: result.selected,
+        });
+      } catch (e: any) {
+        return Response.json({ error: e.message || String(e) }, { status: 500 });
+      }
+    }
+
     if (url.pathname === "/trigger-immediate" && request.method === "POST") {
       // Trigger immediate workflow run (for pilot)
       const instance = await env.ACQUISITION_WORKFLOW.create();
@@ -144,6 +215,174 @@ export default {
       const governor = env.GOVERNOR.get(governorId) as any;
       const state = await governor.getObservationState({ event_key: eventKey, marketplace, rail });
       return Response.json({ event_key: eventKey, marketplace, rail, state });
+    }
+
+    if (url.pathname === "/scorecard" && request.method === "GET") {
+      // Acquisition operations scorecard — aggregates per-task telemetry.
+      // Never hides failures behind aggregate success rates.
+      const day = url.searchParams.get("date") || new Date().toISOString().slice(0, 10);
+      const prefix = `control/scorecard/date=${day}/`;
+      const listing = await env.BACKUP_BUCKET.list({ prefix });
+      const rows: any[] = [];
+      for (const obj of listing.objects) {
+        const raw = await env.BACKUP_BUCKET.get(obj.key);
+        if (raw) {
+          try { rows.push(await raw.json()); } catch { /* skip */ }
+        }
+      }
+
+      const byMpRail = new Map<string, {
+        attempts: number; ok: number; useful: number; price: number; avail: number;
+        cost: number; latency: number[]; http403: number; http429: number; http5xx: number; timeout: number;
+        byRail: Record<string, number>; byProvider: Record<string, number>;
+        browserMs: number; estimatedBrowserCost: number; byBasis: Record<string, number>;
+      }>();
+      const totals = {
+        attempts: 0, ok: 0, useful: 0, price: 0, avail: 0, cost: 0,
+        http403: 0, http429: 0, http5xx: 0, timeout: 0, latencies: [] as number[],
+        browserMs: 0, estimatedBrowserCost: 0,
+      };
+
+      for (const r of rows) {
+        const key = `${r.marketplace}|${r.rail}`;
+        let acc = byMpRail.get(key);
+        if (!acc) {
+          acc = { attempts: 0, ok: 0, useful: 0, price: 0, avail: 0, cost: 0, latency: [], http403: 0, http429: 0, http5xx: 0, timeout: 0, byRail: {}, byProvider: {}, browserMs: 0, estimatedBrowserCost: 0, byBasis: {} };
+          byMpRail.set(key, acc);
+        }
+        acc.attempts++; totals.attempts++;
+        if (r.ok) { acc.ok++; totals.ok++; }
+        if (r.useful) { acc.useful++; totals.useful++; }
+        if (r.price_extracted) { acc.price++; totals.price++; }
+        if (r.availability_extracted) { acc.avail++; totals.avail++; }
+        acc.cost += r.cost_usd || 0; totals.cost += r.cost_usd || 0;
+        acc.browserMs += r.browser_ms || 0; totals.browserMs += r.browser_ms || 0;
+        acc.estimatedBrowserCost += r.estimated_browser_cost_usd || 0; totals.estimatedBrowserCost += r.estimated_browser_cost_usd || 0;
+        if (r.cost_basis) acc.byBasis[r.cost_basis] = (acc.byBasis[r.cost_basis] || 0) + 1;
+        acc.latency.push(r.latency_ms || 0); totals.latencies.push(r.latency_ms || 0);
+        if (r.http_status === 403) { acc.http403++; totals.http403++; }
+        if (r.http_status === 429) { acc.http429++; totals.http429++; }
+        if (r.http_status >= 500) { acc.http5xx++; totals.http5xx++; }
+        if ((r.error_category || "").includes("TIMEOUT")) { acc.timeout++; totals.timeout++; }
+        acc.byRail[r.rail] = (acc.byRail[r.rail] || 0) + 1;
+        acc.byProvider[r.provider] = (acc.byProvider[r.provider] || 0) + 1;
+      }
+
+      const pct = (n: number, d: number) => (d ? Math.round((n / d) * 1000) / 10 : 0);
+      const pLat = (arr: number[], q: number) => {
+        if (!arr.length) return 0;
+        const s = [...arr].sort((a, b) => a - b);
+        return s[Math.min(s.length - 1, Math.floor(s.length * q))];
+      };
+
+      const perMarketplace: any[] = [];
+      for (const [key, acc] of byMpRail) {
+        const [marketplace, rail] = key.split("|");
+        perMarketplace.push({
+          marketplace, rail,
+          attempts: acc.attempts,
+          fetch_success_rate: pct(acc.ok, acc.attempts),
+          useful_observation_rate: pct(acc.useful, acc.attempts),
+          price_extracted: acc.price,
+          availability_extracted: acc.avail,
+          provider_cash_spend_usd: Math.round(acc.cost * 1e6) / 1e6,
+          cost_basis: Object.keys(acc.byBasis),
+          browser_ms: acc.browserMs,
+          estimated_browser_marginal_usd: Math.round(acc.estimatedBrowserCost * 1e6) / 1e6,
+          cost_per_fetch: Math.round((acc.cost / (acc.attempts || 1)) * 1e6) / 1e6,
+          cost_per_useful: Math.round((acc.cost / (acc.useful || 1)) * 1e6) / 1e6,
+          latency_p50_ms: pLat(acc.latency, 0.5),
+          latency_p95_ms: pLat(acc.latency, 0.95),
+          http403: acc.http403, http429: acc.http429, http5xx: acc.http5xx, timeouts: acc.timeout,
+          by_rail: acc.byRail, by_provider: acc.byProvider,
+        });
+      }
+
+      return Response.json({
+        date: day,
+        totals: {
+          attempts: totals.attempts,
+          ok: totals.ok,
+          fetch_success_rate: pct(totals.ok, totals.attempts),
+          useful: totals.useful,
+          useful_observation_rate: pct(totals.useful, totals.attempts),
+          price_extracted: totals.price,
+          availability_extracted: totals.avail,
+          provider_cash_spend_usd: Math.round(totals.cost * 1e6) / 1e6,
+          measured_browser_ms: totals.browserMs,
+          estimated_browser_marginal_usd: Math.round(totals.estimatedBrowserCost * 1e6) / 1e6,
+          cost_per_fetch: Math.round((totals.cost / (totals.attempts || 1)) * 1e6) / 1e6,
+          cost_per_useful: Math.round((totals.cost / (totals.useful || 1)) * 1e6) / 1e6,
+          latency_p50_ms: pLat(totals.latencies, 0.5),
+          latency_p95_ms: pLat(totals.latencies, 0.95),
+          http403: totals.http403, http429: totals.http429, http5xx: totals.http5xx, timeouts: totals.timeout,
+        },
+        per_marketplace_rail: perMarketplace,
+      });
+    }
+
+    if (url.pathname === "/admin/mapping-wave" && request.method === "POST") {
+      // Mapping factory — resolve exact marketplace URLs for canonical events.
+      // Discovery via sitemaps + Browser /links. Deterministic match requires
+      // artist + date + venue + city. Artist-only matches are rejected.
+      try {
+        const body = await request.json() as {
+          max_events?: number;
+          marketplaces?: string[];
+          dry_run?: boolean;
+        };
+        const maxEvents = body.max_events || 5;
+
+        const { events } = await loadUniverse(env);
+        const governorId = env.GOVERNOR.idFromName("acquisition-governor");
+        const governor = env.GOVERNOR.get(governorId) as any;
+
+        // Discovery targets — bounded, explicit. Sitemaps first (no browser).
+        const discoveryTargets: DiscoveryTarget[] = [
+          { name: "seatgeek", marketplace: "seatgeek.com", start_url: "https://seatgeek.com/concerts", sitemap_url: "https://seatgeek.com/sitemap.xml" },
+          { name: "vivid", marketplace: "vividseats.com", start_url: "https://www.vividseats.com/concerts", sitemap_url: "https://www.vividseats.com/sitemap.xml" },
+          { name: "tickpick", marketplace: "tickpick.com", start_url: "https://www.tickpick.com/concerts", sitemap_url: "https://www.tickpick.com/sitemap.xml" },
+          { name: "gametime", marketplace: "gametime.com", start_url: "https://gametime.com/concerts", sitemap_url: "https://gametime.com/sitemap.xml" },
+        ];
+
+        const accepted: MappingRecord[] = [];
+        const results: any[] = [];
+        let processed = 0;
+
+        for (const event of events) {
+          if (processed >= maxEvents) break;
+          const identity: EventIdentity | null = event.artist_name && event.event_date && event.venue_name && event.city
+            ? { event_key: event.event_key, artist_name: event.artist_name, event_date: String(event.event_date).slice(0, 10), venue_name: event.venue_name, city: event.city }
+            : null;
+          if (!identity) continue;
+
+          processed++;
+          for (const target of discoveryTargets) {
+            const candidates = await discoverCandidates(env.BROWSER || null, target, { maxUrls: 200 });
+            const { record, status, best } = selectBestMapping(identity, candidates);
+            results.push({ event_key: identity.event_key, marketplace: target.marketplace, status, best_url: best?.url || null });
+            if (record) {
+              accepted.push(record);
+              if (!body.dry_run) {
+                // Persist mapping record (event_identifiers contract)
+                await env.BACKUP_BUCKET.put(`canonical/event_identifiers/${identity.event_key}.json`, JSON.stringify(record, null, 2), {
+                  httpMetadata: { contentType: "application/json" },
+                });
+              }
+            }
+          }
+        }
+
+        return Response.json({
+          status: body.dry_run ? "MAPPING_PLANNED" : "MAPPING_WAVE_COMPLETE",
+          events_processed: processed,
+          accepted_mappings: accepted.length,
+          accepted,
+          results,
+        });
+      } catch (e: any) {
+        return Response.json({ error: e.message || String(e) }, { status: 500 });
+      }
     }
 
     // ── STAGING-ONLY ENDPOINTS (remove after acceptance) ─────
