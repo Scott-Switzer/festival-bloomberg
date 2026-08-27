@@ -130,9 +130,10 @@ def pit_features(
     out["volatility_90d"] = round(sd90 / m90, 4) if (m90 and sd90 is not None) else None
     # spike: max single day in trailing 30d / mean of trailing 90d
     m90b = _mean(vals90)
-    if vals90 and m90b:
-        out["spike_30d"] = round(max(v for d, v in sorted(daily.items())
-                                      if cutoff_d - timedelta(days=30) <= d < cutoff_d) / m90b, 4)
+    vals30 = [v for d, v in sorted(daily.items())
+              if cutoff_d - timedelta(days=30) <= d < cutoff_d]
+    if vals30 and m90b:
+        out["spike_30d"] = round(max(vals30) / m90b, 4)
     else:
         out["spike_30d"] = None
     out["days_observed"] = len([d for d in daily if d < cutoff_d])

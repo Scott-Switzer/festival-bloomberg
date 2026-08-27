@@ -359,7 +359,8 @@ def _append_wiki_window_factors(
     as_of: date,
     retrieved_at: str,
 ) -> None:
-    """WIKI_VIEWS_1D/7D/28D/90D + WIKI_MOMENTUM + WIKI_ZSCORE + WIKI_ATTENTION_SHOCK.
+    """WIKI_VIEWS_1D/7D/28D/90D + WIKI_MOMENTUM + WIKI_ACCELERATION + WIKI_ZSCORE
+    + WIKI_ATTENTION_SHOCK.
 
     Trailing windows strictly before ``as_of``. z-score is computed against the
     trailing 180d daily series when >= 7 days exist (else NULL). Shock = latest
@@ -412,6 +413,21 @@ def _append_wiki_window_factors(
             source_url="https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article",
             retrieved_at=retrieved_at,
             evidence={"formula": "28d_sum / prior_28d_sum - 1"},
+        ))
+        summary["momentum_rows"] += 1
+    # Acceleration: momentum now vs momentum prior (second-order change)
+    prev_prev = _window_sum_span(daily, as_of - timedelta(days=84), as_of - timedelta(days=56))
+    if w28 is not None and prev and prev_prev:
+        momentum_now = w28 / prev - 1.0
+        momentum_prior = prev / prev_prev - 1.0
+        rows.append(_attention_level_observation(
+            artist_key=artist_key, artist_name=artist_name, factor_name="WIKI_ACCELERATION",
+            family="MOMENTUM", value=round(momentum_now - momentum_prior, 4), unit="relative", as_of=as_of,
+            period_start=(as_of - timedelta(days=84)), period_end=(as_of - timedelta(days=1)),
+            source_system="wikimedia",
+            source_url="https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article",
+            retrieved_at=retrieved_at,
+            evidence={"formula": "(28d/prev28d - 1) - (prev28d/prevprev28d - 1)"},
         ))
         summary["momentum_rows"] += 1
     # z-score against trailing 180d
