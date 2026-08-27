@@ -244,6 +244,189 @@ def _parse_date(value: str) -> date | None:
         return None
 
 
+def batch_persist_daily_rows(conn, rows: list[dict[str, Any]]) -> int:
+    """Bulk-persist daily pageview rows with a single existence gate.
+
+    The per-row ``persist_pageviews`` path (SELECT + INSERT per day) does not
+    scale to the multi-million-row backfill; this batches one existence query
+    for the whole chunk and one ``executemany`` INSERT. Idempotency is kept:
+    a day already present is skipped, never rewritten.
+    """
+    if not rows:
+        return 0
+    keys = [r["observation_key"] for r in rows]
+    existing = {
+        r[0] for r in conn.execute(
+            "SELECT observation_key FROM metrics.artist_attention_observations "
+            "WHERE observation_key IN (SELECT UNNEST(?))",
+            [keys],
+        ).fetchall()
+    }
+    fresh = [r for r in rows if r["observation_key"] not in existing]
+    if not fresh:
+        return 0
+    cols = (
+        "observation_key, artist_key, festival_key, edition_key, edition_year, "
+        "source_system, metric_kind, project, access_method, agent, article_title, "
+        "granularity, period_start, period_end, value, value_sum, value_unit, "
+        "status, error_code, error_message, source_url, retrieved_at, "
+        "raw_response_json, provenance_json, metric_version"
+    )
+    placeholders = ", ".join("?" for _ in range(25))
+    conn.executemany(
+        f"""
+        INSERT INTO metrics.artist_attention_observations ({cols}, ingested_at)
+        VALUES ({placeholders}, CURRENT_TIMESTAMP)
+        """,
+        [
+            [
+                r["observation_key"], r["artist_key"], r["festival_key"], r["edition_key"],
+                r["edition_year"], r["source_system"], r["metric_kind"], r["project"],
+                r["access_method"], r["agent"], r["article_title"], r["granularity"],
+                r["period_start"], r["period_end"], r["value"], r["value_sum"],
+                r["value_unit"], r["status"], r["error_code"], r["error_message"],
+                r["source_url"], r["retrieved_at"], r["raw_response_json"],
+                r["provenance_json"], r["metric_version"],
+            ]
+            for r in fresh
+        ],
+    )
+    return len(fresh)
+
+
+def collect_artist_daily_pageviews_batched(
+    conn,
+    transport,
+    *,
+    names: list[str],
+    start: str | None = None,
+    end: str | None = None,
+    project: str = "en.wikipedia",
+    access: str = "all-access",
+    agent: str = "user",
+    chunk_days: int = DEFAULT_CHUNK_DAYS,
+    min_interval_seconds: float = DEFAULT_MIN_INTERVAL_SECONDS,
+    artist_keys_by_name: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Full-scale daily backfill with batched persistence.
+
+    Same PIT semantics and per-day rows as ``collect_artist_daily_pageviews``,
+    but rows are accumulated per chunk and bulk-inserted (one existence gate
+    + one executemany per chunk) — the ~4M-row path. Fetching is unchanged
+    (one request per chunk window).
+    """
+    end_dt = _parse_end(end)
+    start_dt = _parse_start(start, end_dt)
+    summary: dict[str, Any] = {
+        "status": "RUNNING",
+        "names_attempted": 0,
+        "names_ok": 0,
+        "names_missing": 0,
+        "names_error": 0,
+        "daily_rows_persisted": 0,
+        "daily_rows_skipped_existing": 0,
+        "chunks_requested": 0,
+        "window_start": start_dt.isoformat(),
+        "window_end": end_dt.isoformat(),
+        "series_start": WIKIMEDIA_SERIES_START.isoformat(),
+        "per_artist": {},
+    }
+    for index, name in enumerate(names):
+        name = (name or "").strip()
+        if not name:
+            continue
+        if index and min_interval_seconds > 0:
+            time.sleep(min_interval_seconds)
+        summary["names_attempted"] += 1
+        pending: list[dict[str, Any]] = []
+        status = "ok"
+        artist_new = 0
+        artist_skipped = 0
+        for lo, hi in split_windows(start_dt, end_dt, chunk_days=chunk_days):
+            summary["chunks_requested"] += 1
+            result = fetch_pageviews(
+                transport,
+                title=name,
+                start=lo.strftime("%Y%m%d"),
+                end=hi.strftime("%Y%m%d"),
+                project=project,
+                access=access,
+                agent=agent,
+            )
+            if result["status"] == "missing":
+                if status == "ok":
+                    status = "missing"
+                continue
+            if result["status"] != "ok":
+                status = "error"
+                summary["names_error"] += 1
+                break
+            for item in result["items"]:
+                day = _day_from_timestamp(item.get("timestamp"))
+                if day is None or day < WIKIMEDIA_SERIES_START:
+                    continue
+                day_iso = day.isoformat()
+                row = build_pageviews_observation(
+                    artist_name=name, title=name, project=result["project"],
+                    access=result["access"], agent=result["agent"], granularity="daily",
+                    start=day_iso.replace("-", ""), end=day_iso.replace("-", ""),
+                    items=[item], status="ok", error_code=None, error_message=None,
+                    source_url=result["source_url"], retrieved_at=result["retrieved_at"],
+                    raw_response=item,
+                )
+                if artist_keys_by_name:
+                    canonical = artist_keys_by_name.get(name) or artist_keys_by_name.get(name.lower())
+                    if canonical:
+                        row["artist_key"] = canonical
+                row["observation_key"] = daily_observation_key(artist_key=row["artist_key"], day=day_iso)
+                row["period_start"] = day_iso
+                row["period_end"] = day_iso
+                row["metric_version"] = METRIC_VERSION
+                prov = json.loads(row["provenance_json"] or "{}")
+                prov["granularity"] = "daily"
+                prov["available_at"] = wikimedia_available_at(day).isoformat()
+                prov["observation_day"] = day_iso
+                prov["backfill"] = True
+                prov["chunk_days"] = chunk_days
+                row["provenance_json"] = json.dumps(prov, default=str)
+                pending.append(row)
+            # flush per chunk to bound memory
+            written = batch_persist_daily_rows(conn, pending)
+            summary["daily_rows_persisted"] += written
+            summary["daily_rows_skipped_existing"] += len(pending) - written
+            artist_new += written
+            artist_skipped += len(pending) - written
+            pending = []
+        if pending:
+            written = batch_persist_daily_rows(conn, pending)
+            summary["daily_rows_persisted"] += written
+            summary["daily_rows_skipped_existing"] += len(pending) - written
+            artist_new += written
+            artist_skipped += len(pending) - written
+        if status == "ok" and artist_new:
+            summary["names_ok"] += 1
+        elif status == "ok":
+            summary["names_missing"] += 1
+        summary["per_artist"][name] = {
+            "status": status,
+            "daily_rows_new": artist_new,
+            "daily_rows_existing": artist_skipped,
+            "first_day": None,
+            "last_day": None,
+        }
+        if artist_new or artist_skipped:
+            days = conn.execute(
+                "SELECT MIN(period_start), MAX(period_end) FROM metrics.artist_attention_observations "
+                "WHERE artist_key = ? AND source_system = 'wikimedia' AND metric_version = ?",
+                [artist_keys_by_name.get(name) or artist_keys_by_name.get(name.lower()) or artist_key_for(name),
+                 METRIC_VERSION],
+            ).fetchone()
+            summary["per_artist"][name]["first_day"] = days[0]
+            summary["per_artist"][name]["last_day"] = days[1]
+    summary["status"] = "COMPLETE"
+    return summary
+
+
 def collect_artist_daily_pageviews_bounded(
     conn,
     transport,

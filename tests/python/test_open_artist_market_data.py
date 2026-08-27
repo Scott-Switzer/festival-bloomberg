@@ -479,6 +479,7 @@ class TestWikiFactorDerivation:
         assert "WIKI_VIEWS_90D" in names
         assert "WIKI_ZSCORE" in names and names["WIKI_ZSCORE"]["value"] > 3.0  # spike vs flat
         assert "WIKI_ATTENTION_SHOCK" in names and names["WIKI_ATTENTION_SHOCK"]["value"] > 5.0
+        assert "WIKI_MOMENTUM" in names
 
     def test_no_wiki_data_no_fabricated_rows(self, conn):
         _seed_artist(conn, "mbid::a1", "Alpha Artist", "a1")

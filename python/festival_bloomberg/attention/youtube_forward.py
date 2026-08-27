@@ -86,6 +86,17 @@ def _api_get(transport, resource: str, params: dict[str, Any], api_key: str) -> 
         response = transport.request("GET", f"{YOUTUBE_API_BASE}/{resource}", params=request_params)
     except TransportError as exc:
         return {"status": "error", "error_category": "network", "detail": str(exc)}
+    if response.status == 400:
+        # An invalid API key surfaces as HTTP 400 with "API key not valid" —
+        # this is a PROVISIONING failure (the key is configured but dead), not
+        # an application error. It must fail closed and be reported as
+        # NOT_CONFIGURED so the milestone can surface key-provisioning status
+        # explicitly instead of silently collecting nothing.
+        body = response.json() if response.body else {}
+        message = ((body.get("error") or {}).get("message") or "").lower()
+        if "api key not valid" in message or "badrequest" in str(body.get("error") or {}).lower():
+            return {"status": "not_configured", "error_category": "invalid_api_key"}
+        return {"status": "error", "error_category": "http_400", "detail": message[:200]}
     if response.status == 403:
         body = response.json() if response.body else {}
         error = (body.get("error") or {}).get("errors") or [{}]
@@ -303,7 +314,14 @@ def collect_channel_snapshots(
             break
         if snap.get("status") == "not_configured":
             summary["status"] = "NOT_CONFIGURED"
-            summary["detail"] = "YouTube Data API not enabled for this key"
+            category = snap.get("error_category")
+            summary["detail"] = (
+                "YOUTUBE_API_KEY present but INVALID (API key not valid) — "
+                "provisioning required; no snapshot collected"
+                if category == "invalid_api_key"
+                else "YouTube Data API not enabled for this key"
+            )
+            summary["key_provisioning_status"] = "INVALID_KEY" if category == "invalid_api_key" else "API_NOT_ENABLED"
             break
         if snap.get("status") != "ok":
             summary["artists_error"] += 1
