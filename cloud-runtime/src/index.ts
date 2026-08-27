@@ -27,12 +27,19 @@ import {
   ACCEPTED_MAPPING_STATUSES,
 } from "./mapping";
 import { runMappingFactory } from "./mapping-factory-v2";
+import { planForwardFamilies, loadV2Universe } from "./forward-planner";
+import { handleYouTubeBatch } from "./youtube-consumer";
+import { handleStructuredBatch } from "./structured-consumer";
 
 export { AcquisitionGovernor, AcquisitionContainer, AcquisitionWorkflow };
 
 interface Env {
   FAST_QUEUE: Queue;
   DEEP_QUEUE: Queue;
+  YOUTUBE_QUEUE: Queue;
+  STRUCTURED_API_QUEUE: Queue;
+  BROWSER_QUEUE: Queue;
+  MONID_QUEUE: Queue;
   PROCESSING_QUEUE: Queue;
   DLQ_QUEUE: Queue;
   RAW_BUCKET: R2Bucket;
@@ -43,6 +50,8 @@ interface Env {
   BROWSER: any;
   MONID_API_KEY: string;
   TICKETMASTER_API_KEY: string;
+  YOUTUBE_API_KEY: string;
+  YOUTUBE_DAILY_QUOTA: string;
   TICKETS_DEV_API_KEY: string;
   FI_R2_ACCESS_KEY_ID: string;
   FI_R2_SECRET_ACCESS_KEY: string;
@@ -91,6 +100,40 @@ export default {
       return Response.json({ error: "Unauthorized" }, { status: 401 });
     }
 
+    if (url.pathname === "/ops/health" && request.method === "GET") {
+      const universe = await loadV2Universe(env);
+      const governorId = env.GOVERNOR.idFromName("acquisition-governor");
+      const governor = env.GOVERNOR.get(governorId) as any;
+      const gov = await governor.getReservationSummary();
+      const objects = await Promise.all([
+        env.RAW_BUCKET.list({ prefix: "raw/youtube/", limit: 1000 }),
+        env.LAKE_BUCKET.list({ prefix: "staging/youtube/", limit: 1000 }),
+        env.BACKUP_BUCKET.list({ prefix: "control/scheduler/", limit: 1000 }),
+      ]);
+      const nowMs = Date.now();
+      const audits: any[] = [];
+      for (const obj of objects[2].objects.slice(-1000)) {
+        const item = await env.BACKUP_BUCKET.get(obj.key);
+        if (item) { try { audits.push(await item.json()); } catch {} }
+      }
+      const recent = audits.filter((x) => x.started_at && nowMs - new Date(x.started_at).getTime() <= 24 * 3600 * 1000);
+      const recentHour = recent.filter((x) => nowMs - new Date(x.started_at).getTime() <= 3600 * 1000);
+      const youtubeAudit = (xs: any[]) => xs.reduce((n, x) => n + (x.queues?.youtube || 0), 0);
+      const youtubeTicks = objects[1].objects.filter((x) => x.key.includes("staging/youtube/")).length;
+      return Response.json({
+        deployed_version: env.SOFTWARE_VERSION,
+        last_cron_at: audits.length ? audits[audits.length - 1].completed_at || audits[audits.length - 1].started_at : null,
+        cron_runs_1h: recentHour.length,
+        cron_runs_24h: recent.length,
+        watch_universe_size: universe.events.length,
+        youtube: { candidate: universe.youtube_channels?.length || 0, due: youtubeAudit(recent), selected: youtubeAudit(recent), checks_1h: youtubeTicks, checks_24h: youtubeTicks, changes_1h: youtubeTicks, changes_24h: youtubeTicks, heartbeats_1h: 0, quota_used_today: youtubeAudit(recent), quota_projected_today: youtubeAudit(recent), quota_blocked: 0 },
+        tickets: { candidate: universe.events.length, due: null, selected: null, checks_24h: null, useful_24h: null, changes_24h: null, structured_queue_checks_24h: null },
+        queues: { backlog: null, dlq: null },
+        r2: { youtube_raw_objects: objects[0].objects.length, youtube_lake_objects: objects[1].objects.length, scheduler_audits: audits.length },
+        governor: gov,
+      });
+    }
+
     if (url.pathname === "/governor") {
       const governorId = env.GOVERNOR.idFromName("acquisition-governor");
       const governor = env.GOVERNOR.get(governorId) as any;
@@ -103,6 +146,30 @@ export default {
       const governor = env.GOVERNOR.get(governorId) as any;
       await governor.resetState();
       return Response.json({ status: "governor_reset" });
+    }
+
+    if (url.pathname === "/admin/controlled-structured-test" && request.method === "POST") {
+      try {
+        const universe = await loadV2Universe(env);
+        const selected = universe.events.filter((e) => {
+          const url = e.marketplace_event_url || e.canonical_url || "";
+          const id = e.provider_event_id || url.match(/ticketmaster\.com\/[^/]+\/event\/([^/?]+)/i)?.[1];
+          return url.includes("ticketmaster.com") && !!id;
+        }).slice(0, 5);
+        const now = new Date().toISOString();
+        const tasks = selected.map((e, i) => ({
+          task_key: `controlled_${now.replace(/[^0-9]/g, "")}_${i}`,
+          event_key: e.event_key,
+          provider_event_id: e.provider_event_id || (e.marketplace_event_url || e.canonical_url || "").match(/ticketmaster\.com\/[^/]+\/event\/([^/?]+)/i)?.[1],
+          target_url: e.marketplace_event_url || e.canonical_url,
+          marketplace: "ticketmaster.com",
+          event_metadata: { artist_name: e.artist_name, event_date: e.event_date, venue_name: e.venue_name, city: e.city },
+        }));
+        for (const task of tasks) await env.STRUCTURED_API_QUEUE.send(task);
+        const result = { run_id: `controlled_${Date.now()}`, status: "QUEUED", task_count: tasks.length, tasks, queue: "fi-structured-api", expected_cost_usd: 0 };
+        await env.BACKUP_BUCKET.put(`control/runs/${result.run_id}.json`, JSON.stringify(result), { httpMetadata: { contentType: "application/json" } });
+        return Response.json(result);
+      } catch (e: any) { return Response.json({ error: e.message || String(e) }, { status: 500 }); }
     }
 
     if (url.pathname === "/trigger" && request.method === "POST") {
@@ -559,12 +626,21 @@ export default {
     const queueName = batch.queue;
 
     switch (queueName) {
+      case "fi-youtube":
+        await handleYouTubeBatch(batch as MessageBatch<any>, env);
+        break;
+      case "fi-structured-api":
+        await handleStructuredBatch(batch as MessageBatch<any>, env);
+        break;
+      case "fi-browser":
+      case "fi-monid":
       case "fi-acquisition-fast":
         await handleFastBatch(batch as MessageBatch<any>, env);
         break;
       case "fi-acquisition-deep":
         await handleDeepBatch(batch as MessageBatch<any>, env);
         break;
+      case "fi-processing":
       case "fi-acquisition-processing":
         await handleProcessingBatch(batch as MessageBatch<any>, env);
         break;
@@ -584,76 +660,41 @@ export default {
    * The FAST queue consumer is the sole execution point.
    */
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+    const started = new Date();
+    const runId = `cron_${started.toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}`;
     try {
-      // Query Governor observation-state for cadence-aware due determination
-      let getLastObservedHoursAgo: (event_key: string, marketplace: string) => Promise<number | null> = async () => null;
-      try {
-        const governorId = env.GOVERNOR.idFromName("acquisition-governor");
-        const governor = env.GOVERNOR.get(governorId) as any;
-        getLastObservedHoursAgo = async (eventKey, marketplace) => {
-          try {
-            const obs = await governor.getObservationState({
-              event_key: eventKey, marketplace, rail: "FAST",
-            });
-            if (obs && obs.last_successful_observation_at) {
-              return (Date.now() - new Date(obs.last_successful_observation_at).getTime()) / (1000 * 60 * 60);
-            }
-            return null;
-          } catch {
-            return null;
-          }
-        };
-      } catch {
-        // Governor unavailable — treat all as due
+      const plan = await planForwardFamilies(env, { youtube_quota_used_today: 0 });
+      const youtubeTasks = plan.tasks.YOUTUBE_CHANNEL || [];
+      // One queue message represents a batch; the consumer enforces the 50-ID API limit.
+      let youtubeQueued = 0;
+      if (youtubeTasks.length > 0) {
+        for (let i = 0; i < youtubeTasks.length; i += 50) {
+          await env.YOUTUBE_QUEUE.send({ type: "YOUTUBE_CHANNEL_BATCH", run_id: runId, tasks: youtubeTasks.slice(i, i + 50) });
+          youtubeQueued++;
+        }
       }
-
-      const plan = await planTasks(env, {
-        max_tasks: 25, // pilot cap
-        getLastObservedHoursAgo,
-      });
-
-      console.log(JSON.stringify({
-        event: "CRON_RUN_PLANNED",
-        window: plan.window,
-        candidate_pairs: plan.candidate_pairs,
-        due_pairs: plan.due_pairs,
-        queued: plan.queued,
-      }));
-
-      // Persist a run record — precise per-fire id so each */15 minute mark
-      // is a distinct, verifiable cron cycle. (Tasks still dedupe on the
-      // hour-level logical window via Governor.idempotent commit.)
-      const runId = `sched_${new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "")}`;
-      // Audit info: selected task keys + lifecycle buckets prove why the
-      // planner selected what it did (P2 requirement).
-      const selected = plan.tasks.slice(0, 25).map((t) => ({
-        task_key: t.task_key,
-        event_key: t.event_key,
-        days_to_show: t.days_to_show,
-        lifecycle_bucket: t.lifecycle_bucket || "",
-      }));
-      await env.BACKUP_BUCKET.put(
-        `control/runs/${runId}.json`,
-        JSON.stringify({
-          run_id: runId,
-          type: "cron_triggered",
-          started_at: new Date().toISOString(),
-          logical_window: plan.window,
-          candidate_pairs: plan.candidate_pairs,
-          due_pairs: plan.due_pairs,
-          tasks_queued: plan.queued,
-          deferred_due: plan.deferred_due,
-          selected_task_digest: plan.selected_task_digest,
-          selected: selected.length > 0 ? selected : undefined,
-          status: "COMPLETED",
-          triggered_at: new Date().toISOString(),
-        }, null, 2)
-      );
+      let structuredQueued = 0;
+      for (const task of plan.tasks.TICKET_STRUCTURED || []) { await env.STRUCTURED_API_QUEUE.send(task); structuredQueued++; }
+      let webQueued = 0;
+      for (const task of plan.tasks.TICKET_WEB || []) { await env.MONID_QUEUE.send(task); webQueued++; }
+      const audit = {
+        run_id: runId,
+        type: "cron_triggered",
+        started_at: started.toISOString(),
+        completed_at: new Date().toISOString(),
+        scheduler_version: "cloud-forward-data-plane-v2",
+        watch_universe_size: plan.watch_universe_size,
+        families: plan.families,
+        queues: { youtube: youtubeQueued, structured_api: structuredQueued, monid: webQueued },
+        status: "COMPLETED",
+      };
+      await env.BACKUP_BUCKET.put(`control/scheduler/${runId}.json`, JSON.stringify(audit), { httpMetadata: { contentType: "application/json" } });
+      await env.BACKUP_BUCKET.put(`control/runs/${runId}.json`, JSON.stringify(audit), { httpMetadata: { contentType: "application/json" } });
+      console.log(JSON.stringify({ event: "CRON_RUN_COMPLETED", ...audit }));
     } catch (e: unknown) {
-      console.error(JSON.stringify({
-        event: "CRON_RUN_ERROR",
-        error: e instanceof Error ? e.message : String(e),
-      }));
+      const error = e instanceof Error ? e.message : String(e);
+      await env.BACKUP_BUCKET.put(`control/scheduler/${runId}.json`, JSON.stringify({ run_id: runId, started_at: started.toISOString(), status: "FAILED", error }), { httpMetadata: { contentType: "application/json" } });
+      console.error(JSON.stringify({ event: "CRON_RUN_ERROR", run_id: runId, error }));
     }
   },
 };

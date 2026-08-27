@@ -76,6 +76,9 @@ export interface AcquisitionTask {
   /** Exact mapped URL or provider-specific event/object ID */
   target_url: string;
 
+  /** Optional provider-native identity for structured API tasks */
+  provider_event_id?: string;
+
   /** Scheduled observation window (ISO-8601 hour-level) */
   scheduled_window: string;
 

@@ -1,0 +1,110 @@
+{
+  "milestone": "CLOUD_FORWARD_DATA_PLANE_V2",
+  "status": "PARTIAL",
+  "acceptance_start": {
+    "captured_at": "2026-08-27T22:17:03.244958+00:00",
+    "r2": {
+      "festival-intelligence-raw": {"object_count": "116", "bucket_size": "4.86 MB"},
+      "festival-intelligence-lake": {"object_count": "211", "bucket_size": "604 MB"},
+      "festival-intelligence-backups": {"object_count": "3,205", "bucket_size": "5.55 GB"}
+    }
+  },
+  "original_pre_v2_baseline": {
+    "festival-intelligence-raw": {"object_count": "116", "bucket_size": "4.86 MB"},
+    "festival-intelligence-lake": {"object_count": "211", "bucket_size": "604 MB"},
+    "festival-intelligence-backups": {"object_count": "3,186", "bucket_size": "5.55 GB"}
+  },
+  "acceptance_end": {
+    "captured_at": "2026-08-27T22:27:02Z",
+    "r2": {
+      "festival-intelligence-raw": {"object_count": "131", "bucket_size": "5.02 MB"},
+      "festival-intelligence-lake": {"object_count": "745", "bucket_size": "605 MB"},
+      "festival-intelligence-backups": {"object_count": "3,205", "bucket_size": "5.55 GB"}
+    }
+  },
+  "worker": {
+    "name": "fi-acquisition-runtime",
+    "version": "f2c6154c-5940-4b21-a176-6f1476ba76b9",
+    "latest_deployed_version_seen": "f2c6154c-5940-4b21-a176-6f1476ba76b9",
+    "cron": "* * * * *",
+    "url": "https://fi-acquisition-runtime.scswitzer.workers.dev"
+  },
+  "queues": ["fi-youtube", "fi-structured-api", "fi-browser", "fi-monid", "fi-processing", "fi-dlq"],
+  "watch_universe": {
+    "version": "v2",
+    "events": 571,
+    "hot_events": 166,
+    "active_events": 354,
+    "long_horizon_events": 51,
+    "youtube_channel_candidates": 966
+  },
+  "cron": {
+    "real_scheduler_audits_observed_before_end": 16,
+    "health_reported_cron_runs_1h": 16,
+    "health_reported_last_cron_at": "2026-08-27T22:06:59.860Z",
+    "requirement_ge_8": true,
+    "note": "16 scheduler audit objects were reported; health audit freshness is stale and requires a follow-up fix."
+  },
+  "youtube": {
+    "api_secret_name": "YOUTUBE_API_KEY",
+    "secret_value_exposed": false,
+    "batch_size": 50,
+    "production_checks_observed": 440,
+    "production_batches_observed": 15,
+    "channels_resolved_in_cloud_path": "not separately exposed by current health endpoint",
+    "raw_youtube_objects_observed": 74,
+    "normalized_youtube_ticks_observed": 440,
+    "raw_dedupe": "verified by raw object count lower than successful checks",
+    "value_change_ticks": "not separately persisted in current health endpoint",
+    "heartbeat_ticks": "not separately persisted in current health endpoint",
+    "source": "YOUTUBE_API"
+  },
+  "ticketmaster": {
+    "controlled_tasks_queued": 5,
+    "queue": "fi-structured-api",
+    "real_structured_completions_observed_in_tail": 2,
+    "raw_and_lake_evidence_verified": true,
+    "additional_scheduler_structured_failures": "stale/non-native event identities observed and fail-closed"
+  },
+  "monid": {
+    "bounded_fallback_test": "NOT_RUN",
+    "reason": "Acceptance remained bounded; no additional production spend was initiated."
+  },
+  "governor": {
+    "daily_spend": 0,
+    "reserved": 0,
+    "monthly_spend": 0.02880000000000002,
+    "daily_budget": 0.25,
+    "active_containers": 0,
+    "active_leases": 0,
+    "observation_states": 100
+  },
+  "r2_deltas_from_original_pre_v2": {
+    "raw_objects": 15,
+    "lake_objects": 534,
+    "backup_objects": 19,
+    "raw_bytes": "4.86 MB -> 5.02 MB",
+    "lake_bytes": "604 MB -> 605 MB"
+  },
+  "pass_conditions": {
+    "cron_repeated": true,
+    "real_youtube_cloud_calls": true,
+    "youtube_raw_r2": true,
+    "youtube_normalized_r2": true,
+    "heartbeat_or_value_change_proven": "partially; ticks exist but endpoint does not expose split",
+    "ticket_structured_evidence": true,
+    "bounded_monid_fallback": false,
+    "queues_drain": "not exposed by current health endpoint",
+    "dlq_healthy": "not exposed by current health endpoint",
+    "budget_quota_valid": "quota count is currently underreported because scheduler audit stores batch count, not channel/API units",
+    "v2_pointer_active": true,
+    "ops_health_useful": "partial; recent activity fields remain null/stale"
+  },
+  "blockers": [
+    "Health endpoint does not expose queue backlog/DLQ metrics.",
+    "Health endpoint does not expose accurate YouTube channel/API quota counters or split heartbeat/value-change counts.",
+    "Health endpoint scheduler freshness was stale relative to later R2 activity.",
+    "A bounded Monid fallback test remains outstanding.",
+    "Controlled structured test included stale event identities; successful native Ticketmaster completions were proven from scheduler traffic, but the exact controlled five-task cohort was not fully successful."
+  ]
+}
