@@ -39,6 +39,14 @@ COLUMNS = (
     "markets_played",
     "latest_update",
     "data_confidence",
+    # market-liquidity columns (MARKET_LIQUIDITY_TAPE_V1, P9)
+    "marketplace_count",
+    "price_observation_count",
+    "latest_tm_standard_min",
+    "latest_tm_standard_max",
+    "tm_onsale_state",
+    "price_evidence_freshness_days",
+    "market_listing_count",
 )
 
 
@@ -136,6 +144,31 @@ def export_monitor_rows(conn, *, artist_keys: list[str] | None = None) -> list[d
     ).fetchall()
     identity_map = {r[0]: int(r[1]) for r in identity}
 
+    # market-liquidity aggregation per artist (MARKET_LIQUIDITY_TAPE_V1, P9)
+    market_liq = conn.execute(
+        f"""
+        SELECT artist_key,
+               COUNT(*)                                  AS n_observations,
+               COUNT(DISTINCT marketplace)                AS n_marketplaces,
+               MAX(retrieved_at)                          AS latest_at,
+               arg_max(standard_primary_min, retrieved_at) AS latest_min,
+               arg_max(standard_primary_max, retrieved_at) AS latest_max,
+               arg_max(COALESCE(availability_state, event_status), retrieved_at) AS latest_state,
+               COALESCE(SUM(listing_count), 0)            AS total_listings
+        FROM acquisition.market_price_observations
+        WHERE artist_key IN ({placeholders})
+        GROUP BY artist_key
+        """,
+        artist_keys,
+    ).fetchall()
+    liq_map: dict[str, dict[str, Any]] = {}
+    for artist_key, n_obs, n_mp, latest_at, mn, mx, state, listings in market_liq:
+        liq_map[artist_key] = {
+            "n_observations": int(n_obs), "n_marketplaces": int(n_mp),
+            "latest_at": latest_at, "latest_min": mn, "latest_max": mx,
+            "latest_state": state, "total_listings": int(listings),
+        }
+
     out: list[dict[str, Any]] = []
     for artist_key in artist_keys:
         data = by_artist[artist_key]
@@ -157,6 +190,13 @@ def export_monitor_rows(conn, *, artist_keys: list[str] | None = None) -> list[d
         n_verified = identity_map.get(artist_key, 0)
         confidence = round(min(1.0, 0.4 + 0.1 * n_verified), 2) if n_verified else None
         markets = markets_played_map.get(artist_key, set())
+        liq = liq_map.get(artist_key, {})
+        liq_freshness = None
+        if liq.get("latest_at"):
+            try:
+                liq_freshness = max(0, (date.today() - liq["latest_at"].date()).days)
+            except (TypeError, AttributeError):
+                liq_freshness = None
         out.append({
             "artist": artist_key,
             "factor_coverage": len({k.split("_")[0] for k in factors_map}),
@@ -170,6 +210,13 @@ def export_monitor_rows(conn, *, artist_keys: list[str] | None = None) -> list[d
             "markets_played": len(markets) if markets else None,
             "latest_update": latest_update,
             "data_confidence": confidence,
+            "marketplace_count": liq.get("n_marketplaces"),
+            "price_observation_count": liq.get("n_observations"),
+            "latest_tm_standard_min": liq.get("latest_min"),
+            "latest_tm_standard_max": liq.get("latest_max"),
+            "tm_onsale_state": liq.get("latest_state"),
+            "price_evidence_freshness_days": liq_freshness,
+            "market_listing_count": liq.get("total_listings"),
         })
     return out
 

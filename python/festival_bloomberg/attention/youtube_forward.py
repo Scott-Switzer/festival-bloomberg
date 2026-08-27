@@ -373,3 +373,29 @@ def _int_or_none(value) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def classify_youtube_api_key(api_key: str | None) -> str:
+    """Classify the YouTube API key provisioning state WITHOUT fabricating data.
+
+    Returns either ``ABSENT`` (no key configured), ``VALID`` (a channels.list
+    probe succeeded), or ``INVALID_KEY`` (key configured but rejected as
+    "API key not valid"). The forward tape uses this to log per-artist status;
+    an invalid key means the tape feed is BLOCKED, never zero-filled.
+    """
+    if not api_key:
+        return "ABSENT"
+    try:
+        from ..acquisition.transport import UrllibTransport
+
+        payload = _api_get(
+            UrllibTransport(),
+            "channels",
+            {"part": "statistics", "id": "UCN1lA7EtNOn9_gm3NAlJvuQ", "maxResults": "1"},
+            api_key,
+        )
+        if payload.get("status") is not None:
+            return "INVALID_KEY"
+        return "VALID"
+    except Exception:  # noqa: BLE001
+        return "INVALID_KEY"
