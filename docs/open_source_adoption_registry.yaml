@@ -1,0 +1,197 @@
+# =============================================================================
+# OPEN-SOURCE ADOPTION REGISTRY
+# =============================================================================
+# Milestone OPEN_ARTIST_MARKET_DATA_V1 — every evaluated external repo gets a
+# license classification + integration strategy BEFORE any code is copied.
+#
+# Status values:
+#   APPROVED_DEPENDENCY   — may be added as a runtime dependency (license OK)
+#   APPROVED_VENDOR       — vendored/adapted with attribution
+#   REFERENCE_ONLY        — study the architecture; do NOT copy code
+#   LICENSE_REVIEW        — usable data/APIs; code license still under review
+#   REJECTED_OVERLAP      — reimplements what we already do better in-house
+#   REJECTED_STALE        — outdated or unmaintained
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# CANDIDATE DEPENDENCIES (evaluated for ARTIST_SECURITY_MASTER + pilots)
+# -----------------------------------------------------------------------------
+- project: voyager
+  upstream_url: https://github.com/spotify/voyager
+  license: Apache-2.0
+  version: HEAD (evaluated 2026-08-26)
+  purpose: artist-comparable nearest-neighbor retrieval over security factors
+  overlap: none (vector/ANN search over OUR factor vectors)
+  integration_strategy: >-
+    Deterministic factor vectors from metrics.artist_factor_observations;
+    nearest-neighbor retrieval only. No predictive model, no training.
+    DO NOT add Annoy in parallel unless benchmark evidence justifies both.
+  status: APPROVED_DEPENDENCY
+  pilot: PILOT 1 — see security/pilots/voyager_pilot.py
+  verdict: >-
+    KNN over CO_BILLED peer edges + factor similarity. Clean license, zero
+    overlap, retrieval-only usage matches our non-predictive doctrine.
+
+- project: feast
+  upstream_url: https://github.com/feast-dev/feast
+  license: Apache-2.0
+  version: HEAD (evaluated 2026-08-26)
+  purpose: historical feature retrieval with PIT semantics (DuckDB offline store)
+  overlap: MEDIUM — our warehouse.repository already implements PIT-correct
+           historical joins; Feast would REPLACE that layer, not extend it
+  integration_strategy: >-
+    Isolated equivalence test only (see security/pilots/feast_pilot.py):
+    100 artists x 10 factors x historical timestamps, comparing our PIT join
+    vs Feast historical feature retrieval. Identical admissibility semantics
+    (available_at / knowledge_time constraints), no leakage, UNKNOWN preserved.
+  status: LICENSE_REVIEW
+  pilot: PILOT 2 — see security/pilots/feast_pilot.py
+  verdict: >-
+    PENDING: if Feast cannot represent available_at/knowledge_time semantics
+    exactly, it becomes REJECTED_OVERLAP. We do NOT weaken our PIT doctrine
+    to adopt Feast. DuckDB offline store is a fit; semantics gate is open.
+
+- project: perspective
+  upstream_url: https://github.com/perspective-dev/perspective
+  license: Apache-2.0
+  version: HEAD (evaluated 2026-08-26)
+  purpose: interactive artist-monitor table (sort/pivot/filter/streaming)
+  overlap: LOW — terminal is our own; Perspective is a display component
+  integration_strategy: >-
+    Disposable ARTIST MONITOR prototype fed from a real exported security
+    snapshot (see security/pilots/perspective_pilot.py): columns artist,
+    market, factor coverage, LB/YT/Wiki momentum, shows_365d, catalog recency,
+    ticket observations. Sort/filter/pivot + DuckDB/Arrow interop measured.
+  status: APPROVED_DEPENDENCY (display layer only; decision pending prototype)
+  pilot: PILOT 3 — see security/pilots/perspective_pilot.py
+  verdict: >-
+    PENDING ADOPT/REJECT after measured UX/perf on the disposable prototype.
+    Never a replacement for the canonical terminal data model.
+
+- project: memray
+  upstream_url: https://github.com/bloomberg/memray
+  license: Apache-2.0
+  version: HEAD (evaluated 2026-08-26)
+  purpose: profile the largest artist-factor materialization (peak memory,
+           top allocation sites, avoidable dataframe copies)
+  overlap: none (engineering tooling)
+  integration_strategy: >-
+    Dev-only profiler wrapper around run_security_master; never a runtime
+    dependency (see security/pilots/memray_pilot.py).
+  status: APPROVED_DEPENDENCY (dev tooling)
+  pilot: PILOT 4 — see security/pilots/memray_pilot.py
+
+# -----------------------------------------------------------------------------
+# REFERENCE-ONLY (study, DO NOT copy code)
+# -----------------------------------------------------------------------------
+- project: OpenBB
+  upstream_url: https://github.com/OpenBB-finance/OpenBB
+  license: AGPLv3
+  version: HEAD (evaluated 2026-08-26)
+  purpose: terminal/provider abstraction patterns
+  overlap: HIGH (terminal productization)
+  integration_strategy: REFERENCE ONLY — AGPLv3 cannot enter proprietary core.
+           Study provider abstraction + terminal concepts; no code copied.
+  status: REFERENCE_ONLY
+
+- project: listenbrainz-server
+  upstream_url: https://github.com/metabrainz/listenbrainz-server
+  license: GPLv2+ (code); data CC0
+  version: HEAD (evaluated 2026-08-26)
+  purpose: bulk listen dump ingestion patterns
+  overlap: none (we consume their dumps, not their code)
+  integration_strategy: >-
+    Use the official CC0 dumps / public APIs independently of code licensing.
+    No GPL code enters proprietary core.
+  status: REFERENCE_ONLY
+
+- project: troi-recommendation-playground
+  upstream_url: https://github.com/metabrainz/troi-recommendation-playground
+  license: GPLv3
+  version: HEAD (evaluated 2026-08-26)
+  purpose: recommendation pipeline patterns (artist similarity)
+  overlap: MEDIUM (artist comparables)
+  integration_strategy: REFERENCE ONLY — study the pipeline shape; build our
+           own retrieval from our factor vectors (no GPL code).
+  status: REFERENCE_ONLY
+
+# -----------------------------------------------------------------------------
+# LICENSE_REVIEW — data sources (APIs/dumps usable, code licensing separate)
+# -----------------------------------------------------------------------------
+- project: listenbrainz (data)
+  upstream_url: https://listenbrainz.org/data/
+  license: CC0 (data); Apache-2.0 client (metabrainz/listenbrainz)
+  version: full exports + daily incrementals
+  purpose: LB_LISTENS_1D/7D/28D/90D, LB_LISTENERS, momentum/acceleration/zscore
+  overlap: none
+  integration_strategy: >-
+    Acquire official exports immutably into R2 (source snapshot IDs +
+    retrieval metadata preserved); aggregate artist x day. Adapter code is ours.
+  status: APPROVED_DEPENDENCY (data source)
+
+- project: wikimedia analytics API
+  upstream_url: https://wikimedia.org/api/rest_v1/
+  license: CC BY-SA (pageview data); API free to use
+  version: live
+  purpose: WIKI_VIEWS_1D/7D/28D/90D, WIKI_MOMENTUM, WIKI_ZSCORE, attention shocks
+  overlap: none
+  integration_strategy: key-free REST collector (attention/wikimedia_historical.py)
+  status: APPROVED_DEPENDENCY (data source)
+
+- project: youtube data api
+  upstream_url: https://developers.google.com/youtube/v3
+  license: Google ToS (public API; 10,000 quota units/day default)
+  version: live
+  purpose: YT_SUBSCRIBERS, YT_CHANNEL_VIEWS, YT_VIDEO_COUNT, recent-video velocity
+  overlap: none
+  integration_strategy: daily channel snapshot tape (attention/youtube_forward.py);
+           quota-bounded; never reconstructs historical values
+  status: APPROVED_DEPENDENCY (data source, key-gated)
+
+- project: spotify web api
+  upstream_url: https://developer.spotify.com/documentation/web-api/
+  license: Spotify ToS (2026 Dev Mode: no popularity/followers; no ML training)
+  version: live
+  purpose: identity + catalog metadata ONLY (never a demand factor)
+  overlap: none
+  integration_strategy: conservative catalog adapter (attention/spotify_catalog.py)
+           recording API_MODE (DEVELOPMENT/EXTENDED_QUOTA/UNKNOWN)
+  status: APPROVED_DEPENDENCY (identity/catalog only)
+
+- project: last.fm api
+  upstream_url: https://www.last.fm/api
+  license: non-commercial default; commercial requires agreement
+  version: live
+  purpose: ARTIST x MARKET geo charts (top artists/tracks per country/metro)
+  overlap: none
+  integration_strategy: COMMERCIAL_RIGHTS_PENDING — research/provider
+           architecture only, never production-critical
+  status: LICENSE_REVIEW
+
+- project: setlist.fm api
+  upstream_url: https://api.setlist.fm
+  license: free for non-commercial; commercial requires contact
+  version: live
+  purpose: SHOWS_30D/90D/365D, touring intensity, markets/venues played
+  overlap: none (we already ingest some; MBID-addressed)
+  integration_strategy: COMMERCIAL_RIGHTS_PENDING
+  status: LICENSE_REVIEW
+
+- project: bandsintown api
+  upstream_url: https://help.artists.bandsintown.com
+  license: partnership program for org integrations
+  version: live
+  purpose: artist follower counts, events, lineups
+  overlap: none
+  integration_strategy: PARTNERSHIP_TARGET only — not a bulk-free dataset
+  status: LICENSE_REVIEW
+
+- project: common crawl url index
+  upstream_url: https://commoncrawl.org/url-index
+  license: CC BY 4.0 (index metadata); CC0 for most index fields
+  version: live parquet index
+  purpose: historical/current event URL discovery (mapping factory source 3)
+  overlap: none
+  integration_strategy: bounded domain/pattern queries; DuckDB on URL-index
+           parquet; WARC evidence retrieval for historical tape
+  status: APPROVED_DEPENDENCY (data source)

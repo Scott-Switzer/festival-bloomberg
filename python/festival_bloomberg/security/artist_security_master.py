@@ -318,32 +318,203 @@ def derive_demand_and_momentum_factors(
                 ))
                 summary["momentum_rows"] += 1
 
-        # --- Wikimedia pageviews → WIKI_VIEWS_1D/7D/28D + momentum z-score ---
-        wiki = conn.execute(
+        # --- Wikimedia DAILY pageviews → WIKI windows + zscore + shock ---
+        wiki_rows = conn.execute(
             """
-            SELECT value, period_start, period_end, retrieved_at
+            SELECT value, period_start
             FROM metrics.artist_attention_observations
             WHERE artist_key = ? AND source_system = 'wikimedia'
               AND status = 'ok' AND metric_kind = 'pageviews'
-            ORDER BY retrieved_at DESC
-            LIMIT 3
+              AND period_start IS NOT NULL AND period_end = period_start
+            ORDER BY period_start ASC
             """,
             [artist_key],
         ).fetchall()
-        if wiki:
-            # Latest daily pageview aggregate for the demand level
-            latest_value = wiki[0][0]
-            rows.append(_attention_level_observation(
-                artist_key=artist_key, artist_name=name, factor_name="WIKI_VIEWS_LATEST",
-                family="DEMAND", value=latest_value, unit="pageviews", as_of=as_of,
-                period_start=None, period_end=None, source_system="wikimedia",
-                source_url="https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article",
-                retrieved_at=retrieved_at,
-                evidence={"semantics": "ATTENTION_CHANNEL; never ticket demand"},
-            ))
-            summary["demand_rows"] += 1
+        daily: dict[date, float] = {}
+        for value, p_start in wiki_rows:
+            if value is None:
+                continue
+            try:
+                d = date.fromisoformat(str(p_start)[:10])
+            except ValueError:
+                continue
+            daily[d] = float(value)
+        if daily:
+            _append_wiki_window_factors(rows, summary, artist_key=artist_key,
+                                        artist_name=name, daily=daily, as_of=as_of,
+                                        retrieved_at=retrieved_at)
 
     summary["rows_written"] = len(rows)
+    summary["status"] = "COMPLETE"
+    return rows, summary
+
+
+def _append_wiki_window_factors(
+    rows: list[dict[str, Any]],
+    summary: dict[str, Any],
+    *,
+    artist_key: str,
+    artist_name: str,
+    daily: dict[date, float],
+    as_of: date,
+    retrieved_at: str,
+) -> None:
+    """WIKI_VIEWS_1D/7D/28D/90D + WIKI_MOMENTUM + WIKI_ZSCORE + WIKI_ATTENTION_SHOCK.
+
+    Trailing windows strictly before ``as_of``. z-score is computed against the
+    trailing 180d daily series when >= 7 days exist (else NULL). Shock = latest
+    1d vs trailing 90d mean, only when both exist. Never fabricates windows
+    from an incomplete series: a window with zero observed days stays NULL.
+    """
+    def window_sum(days: int) -> float | None:
+        lo = as_of - timedelta(days=days)
+        vals = [v for d, v in daily.items() if lo <= d < as_of]
+        return round(sum(vals), 4) if vals else None
+
+    w1 = window_sum(1)
+    w7 = window_sum(7)
+    w28 = window_sum(28)
+    w90 = window_sum(90)
+    if w1 is not None:
+        rows.append(_attention_level_observation(
+            artist_key=artist_key, artist_name=artist_name, factor_name="WIKI_VIEWS_1D",
+            family="DEMAND", value=w1, unit="pageviews", as_of=as_of,
+            period_start=(as_of - timedelta(days=1)), period_end=(as_of - timedelta(days=1)),
+            source_system="wikimedia",
+            source_url="https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article",
+            retrieved_at=retrieved_at,
+            evidence={"window": "1d", "semantics": "ATTENTION_CHANNEL; never ticket demand"},
+        ))
+        summary["demand_rows"] += 1
+    for days, fname in ((7, "WIKI_VIEWS_7D"), (28, "WIKI_VIEWS_28D"), (90, "WIKI_VIEWS_90D")):
+        w = window_sum(days)
+        if w is None:
+            continue
+        rows.append(_attention_level_observation(
+            artist_key=artist_key, artist_name=artist_name, factor_name=fname,
+            family="DEMAND" if days < 90 else "MOMENTUM", value=w, unit="pageviews",
+            as_of=as_of,
+            period_start=(as_of - timedelta(days=days)), period_end=(as_of - timedelta(days=1)),
+            source_system="wikimedia",
+            source_url="https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article",
+            retrieved_at=retrieved_at,
+            evidence={"window": f"{days}d", "semantics": "ATTENTION_CHANNEL; never ticket demand"},
+        ))
+        summary["demand_rows" if days < 90 else "momentum_rows"] += 1
+    # Momentum: 28d vs prior 28d
+    prev = _window_sum_span(daily, as_of - timedelta(days=56), as_of - timedelta(days=28))
+    if w28 is not None and prev:
+        rows.append(_attention_level_observation(
+            artist_key=artist_key, artist_name=artist_name, factor_name="WIKI_MOMENTUM",
+            family="MOMENTUM", value=round(w28 / prev - 1.0, 4), unit="relative", as_of=as_of,
+            period_start=(as_of - timedelta(days=56)), period_end=(as_of - timedelta(days=1)),
+            source_system="wikimedia",
+            source_url="https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article",
+            retrieved_at=retrieved_at,
+            evidence={"formula": "28d_sum / prior_28d_sum - 1"},
+        ))
+        summary["momentum_rows"] += 1
+    # z-score against trailing 180d
+    lo180 = as_of - timedelta(days=180)
+    series = [v for d, v in daily.items() if lo180 <= d < as_of]
+    if len(series) >= 7 and w1 is not None:
+        mean = sum(series) / len(series)
+        var = sum((v - mean) ** 2 for v in series) / (len(series) - 1)
+        std = var ** 0.5
+        if std > 0:
+            rows.append(_attention_level_observation(
+                artist_key=artist_key, artist_name=artist_name, factor_name="WIKI_ZSCORE",
+                family="MOMENTUM", value=round((w1 - mean) / std, 4), unit="zscore", as_of=as_of,
+                period_start=(as_of - timedelta(days=180)), period_end=(as_of - timedelta(days=1)),
+                source_system="wikimedia",
+                source_url="https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article",
+                retrieved_at=retrieved_at,
+                evidence={"formula": "(1d - mean180d) / std180d", "n_days": len(series)},
+            ))
+            summary["momentum_rows"] += 1
+    # Shock: latest 1d vs trailing 90d mean
+    lo90 = as_of - timedelta(days=90)
+    s90 = [v for d, v in daily.items() if lo90 <= d < as_of]
+    if len(s90) >= 7 and w1 is not None:
+        mean90 = sum(s90) / len(s90)
+        if mean90 > 0:
+            rows.append(_attention_level_observation(
+                artist_key=artist_key, artist_name=artist_name, factor_name="WIKI_ATTENTION_SHOCK",
+                family="MOMENTUM", value=round(w1 / mean90, 4), unit="relative", as_of=as_of,
+                period_start=(as_of - timedelta(days=90)), period_end=(as_of - timedelta(days=1)),
+                source_system="wikimedia",
+                source_url="https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article",
+                retrieved_at=retrieved_at,
+                evidence={"formula": "1d / mean90d", "n_days": len(s90)},
+            ))
+            summary["momentum_rows"] += 1
+
+
+def _window_sum_span(daily: dict[date, float], lo: date, hi: date) -> float | None:
+    vals = [v for d, v in daily.items() if lo <= d < hi]
+    return round(sum(vals), 4) if vals else None
+
+
+def derive_youtube_snapshot_factors(
+    conn,
+    *,
+    universe: list[dict[str, Any]],
+    as_of: date | None = None,
+    retrieved_at: str | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """LATEST YouTube channel snapshot → factor observations (DEMAND level).
+
+    Consumes YT_SUBSCRIBERS / YT_CHANNEL_VIEWS / YT_VIDEO_COUNT observations
+    (retrieval-day snapshots) and exposes the LATEST real snapshot per artist.
+    Deltas are computed ONLY from two real snapshots in a later pass — never
+    reconstructed here.
+    """
+    retrieved_at = retrieved_at or datetime.now(timezone.utc).isoformat()
+    as_of = as_of or date.today()
+    summary: dict[str, Any] = {
+        "status": "RUNNING",
+        "artists_in_universe": len(universe),
+        "rows_written": 0,
+    }
+    rows: list[dict[str, Any]] = []
+    for artist in universe:
+        artist_key = artist["artist_key"]
+        name = artist.get("artist_name") or artist_key
+        snaps = conn.execute(
+            """
+            SELECT metric_kind, value, period_end, provenance_json
+            FROM metrics.artist_attention_observations
+            WHERE artist_key = ? AND source_system = 'youtube'
+              AND status = 'ok'
+              AND metric_kind IN ('YT_SUBSCRIBERS', 'YT_CHANNEL_VIEWS', 'YT_VIDEO_COUNT')
+            ORDER BY period_end DESC
+            """,
+            [artist_key],
+        ).fetchall()
+        seen: set[str] = set()
+        for metric_kind, value, period_end, prov in snaps:
+            if metric_kind in seen:
+                continue
+            seen.add(metric_kind)
+            if value is None:
+                continue
+            factor_name = {
+                "YT_SUBSCRIBERS": "YT_SUBSCRIBERS",
+                "YT_CHANNEL_VIEWS": "YT_CHANNEL_VIEWS",
+                "YT_VIDEO_COUNT": "YT_VIDEO_COUNT",
+            }[metric_kind]
+            rows.append(_attention_level_observation(
+                artist_key=artist_key, artist_name=name, factor_name=factor_name,
+                family="DEMAND", value=float(value), unit="count", as_of=as_of,
+                period_start=None, period_end=None, source_system="youtube",
+                source_url="https://www.googleapis.com/youtube/v3/channels",
+                retrieved_at=retrieved_at,
+                evidence={
+                    "snapshot_day": str(period_end)[:10] if period_end else None,
+                    "semantics": "MUTABLE_PLATFORM_SNAPSHOT; latest real snapshot only",
+                },
+            ))
+            summary["rows_written"] += 1
     summary["status"] = "COMPLETE"
     return rows, summary
 
@@ -709,6 +880,11 @@ def run_security_master(
     factors, factor_summary = derive_demand_and_momentum_factors(
         conn, universe=universe, as_of=as_of, retrieved_at=retrieved_at,
     )
+    yt, yt_summary = derive_youtube_snapshot_factors(
+        conn, universe=universe, as_of=as_of, retrieved_at=retrieved_at,
+    )
+    factors = factors + yt
+    factor_summary = {**factor_summary, "youtube_snapshot_rows": len(yt)}
     live, live_summary = derive_live_statistics(
         conn, universe=universe, as_of=as_of, retrieved_at=retrieved_at,
     )
@@ -737,7 +913,7 @@ def run_security_master(
     for artist in universe:
         conn.execute(
             """
-            INSERT INTO artist_security.artist_security_master
+            INSERT INTO asm.artist_security_master
                 (artist_key, security_status, primary_name, factor_families,
                  last_snapshot_at, data_confidence, updated_at)
             VALUES (?, 'ACTIVE', ?, NULL, ?, NULL, ?)
