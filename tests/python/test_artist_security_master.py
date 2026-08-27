@@ -121,7 +121,7 @@ class TestSchema:
                      'artist_catalog_statistics', 'artist_security_snapshots')"""
             ).fetchall()
         }
-        assert ("artist_security", "artist_security_master") in tables
+        assert ("asm", "artist_security_master") in tables
         assert ("metrics", "artist_factor_observations") in tables
         assert ("metrics", "artist_market_factor_observations") in tables
         assert ("core", "artist_peer_edges") in tables
@@ -310,7 +310,7 @@ class TestEndToEnd:
         assert result2["factor_observations"]["written"] == 0
         assert result2["security_snapshots"]["written"] == 0
 
-        master_rows = conn.execute("SELECT COUNT(*) FROM artist_security.artist_security_master").fetchone()[0]
+        master_rows = conn.execute("SELECT COUNT(*) FROM asm.artist_security_master").fetchone()[0]
         assert master_rows == 2
 
     def test_factor_observation_key_is_deterministic(self):

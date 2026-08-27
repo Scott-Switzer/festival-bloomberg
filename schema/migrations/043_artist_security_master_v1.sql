@@ -33,16 +33,17 @@
 
 -- ---------------------------------------------------------------------------
 -- 0. Schema (idempotent; the base schema also declares it).
---    NOTE: named artist_security because DuckDB reserves `security` as a
---    built-in catalog (group/user management) — a schema named `security`
---    would clash.
+--    NOTE: named `asm` (Artist Security Master). DuckDB names the catalog
+--    after the database FILE (e.g. a file `artist_security.duckdb` creates
+--    catalog `artist_security`), so a schema named `artist_security` would
+--    be ambiguous; `security` clashes with DuckDB's built-in catalog.
 -- ---------------------------------------------------------------------------
-CREATE SCHEMA IF NOT EXISTS artist_security;
+CREATE SCHEMA IF NOT EXISTS asm;
 
 -- ---------------------------------------------------------------------------
 -- 1. Canonical security master — one row per artist security object.
 -- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS artist_security.artist_security_master (
+CREATE TABLE IF NOT EXISTS asm.artist_security_master (
     artist_key           VARCHAR PRIMARY KEY,
     security_status      VARCHAR NOT NULL DEFAULT 'ACTIVE',  -- ACTIVE | STALE | RETIRED
     primary_name         VARCHAR,

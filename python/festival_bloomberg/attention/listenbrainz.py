@@ -57,7 +57,7 @@ def observation_key(
         [
             artist_key, SOURCE_SYSTEM, metric_kind, mbid,
             stats_range or DEFAULT_RANGE, METRIC_VERSION,
-            provider_last_updated or "",
+            str(provider_last_updated) if provider_last_updated is not None else "",
             (retrieved_at or "")[:10],  # YYYY-MM-DD bucket
         ]
     )

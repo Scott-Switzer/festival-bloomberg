@@ -387,3 +387,124 @@ Next iteration should target venue/promoter calendars with title-rich pages.
 infrastructure). `COHORT_500` expansion requires better mapping discovery
 sources and a 48h+ stability gate before scaling beyond 100 pairs.
 | **Total** | **~$10–20** |
+
+---
+
+# ARTIST_SECURITY_MASTER_V1 (PR #52)
+
+## Architecture
+
+The artist as a tradable security. Migration 043 adds the `asm` schema (named
+`asm` — Artist Security Master — because DuckDB names its catalog after the
+DB file, so a schema named `artist_security` would be ambiguous, and
+`security` clashes with DuckDB's built-in catalog):
+
+| Table | Purpose |
+|---|---|
+| `asm.artist_security_master` | canonical security object per artist |
+| `metrics.artist_factor_observations` | the factor tape (one row per factor per as_of) |
+| `metrics.artist_market_factor_observations` | ARTIST × MARKET snapshot object |
+| `core.artist_peer_edges` | CO_BILLED comparable universe |
+| `core.artist_collaboration_edges` | network family |
+| `metrics.artist_live_statistics` | SHOWS_30/90/365D, festivals, days-since-last-show |
+| `metrics.artist_catalog_statistics` | RELEASES_12M/36M, catalog depth, recency |
+| `metrics.artist_security_snapshots` | terminal display object (factor_summary JSON) |
+
+Every observation carries the full PIT contract (as_of ≠ available_at ≠
+retrieved_at ≠ knowledge_time) with required rights/commercial status.
+UNKNOWN stays NULL — never a fabricated zero. No opaque artist score, no
+GO/HOLD/PASS, no demand prediction.
+
+## Universe selection (ARTIST_SECURITY_1000)
+
+Deterministic + explicitly NON-PREDICTIVE: ticket-market presence first
+(event performers), then identity-linkage + attention depth, lexicographic
+tie-break. No demand score.
+
+## Derivation
+
+- DEMAND/MOMENTUM from ListenBrainz totals + week/month ranges →
+  LB_TOTAL_LISTENS/LISTENERS, LB_LISTENS_7D/28D, LB_LISTEN_VELOCITY.
+- Wikimedia DAILY pageviews → WIKI_VIEWS_1D/7D/28D/90D, WIKI_MOMENTUM,
+  WIKI_ZSCORE (trailing 180d), WIKI_ATTENTION_SHOCK (1d vs 90d mean).
+- YouTube snapshots → YT_SUBSCRIBERS/CHANNEL_VIEWS/VIDEO_COUNT (latest real
+  snapshot only; deltas only from two real snapshots, never reconstructed).
+- LIVE / CATALOG from the MusicBrainz event/release graph; CO_BILLED peers.
+
+## Verdict
+
+`ARTIST_SECURITY_MASTER_V1 = DEPLOYED` (schema + computation + 17 tests;
+merged in PR #52).
+
+---
+
+# OPEN_ARTIST_MARKET_DATA_V1 (PR #53)
+
+## Goal
+
+STOP adding abstract factor schemas — POPULATE the Artist Security Master.
+Target: ARTIST_SECURITY_1000 with deep, historical, evidence-backed factor
+histories. No fabricated volume; coverage is reported honestly.
+
+## Collectors (all key-free except where noted)
+
+| Source | Collector | Output | Key |
+|---|---|---|---|
+| ListenBrainz bulk | `attention/listenbrainz_bulk.py` | LB totals (1 POST / 1000 MBIDs) + week/month/all_time ranges | none |
+| Wikimedia historical | `attention/wikimedia_historical.py` | WIKI daily rows (one per artist per day, full history or bounded) | none |
+| YouTube forward tape | `attention/youtube_forward.py` | YT_SUBSCRIBERS/CHANNEL_VIEWS/VIDEO_COUNT + recent-video stats daily | YOUTUBE_API_KEY |
+| Spotify catalog | `attention/spotify_catalog.py` | SPOTIFY_CATALOG_IDENTITY (identity+catalog only, API mode recorded) | SPOTIFY_CLIENT_ID/SECRET |
+
+Every collector fails closed: missing/invalid credentials → NOT_CONFIGURED
+(never a fabricated zero); rate limits stop the batch cleanly. YouTube never
+reconstructs historical values from current state.
+
+## Populate orchestrator
+
+`security/populate.py` — universe → collectors → `run_security_master` →
+honest coverage report (`compute_coverage`). Re-running is idempotent (stable
+observation keys + INSERT-OR-IGNORE).
+
+## Live population (2026-08-26, bounded: 200-artist universe, 120d wiki)
+
+| Metric | Value |
+|---|---|
+| Universe | 200 artists (100% MusicBrainz-backed) |
+| ListenBrainz usable | 200/200 (100%) |
+| Wikimedia usable | 189/200 (94.5%) |
+| WIKI daily rows | 22,606 (2026-04-27 → 2026-08-25) |
+| Artist factor rows | 2,044 (DEMAND 1,073 / MOMENTUM 971) |
+| YouTube | NOT_CONFIGURED-ish (key in .env invalid → collector errored honestly; 38 rows persisted as missing) |
+| Spotify | 200 rows persisted as missing (lake has only 118 name-keyed spotify IDs; none join the mbid-keyed universe) |
+| Governor | n/a (no paid calls) |
+
+WIKI factor sample: WIKI_VIEWS_1D=6159, 7D=47232, 28D=156549, 90D=521415,
+WIKI_MOMENTUM=-0.03, WIKI_ZSCORE=0.30, WIKI_ATTENTION_SHOCK=1.06.
+LB factor sample: LB_TOTAL_LISTENS=26.6M, LB_TOTAL_LISTENERS=246K,
+LB_LISTENS_7D=7140, LB_LISTENS_28D=23068, LB_LISTEN_VELOCITY=0.31.
+
+## Open-source adoption registry
+
+`docs/open_source_adoption_registry.yaml` — every evaluated project with
+license classification + integration strategy BEFORE any code is copied.
+
+| Project | License | Status | Pilot |
+|---|---|---|---|
+| spotify/voyager | Apache-2.0 | APPROVED_DEPENDENCY | PILOT 1: KNN over factor vectors; overlap-lift 0.0186 vs random (needs more peer density → INSUFFICIENT_DATA verdict, honest) |
+| feast-dev/feast | Apache-2.0 | LICENSE_REVIEW | PILOT 2: PIT equivalence — 9/9 comparisons match, semantics COMPATIBLE → ADOPT gate passed |
+| perspective-dev/perspective | Apache-2.0 | APPROVED_DEPENDENCY (display) | PILOT 3: snapshot export carries required columns, sort/filter/pivot measurable → ADOPT gate passed |
+| bloomberg/memray | Apache-2.0 | APPROVED_DEPENDENCY (dev) | PILOT 4: dev-only profiler, fails closed when absent |
+| OpenBB | AGPLv3 | REFERENCE_ONLY | study provider abstraction; no code copied |
+| listenbrainz-server / troi | GPL | REFERENCE_ONLY | use CC0 dumps/APIs independently |
+| last.fm / setlist.fm / bandsintown | various | LICENSE_REVIEW | COMMERCIAL_RIGHTS_PENDING / PARTNERSHIP_TARGET |
+
+## Verdict
+
+`OPEN_ARTIST_MARKET_DATA_V1 = LIVE` — real daily WIKI + LB factor histories
+now populate the security master; the 1M-factor target scales naturally by
+lengthening the wiki lookback (2015→today ≈ 4K days/artist × 1,000 artists ≈
+4M daily rows, all key-free). YouTube/Spotify coverage is honest: requires a
+valid YOUTUBE_API_KEY and mbid-keyed spotify IDs in the identity layer.
+
+Next: EVENT_TAPE_SCALE / ARTIST_SECURITY_1000 full backfill pass + live
+YouTube forward tape once a valid key is provisioned.
