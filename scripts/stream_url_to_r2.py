@@ -156,7 +156,7 @@ def download_part(
     for attempt in range(MAX_RETRIES + 10):  # extra room for 429 retries
         try:
             hdrs = {**HEADERS, **headers}
-            resp = requests.get(url, headers=hdrs, timeout=180, stream=True)
+            resp = requests.get(url, headers=hdrs, timeout=180)
             if resp.status_code == 206:
                 data = resp.content
                 expected_len = end_byte - start_byte + 1
@@ -175,9 +175,15 @@ def download_part(
                 print(f"  ⚠ Part {part_number}: rate limited (429), waiting {retry_after}s...")
                 time.sleep(retry_after)
                 continue
+            elif resp.status_code >= 500:
+                # Server error — retry with backoff
+                retry_after = int(resp.headers.get("Retry-After", str(INITIAL_BACKOFF_S * (2 ** attempt))))
+                print(f"  ⚠ Part {part_number}: server error {resp.status_code}, retrying in {retry_after}s...")
+                time.sleep(retry_after)
+                continue
             else:
                 resp.raise_for_status()
-        except (requests.ConnectionError, requests.Timeout, ValueError) as e:
+        except (requests.ConnectionError, requests.Timeout, requests.HTTPError, ValueError) as e:
             backoff = INITIAL_BACKOFF_S * (2 ** attempt)
             print(f"  ⚠ Part {part_number} attempt {attempt+1} failed: {e}")
             if attempt < MAX_RETRIES - 1:
@@ -248,8 +254,9 @@ def list_multipart_parts(s3, bucket: str, key: str, upload_id: str) -> list[dict
             "Bucket": bucket,
             "Key": key,
             "UploadId": upload_id,
-            "PartNumberMarker": continuation,
         }
+        if continuation is not None:
+            kwargs["PartNumberMarker"] = continuation
         resp = s3.list_parts(**kwargs)
         for p in resp.get("Parts", []):
             parts.append(
@@ -417,6 +424,7 @@ def transfer(
             # List actual R2 parts to reconcile
             remote_parts = list_multipart_parts(s3, bucket, key, upload_id)
             completed_parts = remote_parts
+            state = checkpoint  # reuse checkpoint dict as mutable state for saves
             print(f"  R2 has {len(remote_parts)} parts already uploaded")
 
     if not checkpoint or not upload_id:
