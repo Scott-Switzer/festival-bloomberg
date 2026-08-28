@@ -12,7 +12,7 @@ from datetime import date, datetime, timezone
 from typing import Any
 
 MARKET_MAP = {
-    # state -> market key (primary US live markets first, then major cities)
+    # state/province -> market key (primary US live markets)
     "IL": "chicago-il", "NY": "new-york-ny", "CA": "los-angeles-ca",
     "NV": "las-vegas-nv", "TN": "nashville-tn", "TX": "dallas-tx",
     "GA": "atlanta-ga", "FL": "miami-fl", "WA": "seattle-wa",
@@ -22,6 +22,64 @@ MARKET_MAP = {
     "OH": "cleveland-oh", "OR": "portland-or", "UT": "salt-lake-city-ut",
     "NC": "charlotte-nc", "LA": "new-orleans-la", "VA": "richmond-va",
 }
+
+# City name (lowercased) -> market key.  MB place.area carries city names,
+# not state/province names, so this is the primary mapping path.
+CITY_MARKET_MAP: dict[str, str] = {
+    # US major markets
+    "new york": "new-york-ny", "los angeles": "los-angeles-ca",
+    "chicago": "chicago-il", "nashville": "nashville-tn",
+    "las vegas": "las-vegas-nv", "austin": "austin-tx",
+    "miami": "miami-fl", "atlanta": "atlanta-ga",
+    "seattle": "seattle-wa", "san francisco": "san-francisco-ca",
+    "denver": "denver-co", "phoenix": "phoenix-az",
+    "philadelphia": "philadelphia-pa", "boston": "boston-ma",
+    "washington": "washington-dc", "detroit": "detroit-mi",
+    "minneapolis": "minneapolis-mn", "portland": "portland-or",
+    "dallas": "dallas-tx", "houston": "houston-tx",
+    "charlotte": "charlotte-nc", "new orleans": "new-orleans-la",
+    "salt lake city": "salt-lake-city-ut", "hollywood": "los-angeles-ca",
+    "brooklyn": "new-york-ny", "baltimore": "baltimore-md",
+    "saint louis": "st-louis-mo", "st. louis": "st-louis-mo",
+    "columbus": "columbus-oh", "cleveland": "cleveland-oh",
+    "indianapolis": "indianapolis-in", "kansas city": "kansas-city-mo",
+    "memphis": "memphis-tn", "sacramento": "sacramento-ca",
+    "san diego": "san-diego-ca", "tampa": "tampa-fl",
+    "orlando": "orlando-fl", "pittsburgh": "pittsburgh-pa",
+    # International major markets
+    "london": "london-uk", "manchester": "manchester-uk",
+    "birmingham": "birmingham-uk", "glasgow": "glasgow-uk",
+    "edinburgh": "edinburgh-uk", "bristol": "bristol-uk",
+    "paris": "paris-fr", "berlin": "berlin-de",
+    "münchen": "munich-de", "munich": "munich-de",
+    "hamburg": "hamburg-de", "köln": "cologne-de",
+    "amsterdam": "amsterdam-nl", "rotterdam": "rotterdam-nl",
+    "toronto": "toronto-on", "vancouver": "vancouver-bc",
+    "montreal": "montreal-qc", "ottawa": "ottawa-on",
+    "calgary": "calgary-ab", "edmonton": "edmonton-ab",
+    "sydney": "sydney-au", "melbourne": "melbourne-au",
+    "tokyo": "tokyo-jp", "osaka": "osaka-jp",
+    "stockholm": "stockholm-se", "oslo": "oslo-no",
+    "copenhagen": "copenhagen-dk", "helsinki": "helsinki-fi",
+    "dublin": "dublin-ie", "madrid": "madrid-es",
+    "barcelona": "barcelona-es", "rome": "rome-it",
+    "milan": "milan-it", "zürich": "zurich-ch",
+    "brussels": "brussels-be", "prague": "prague-cz",
+    "warsaw": "warsaw-pl", "budapest": "budapest-hu",
+    "mexico city": "mexico-city-mx", "são paulo": "sao-paulo-br",
+    "buenos aires": "buenos-aires-ar", "bogotá": "bogota-co",
+    "seoul": "seoul-kr", "bangkok": "bangkok-th",
+    "singapore": "singapore-sg", "hong kong": "hong-kong-hk",
+    "mumbai": "mumbai-in", "delhi": "delhi-in",
+}
+
+
+def market_from_city(city: str | None) -> str | None:
+    """Resolve a city name (as found in raw.musicbrainz_place.area) to a market key."""
+    if not city:
+        return None
+    c = city.strip().lower()
+    return CITY_MARKET_MAP.get(c)
 
 # Full state/province name -> 2-letter code (MB place areas carry names).
 STATE_NAME_TO_CODE = {
@@ -64,46 +122,94 @@ def expand_artist_market(
 ) -> dict[str, Any]:
     """Build artist×market rows from MB event performers joined to places.
 
-    Uses raw.musicbrainz_place state to derive markets; MB event performers
-    link artists to events; event→place relations give venue/state.
+    Uses raw.musicbrainz_place area to derive markets; MB event performers
+    link artists to events; event→place relations (from entity_relationships
+    OR from the event payload) give venue/city.
     """
     as_of = as_of or date.today()
     now = datetime.now(timezone.utc).isoformat()
     summary = {"status": "RUNNING", "candidate_rows": 0, "rows_written": 0, "artists_covered": 0}
 
-    # Map MB place -> state via the event->place relationship.
-    # events.provider_event_snapshots already has city/state for TM estate;
-    # for MB events we use event_place relationships where present.
+    # Strategy 1: Use core.entity_relationships EVENT_AT_PLACE links (fast).
     rows = conn.execute(
         """
-        WITH place_state AS (
-            SELECT p.mbid AS place_mbid, p.area AS area_name
-            FROM raw.musicbrainz_place p
-        ),
-        ep AS (
-            SELECT ep.artist_mbid, e.mbid AS event_mbid, e.begin_date
-            FROM core.event_performers ep
-            JOIN raw.musicbrainz_event e ON e.mbid = ep.event_mbid
-            WHERE ep.artist_mbid IS NOT NULL AND e.begin_date IS NOT NULL
-        )
-        SELECT ep.artist_mbid, ep.begin_date, ps.area_name
-        FROM ep
-        LEFT JOIN core.entity_relationships r
-          ON r.subject_entity_type='EVENT' AND r.subject_key='mbid::'||ep.event_mbid
-         AND r.predicate='EVENT_AT_PLACE' AND r.object_entity_type='PLACE'
-        LEFT JOIN place_state ps ON ps.place_mbid = replace(r.object_key, 'mbid::', '')
-        WHERE ps.area_name IS NOT NULL
+        SELECT ep.artist_mbid, e.begin_date, p.area
+        FROM core.event_performers ep
+        JOIN raw.musicbrainz_event e ON e.mbid = ep.event_mbid
+        JOIN core.entity_relationships r
+          ON r.subject_entity_type = 'EVENT'
+          AND r.subject_key = 'mbid::' || ep.event_mbid
+          AND r.predicate = 'EVENT_AT_PLACE'
+          AND r.object_entity_type = 'PLACE'
+        JOIN raw.musicbrainz_place p ON p.mbid = replace(r.object_key, 'mbid::', '')
+        WHERE ep.artist_mbid IS NOT NULL
+          AND e.begin_date IS NOT NULL
+          AND p.area IS NOT NULL
         """,
     ).fetchall()
 
-    # Aggregate per (artist, state-area) counts + date range.
-    agg: dict[tuple[str, str], list] = {}
+    # Strategy 2: Parse event payload for place relations (covers events without
+    # entity_relationships links — the majority).
+    payload_rows = conn.execute(
+        """
+        SELECT ep.artist_mbid, e.begin_date, e.payload
+        FROM core.event_performers ep
+        JOIN raw.musicbrainz_event e ON e.mbid = ep.event_mbid
+        WHERE ep.artist_mbid IS NOT NULL
+          AND e.begin_date IS NOT NULL
+          AND e.payload IS NOT NULL
+          AND 'mbid::' || ep.event_mbid NOT IN (
+              SELECT subject_key FROM core.entity_relationships
+              WHERE predicate = 'EVENT_AT_PLACE'
+          )
+        """,
+    ).fetchall()
+
+    seen = set()
     for artist_mbid, begin_date, area in rows:
-        market = market_from_state(area[:2]) if area and len(area) >= 2 else None
+        market = market_from_city(area) or market_from_state(area) if area else None
         if not market:
             continue
-        key = (artist_mbid, market)
-        agg.setdefault(key, []).append(begin_date)
+        key = (artist_mbid, market, str(begin_date))
+        if key not in seen:
+            seen.add(key)
+            agg_key = (artist_mbid, market)
+            # Will be handled below
+
+    # Aggregate from Strategy 1
+    agg: dict[tuple[str, str], list] = {}
+    for artist_mbid, begin_date, area in rows:
+        market = market_from_city(area) or market_from_state(area) if area else None
+        if not market:
+            continue
+        agg.setdefault((artist_mbid, market), []).append(begin_date)
+
+    # Strategy 2: parse payloads for place relations
+    import json as _json
+    for artist_mbid, begin_date, payload_raw in payload_rows:
+        try:
+            payload = _json.loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
+        except Exception:
+            continue
+        for rel in payload.get("relations") or []:
+            if not isinstance(rel, dict):
+                continue
+            if rel.get("target-type") != "place" or rel.get("type") != "held at":
+                continue
+            place = rel.get("place") or {}
+            place_mbid = place.get("id") if isinstance(place, dict) else None
+            if not place_mbid:
+                continue
+            # Look up area from raw.musicbrainz_place
+            area_row = conn.execute(
+                "SELECT area FROM raw.musicbrainz_place WHERE mbid = ?",
+                [place_mbid],
+            ).fetchone()
+            if not area_row or not area_row[0]:
+                continue
+            market = market_from_city(area_row[0]) or market_from_state(area_row[0])
+            if market:
+                agg.setdefault((artist_mbid, market), []).append(begin_date)
 
     # Join canonical artist keys.
     mbid_to_key = dict(conn.execute(
@@ -141,7 +247,7 @@ def expand_artist_market(
             """,
             [row_key(artist_key=artist_key, market_key=market, as_of=as_of),
              artist_key, market, as_of, len(dates), days_since, now,
-             json.dumps({"first_show": first, "last_show": last, "source": "musicbrainz_event_places"})],
+             _json.dumps({"first_show": first, "last_show": last, "source": "musicbrainz_event_places"})],
         )
         summary["rows_written"] += 1
 

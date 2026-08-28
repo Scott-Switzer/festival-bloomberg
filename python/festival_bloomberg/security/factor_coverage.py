@@ -67,9 +67,10 @@ def compute_factor_coverage(conn, *, as_of: date | None = None) -> dict[str, Any
         "GROUP BY entity_key"
     ).fetchall())
     event_counts = dict(conn.execute(
-        "SELECT ep.artist_mbid, COUNT(*) FROM core.event_performers ep "
-        "JOIN security.artist_security_universe_25000 u ON u.mbid = ep.artist_mbid "
-        "GROUP BY ep.artist_mbid"
+        "SELECT a.artist_key, COUNT(*) FROM core.event_performers ep "
+        "JOIN core.artists a ON a.musicbrainz_id = ep.artist_mbid "
+        "JOIN security.artist_security_universe_25000 u ON u.artist_key = a.artist_key "
+        "GROUP BY a.artist_key"
     ).fetchall())
 
     def dist(getter):
