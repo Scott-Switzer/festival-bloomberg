@@ -77,7 +77,7 @@ def record_manifest(conn, *, entity_type: str, size_bytes: int, checksum: str, r
         ON CONFLICT (source, source_version, source_url) DO UPDATE SET
             compressed_bytes = excluded.compressed_bytes,
             sha256 = excluded.sha256,
-            raw_r2_key = excluded.raw_r2_key
+            raw_r2_key = excluded.raw_r2_key -- gitleaks:allow
         """,
         [key, source, SNAPSHOT, url, size_bytes, checksum, JUSTIFICATIONS[entity_type], r2_key],
     )
