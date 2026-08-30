@@ -43,6 +43,8 @@ data/workspace/
 reports/
 *.report
 generated/
+# Wrangler-generated runtime declarations (regenerate from wrangler.jsonc).
+cloud-runtime/worker-configuration.d.ts
 
 # Freebuff desktop tool state (not project data)
 .freebuff/

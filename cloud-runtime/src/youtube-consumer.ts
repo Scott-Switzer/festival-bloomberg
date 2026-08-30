@@ -1,4 +1,5 @@
 import { collectYouTubeBatch, YouTubeChannelIdentity } from "./youtube-cloud";
+import { writeQueueBatchMetric } from "./queue-metrics";
 
 interface YouTubeEnv {
   RAW_BUCKET: R2Bucket;
@@ -24,9 +25,11 @@ export async function handleYouTubeBatch(batch: MessageBatch<any>, env: YouTubeE
     const result = await collectYouTubeBatch(env, identities, { maxChannels: 50 });
     console.log(JSON.stringify({ event: "YOUTUBE_BATCH_COMPLETED", ...result }));
     for (const msg of messages) msg.ack();
+    await writeQueueBatchMetric(env, { queue: batch.queue, received: messages.length, acked: messages.length, retried: 0, explicit_dlq: 0 }).catch((metricError) => console.error(JSON.stringify({ event: "QUEUE_METRIC_WRITE_ERROR", queue: batch.queue, error: metricError instanceof Error ? metricError.message : String(metricError) })));
   } catch (error) {
     console.error(JSON.stringify({ event: "YOUTUBE_BATCH_ERROR", error: error instanceof Error ? error.message : String(error) }));
     for (const msg of messages) msg.retry();
+    await writeQueueBatchMetric(env, { queue: batch.queue, received: messages.length, acked: 0, retried: messages.length, explicit_dlq: 0 }).catch((metricError) => console.error(JSON.stringify({ event: "QUEUE_METRIC_WRITE_ERROR", queue: batch.queue, error: metricError instanceof Error ? metricError.message : String(metricError) })));
   }
 }
 

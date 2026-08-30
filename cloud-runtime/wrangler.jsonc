@@ -45,7 +45,7 @@
         "max_batch_size": 5,
         "max_batch_timeout": 10,
         "max_retries": 3,
-        "max_concurrency": 5,
+        "max_concurrency": 1,
         "dead_letter_queue": "fi-dlq",
         "retry_delay": 30
       },
@@ -73,6 +73,13 @@
         "max_retries": 5,
         "max_concurrency": 5,
         "dead_letter_queue": "fi-dlq"
+      },
+      {
+        "queue": "fi-dlq",
+        "max_batch_size": 10,
+        "max_batch_timeout": 10,
+        "max_retries": 100,
+        "max_concurrency": 1
       }
     ]
   },
@@ -128,6 +135,9 @@
     // Monid balance ≈ $10.90. Reserve for failures/mapping/manual research.
     "DAILY_BUDGET_USD": "0.25",
     "MONTHLY_BUDGET_USD": "7.50",
+    // Official YouTube Data API daily quota budget used by the deterministic
+    // planner schedule (hot hourly + rotating cold daily allocation).
+    "YOUTUBE_DAILY_QUOTA": "9000",
     // Absolute project hard stop
     "ABSOLUTE_HARD_STOP_USD": "10.00",
     "ENABLE_DEEP_RAIL": "false"
