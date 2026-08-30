@@ -79,7 +79,7 @@ class TestMigrations:
 
         connection = duckdb.connect(str(tmp_path / "fresh.duckdb"))
         try:
-            assert apply_pending_migrations(connection) == 45
+            assert apply_pending_migrations(connection) == 47
             tables = {
                 row[0]
                 for row in connection.execute(
@@ -100,7 +100,7 @@ class TestMigrations:
             connection.close()
 
     def test_upgrade_from_current_main_db_survives(self, tmp_path):
-        """A database shaped like current main upgrades to v7 without losing rows."""
+        """A database shaped like the historical main schema upgrades without losing rows."""
         import duckdb
 
         db_path = tmp_path / "main.duckdb"
@@ -152,7 +152,7 @@ class TestMigrations:
         connection = duckdb.connect(str(db_path))
         try:
             applied = apply_pending_migrations(connection)
-            assert applied == 40  # migrations 6..45
+            assert applied == 42  # migrations 6..47
             # historical rows survive
             metrics = connection.execute(
                 "SELECT value FROM metrics.artist_metrics WHERE artist_key = 'a'"
@@ -185,14 +185,14 @@ class TestMigrations:
                     "SELECT version FROM schema_migrations ORDER BY version"
                 ).fetchall()
             ]
-            assert versions == list(range(1, 46))
+            assert versions == list(range(1, 48))
         finally:
             connection.close()
 
     def test_migration_order_is_deterministic(self):
         versions = [version for version, _name, _path in load_migration_files()]
         assert versions == sorted(versions)
-        assert versions == list(range(1, 46))
+        assert versions == list(range(1, 48))
 
 
 # ---------------------------------------------------------------------------

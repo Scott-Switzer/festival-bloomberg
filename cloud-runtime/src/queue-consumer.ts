@@ -23,6 +23,7 @@ import { AcquisitionTask } from "./task-contract";
 import { acquireUrl, AcquisitionResult, RouterDeps } from "./acquisition";
 import { fetchPage } from "./monid-client";
 import { accountRailCost, RailCostAccount } from "./cost-model";
+import { writeQueueBatchMetric } from "./queue-metrics";
 
 interface Env {
   FAST_QUEUE: Queue;
@@ -140,6 +141,9 @@ export async function handleFastBatch(
   batch: MessageBatch<AcquisitionTask>,
   env: Env
 ): Promise<void> {
+  let acked = 0;
+  let retried = 0;
+  let explicitDlq = 0;
   for (const msg of batch.messages) {
     const task = msg.body;
     const start = Date.now();
@@ -160,6 +164,7 @@ export async function handleFastBatch(
         if (reserveResult.reason === "DUPLICATE_TASK") {
           // Already processed — suppress silently
           msg.ack();
+          acked++;
           continue;
         }
         console.log(JSON.stringify({
@@ -169,6 +174,7 @@ export async function handleFastBatch(
         }));
         // Not retryable — budget/provider blocked
         msg.ack();
+        acked++;
         continue;
       }
 
@@ -178,6 +184,7 @@ export async function handleFastBatch(
         await governor.releaseTask({ task_key: task.task_key });
         console.log(JSON.stringify({ event: "NO_TARGET_URL", task_key: task.task_key }));
         msg.ack();
+        acked++;
         continue;
       }
 
@@ -229,12 +236,14 @@ export async function handleFastBatch(
         });
         if (msg.attempts >= 2) {
           await env.DLQ_QUEUE.send(task);
+          explicitDlq++;
           await governor.recordFailure({
             acquisition_provider: task.acquisition_provider || "monid",
             reason: result.error_category || "FAILED",
           });
         }
         msg.retry();
+        retried++;
         continue;
       }
 
@@ -384,6 +393,7 @@ export async function handleFastBatch(
       }));
 
       msg.ack();
+      acked++;
     } catch (e: unknown) {
       const errMsg = e instanceof Error ? e.message : String(e);
       console.error(JSON.stringify({
@@ -415,10 +425,19 @@ export async function handleFastBatch(
 
       if (msg.attempts >= 2) {
         await env.DLQ_QUEUE.send(task);
+        explicitDlq++;
       }
       msg.retry();
+      retried++;
     }
   }
+  await writeQueueBatchMetric(env, {
+    queue: batch.queue,
+    received: batch.messages.length,
+    acked,
+    retried,
+    explicit_dlq: explicitDlq,
+  }).catch((error) => console.error(JSON.stringify({ event: "QUEUE_METRIC_WRITE_ERROR", queue: batch.queue, error: error instanceof Error ? error.message : String(error) })));
 }
 
 /**
@@ -429,6 +448,7 @@ export async function handleDeepBatch(
   batch: MessageBatch<AcquisitionTask>,
   _env: Env
 ): Promise<void> {
+  let acked = 0;
   for (const msg of batch.messages) {
     const task = msg.body;
     console.log(JSON.stringify({
@@ -437,7 +457,15 @@ export async function handleDeepBatch(
       reason: "NOT_CONFIGURED",
     }));
     msg.ack();
+    acked++;
   }
+  await writeQueueBatchMetric(_env, {
+    queue: batch.queue,
+    received: batch.messages.length,
+    acked,
+    retried: 0,
+    explicit_dlq: 0,
+  }).catch((error) => console.error(JSON.stringify({ event: "QUEUE_METRIC_WRITE_ERROR", queue: batch.queue, error: error instanceof Error ? error.message : String(error) })));
 }
 
 /**
@@ -448,6 +476,9 @@ export async function handleProcessingBatch(
   batch: MessageBatch<any>,
   env: Env
 ): Promise<void> {
+  let acked = 0;
+  let retried = 0;
+  let explicitDlq = 0;
   for (const msg of batch.messages) {
     const payload = msg.body;
     if (payload.type === "MATERIALIZE_STAGING") {
@@ -461,7 +492,7 @@ export async function handleProcessingBatch(
             observations.push(JSON.parse(await raw.text()));
           }
         }
-        if (observations.length === 0) { msg.ack(); continue; }
+        if (observations.length === 0) { msg.ack(); acked++; continue; }
 
         const materializedKey = `ticket_market_snapshots/date=${payload.date}/hour=${payload.hour}/part-${payload.run_id || "batch"}.json`;
         await env.LAKE_BUCKET.put(materializedKey, JSON.stringify({
@@ -484,12 +515,21 @@ export async function handleProcessingBatch(
           await env.LAKE_BUCKET.delete(obj.key);
         }
         msg.ack();
+        acked++;
       } catch {
-        if (msg.attempts >= 4) msg.ack();
-        else msg.retry();
+        if (msg.attempts >= 4) { msg.ack(); acked++; }
+        else { msg.retry(); retried++; }
       }
     } else {
       msg.ack();
+      acked++;
     }
   }
+  await writeQueueBatchMetric(env, {
+    queue: batch.queue,
+    received: batch.messages.length,
+    acked,
+    retried,
+    explicit_dlq: explicitDlq,
+  }).catch((error) => console.error(JSON.stringify({ event: "QUEUE_METRIC_WRITE_ERROR", queue: batch.queue, error: error instanceof Error ? error.message : String(error) })));
 }

@@ -34,7 +34,9 @@ from festival_bloomberg.security.artist_security_master import (
 
 @pytest.fixture()
 def conn(tmp_path):
-    c = duckdb.connect(str(tmp_path / "security.duckdb"))
+    # Avoid naming the DuckDB catalog exactly like the `security` schema;
+    # newer DuckDB binders correctly require qualification when they collide.
+    c = duckdb.connect(str(tmp_path / "artist_security_test.duckdb"))
     apply_pending_migrations(c)
     yield c
     c.close()

@@ -30,6 +30,8 @@ import { runMappingFactory } from "./mapping-factory-v2";
 import { planForwardFamilies, loadV2Universe } from "./forward-planner";
 import { handleYouTubeBatch } from "./youtube-consumer";
 import { handleStructuredBatch } from "./structured-consumer";
+import { handleDlqBatch } from "./dlq-consumer";
+import { readPlatformQueueMetrics, readQueueMetrics, writeQueueEnqueueMetric } from "./queue-metrics";
 
 export { AcquisitionGovernor, AcquisitionContainer, AcquisitionWorkflow };
 
@@ -120,6 +122,40 @@ export default {
       const recentHour = recent.filter((x) => nowMs - new Date(x.started_at).getTime() <= 3600 * 1000);
       const youtubeAudit = (xs: any[]) => xs.reduce((n, x) => n + (x.queues?.youtube || 0), 0);
       const youtubeTicks = objects[1].objects.filter((x) => x.key.includes("staging/youtube/")).length;
+      const queueMetrics = await readQueueMetrics(env, new Date(), 15);
+      const platformQueueMetrics = await readPlatformQueueMetrics({
+        "fi-youtube": env.YOUTUBE_QUEUE,
+        "fi-structured-api": env.STRUCTURED_API_QUEUE,
+        "fi-browser": env.BROWSER_QUEUE,
+        "fi-monid": env.MONID_QUEUE,
+        "fi-processing": env.PROCESSING_QUEUE,
+        "fi-dlq": env.DLQ_QUEUE,
+      });
+      const zeroTelemetry = { enqueued: 0, received: 0, acked: 0, retried: 0, explicit_dlq: 0, telemetry_batches: 0 };
+      const queueNames = new Set([...Object.keys(platformQueueMetrics), ...Object.keys(queueMetrics.totals)]);
+      const queueHealth = Object.fromEntries([...queueNames].map((queue) => {
+        const metric = queueMetrics.totals[queue] || zeroTelemetry;
+        const platform = platformQueueMetrics[queue];
+        return [queue, {
+          // Internal lifecycle telemetry is a bounded-window reconciliation;
+          // platform_* fields are the authoritative point-in-time snapshot.
+          backlog_estimate: Math.max(0, metric.enqueued - metric.acked - metric.explicit_dlq),
+          enqueued: metric.enqueued,
+          received: metric.received,
+          acked: metric.acked,
+          retried: metric.retried,
+          explicit_dlq: metric.explicit_dlq,
+          telemetry_batches: metric.telemetry_batches,
+          platform_backlog_count: platform?.backlog_count ?? null,
+          platform_backlog_bytes: platform?.backlog_bytes ?? null,
+          platform_oldest_message_timestamp: platform?.oldest_message_timestamp ?? null,
+          platform_metrics_available: platform?.available ?? false,
+          platform_metrics_error: platform?.error,
+        }];
+      }));
+      const platformBacklogValues = Object.entries(platformQueueMetrics).filter(([queue, metric]) => queue !== "fi-dlq" && metric.available && metric.backlog_count !== null).map(([, metric]) => metric.backlog_count as number);
+      const platformBacklogComplete = Object.entries(platformQueueMetrics).filter(([queue]) => queue !== "fi-dlq").every(([, metric]) => metric.available && metric.backlog_count !== null);
+      const platformDlq = platformQueueMetrics["fi-dlq"];
       return Response.json({
         deployed_version: env.SOFTWARE_VERSION,
         last_cron_at: audits.length ? audits[audits.length - 1].completed_at || audits[audits.length - 1].started_at : null,
@@ -128,7 +164,19 @@ export default {
         watch_universe_size: universe.events.length,
         youtube: { candidate: universe.youtube_channels?.length || 0, due: youtubeAudit(recent), selected: youtubeAudit(recent), checks_1h: youtubeTicks, checks_24h: youtubeTicks, changes_1h: youtubeTicks, changes_24h: youtubeTicks, heartbeats_1h: 0, quota_used_today: youtubeAudit(recent), quota_projected_today: youtubeAudit(recent), quota_blocked: 0 },
         tickets: { candidate: universe.events.length, due: null, selected: null, checks_24h: null, useful_24h: null, changes_24h: null, structured_queue_checks_24h: null },
-        queues: { backlog: null, dlq: null },
+        queues: {
+          // Aggregate fields are authoritative when every operational queue
+          // returned a realtime metric; use by_queue for per-queue bytes and
+          // oldest-message timestamps.
+          backlog: platformBacklogComplete ? platformBacklogValues.reduce((sum, count) => sum + count, 0) : null,
+          dlq: platformDlq?.available ? platformDlq.backlog_count : null,
+          window_utc: { start: queueMetrics.window_start, end: queueMetrics.window_end },
+          telemetry_complete: queueMetrics.complete,
+          telemetry_minutes_covered: queueMetrics.minutes_covered,
+          platform_metrics_complete: Object.values(platformQueueMetrics).every((metric) => metric.available),
+          source: "Cloudflare Queue.metrics() realtime depth plus R2 batch lifecycle telemetry",
+          by_queue: queueHealth,
+        },
         r2: { youtube_raw_objects: objects[0].objects.length, youtube_lake_objects: objects[1].objects.length, scheduler_audits: audits.length },
         governor: gov,
       });
@@ -644,6 +692,9 @@ export default {
       case "fi-acquisition-processing":
         await handleProcessingBatch(batch as MessageBatch<any>, env);
         break;
+      case "fi-dlq":
+        await handleDlqBatch(batch as MessageBatch<unknown>, env);
+        break;
       default:
         console.error(`Unknown queue: ${queueName}`);
         for (const msg of batch.messages) {
@@ -690,6 +741,11 @@ export default {
       };
       await env.BACKUP_BUCKET.put(`control/scheduler/${runId}.json`, JSON.stringify(audit), { httpMetadata: { contentType: "application/json" } });
       await env.BACKUP_BUCKET.put(`control/runs/${runId}.json`, JSON.stringify(audit), { httpMetadata: { contentType: "application/json" } });
+      await Promise.all([
+        writeQueueEnqueueMetric(env, "fi-youtube", youtubeQueued, runId),
+        writeQueueEnqueueMetric(env, "fi-structured-api", structuredQueued, runId),
+        writeQueueEnqueueMetric(env, "fi-monid", webQueued, runId),
+      ]).catch((metricError) => console.error(JSON.stringify({ event: "QUEUE_METRIC_WRITE_ERROR", run_id: runId, error: metricError instanceof Error ? metricError.message : String(metricError) })));
       console.log(JSON.stringify({ event: "CRON_RUN_COMPLETED", ...audit }));
     } catch (e: unknown) {
       const error = e instanceof Error ? e.message : String(e);
