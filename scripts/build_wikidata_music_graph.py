@@ -22,15 +22,13 @@ Whitelisted properties (identity + enrichment only, no generic crawl):
     P214  VIAF ID                          entity typing of kept subjects)
     P856  official website
 
-Outputs → festival-intelligence-lake/silver/:
-    silver/wikidata/artist_external_ids.parquet   (QID ↔ MBID/Spotify/YouTube/...)
-    silver/wikidata/venue_external_ids.parquet    (place-typed subjects)
-    silver/wikidata/entity_coordinates.parquet    (QID, lat, lon)
-    silver/wikidata/entity_locations.parquet      (QID → country/admin-unit QID)
-    silver/wikidata/entity_websites.parquet       (QID, official website)
-    silver/wikidata/entity_inception.parquet      (QID, founding date)
+Outputs → immutable generation under
+``silver/wikidata/generations/<run_id>/``. ``silver/wikidata/CURRENT.json``
+points to the complete published generation. Products include music entities,
+types, external IDs, coordinates, locations, websites, inception dates,
+genres, and typed relationships.
 
-All rows carry source_system='wikidata', knowledge_time, ingested_at.
+All rows carry source_system='wikidata', knowledge_time, and ingested_at.
 No inference beyond what the dump states.
 
 Usage:
@@ -47,6 +45,7 @@ import io
 import json
 import os
 import re
+import resource
 import shutil
 import subprocess
 import threading
@@ -67,12 +66,15 @@ RAW_BUCKET = "festival-intelligence-raw"
 LAKE_BUCKET = "festival-intelligence-lake"
 RAW_KEY = "bulk/wikidata/dump=latest-truthy/latest-truthy.nt.bz2"
 DUMP_VERSION = "latest-truthy-20260828"
+RAW_BYTES = 43_329_477_419
+RAW_ETAG = "7240fc164e418c27eac9e3ade4ad71b2-646"
 SOURCE_SYSTEM = "wikidata"
 
 # Local spill dir for incremental parquet (bounds RAM on the full ~40 GB scan).
 SPILL_DIR = "/tmp/wd_spill"
 SPILL_EVERY = int(os.environ.get("WD_SPILL_EVERY", "1000000"))
 MAX_ATTEMPTS = 300           # connection-break retries before giving up
+MAX_FINAL_BUFFER_BYTES = int(os.environ.get("WD_MAX_FINAL_BUFFER_BYTES", str(512 * 1024 * 1024)))
 
 # subject predicate object .
 NT_LINE = re.compile(r"^\s*<([^>]+)>\s+<([^>]+)>\s+(.+?)\s*\.\s*$")
@@ -99,6 +101,18 @@ KEEP_PROPS = {
     "P571": "inception",
     "P31": "instance_of",
     "P495": "country_of_origin",
+    # Typed graph enrichment.  These are deliberately normalized into their
+    # own products; they are not external identifiers.
+    "P136": "genre",
+    "P527": "has_part",
+    "P361": "part_of",
+    "P175": "performer",
+    "P463": "member_of",
+}
+
+EXTERNAL_ID_PROPS = {
+    "P434", "P435", "P1650", "P1902", "P2397", "P1953", "P1566",
+    "P213", "P214",
 }
 
 # Properties that establish that a subject belongs in this bounded music
@@ -129,21 +143,22 @@ ARTIST_CLASSES = {
 }
 # Venue/place-like classes
 VENUE_CLASSES = {
-    "Q1370242",  # arena? — 'venue'? actual 'venue' is Q173432
     "Q173432",   # venue? (building)
     "Q811430",   # concert hall
     "Q588140",   # nightclub
-    "Q2748254",  # opera house? actual Q153562
     "Q153562",   # opera house
-    "Q41176",    # building
-    "Q847017",   # science museum? no — 'stadium' Q483110
     "Q483110",   # stadium
     "Q641226",   # arena
-    "Q187456",   # pavilion? — no; theatre Q24354
     "Q24354",    # theatre
-    "Q1320047",  # amphitheatre? actual Q878304
     "Q878304",   # amphitheatre
-    "Q1215720",  # cultural center? — keep broad
+}
+# Generic places remain in the entity/type product, but are never promoted to
+# LIVE_MUSIC_VENUE.  A building is not evidence that live music occurs there.
+PLACE_CLASSES = {
+    "Q41176",    # building
+    "Q847017",   # broad place class retained only as PLACE
+    "Q187456",   # broad place class retained only as PLACE
+    "Q1215720",  # cultural center / broad place class
 }
 FESTIVAL_CLASSES = {
     "Q132241",   # music festival
@@ -151,21 +166,63 @@ FESTIVAL_CLASSES = {
     "Q40056",
 }
 
-KEEP_CLASSES = ARTIST_CLASSES | VENUE_CLASSES | FESTIVAL_CLASSES
+KEEP_CLASSES = ARTIST_CLASSES | VENUE_CLASSES | PLACE_CLASSES | FESTIVAL_CLASSES
 # bytes variants so the hot consumer loop never decodes the raw NT lines
 _ARTIST_CLASSES_B = {c.encode() for c in ARTIST_CLASSES}
 _VENUE_CLASSES_B = {c.encode() for c in VENUE_CLASSES}
+_PLACE_CLASSES_B = {c.encode() for c in PLACE_CLASSES}
 _FESTIVAL_CLASSES_B = {c.encode() for c in FESTIVAL_CLASSES}
-KEEP_CLASSES_B = _ARTIST_CLASSES_B | _VENUE_CLASSES_B | _FESTIVAL_CLASSES_B
+KEEP_CLASSES_B = _ARTIST_CLASSES_B | _VENUE_CLASSES_B | _PLACE_CLASSES_B | _FESTIVAL_CLASSES_B
 KEEP_PROPS_B = {p.encode() for p in KEEP_PROPS}
 NT_LINE_B = re.compile(rb"^\s*<([^>]+)>\s+<([^>]+)>\s+(.+?)\s*\.\s*$")
+
+_UUID_ID = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+_SPOTIFY_ID = re.compile(r"^[A-Za-z0-9]{22}$")
+_YOUTUBE_CHANNEL_ID = re.compile(r"^UC[A-Za-z0-9_-]{22}$")
+
+
+def normalize_external_id(prop: str, raw: bytes | str) -> str | None:
+    """Normalize only identifiers that satisfy the provider's stable shape."""
+    value = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else raw
+    value = value.strip()
+    if prop in {"P434", "P435", "P1650"}:
+        value = value.lower()
+        return value if _UUID_ID.fullmatch(value) else None
+    if prop == "P1902":
+        return value if _SPOTIFY_ID.fullmatch(value) else None
+    if prop == "P2397":
+        return value if _YOUTUBE_CHANNEL_ID.fullmatch(value) else None
+    if prop in {"P1953", "P1566", "P214"}:
+        return value if value.isdigit() else None
+    if prop == "P213":
+        compact = value.replace(" ", "").replace("-", "").upper()
+        return compact if re.fullmatch(r"\d{15}[\dX]", compact) else None
+    return None
 
 _COMMON_FIELDS = [
     pa.field("source_system", pa.string()),
     pa.field("knowledge_time", pa.string()),
+    pa.field("ingested_at", pa.string()),
 ]
 # Explicit schemas keep spill shards + final tables identical across batches.
 OUTPUT_SCHEMAS = {
+    "music_entities": pa.schema([
+        pa.field("qid", pa.string()),
+        pa.field("classification", pa.string()),
+    ] + _COMMON_FIELDS),
+    "entity_types": pa.schema([
+        pa.field("qid", pa.string()),
+        pa.field("type_qid", pa.string()),
+    ] + _COMMON_FIELDS),
+    "entity_ids": pa.schema([
+        pa.field("qid", pa.string()),
+        pa.field("classification", pa.string()),
+        pa.field("external_id_property", pa.string()),
+        pa.field("external_id_name", pa.string()),
+        pa.field("external_id_value", pa.string()),
+    ] + _COMMON_FIELDS),
     "artist_ids": pa.schema([
         pa.field("qid", pa.string()),
         pa.field("classification", pa.string()),
@@ -174,6 +231,13 @@ OUTPUT_SCHEMAS = {
         pa.field("external_id_value", pa.string()),
     ] + _COMMON_FIELDS),
     "venue_ids": pa.schema([
+        pa.field("qid", pa.string()),
+        pa.field("classification", pa.string()),
+        pa.field("external_id_property", pa.string()),
+        pa.field("external_id_name", pa.string()),
+        pa.field("external_id_value", pa.string()),
+    ] + _COMMON_FIELDS),
+    "place_ids": pa.schema([
         pa.field("qid", pa.string()),
         pa.field("classification", pa.string()),
         pa.field("external_id_property", pa.string()),
@@ -197,6 +261,15 @@ OUTPUT_SCHEMAS = {
     "inceptions": pa.schema([
         pa.field("qid", pa.string()),
         pa.field("inception", pa.string()),
+    ] + _COMMON_FIELDS),
+    "genres": pa.schema([
+        pa.field("qid", pa.string()),
+        pa.field("genre_qid", pa.string()),
+    ] + _COMMON_FIELDS),
+    "relationships": pa.schema([
+        pa.field("subject_qid", pa.string()),
+        pa.field("relationship_property", pa.string()),
+        pa.field("object_qid", pa.string()),
     ] + _COMMON_FIELDS),
 }
 
@@ -244,59 +317,19 @@ def is_uri(raw) -> bool:
 
 def should_keep_subject(props: dict[str, list[bytes]], p31: set[bytes]) -> bool:
     """Return whether a subject is anchored to the bounded music graph."""
-    if any(prop in IDENTITY_ANCHOR_PROPS for prop in props):
+    if any(
+        normalize_external_id(prop, value) is not None
+        for prop, values in props.items()
+        if prop in IDENTITY_ANCHOR_PROPS
+        for value in values
+    ):
         return True
-    return any(prop in GENERIC_ID_PROPS for prop in props) and bool(p31 & KEEP_CLASSES_B)
-
-
-PROGRESS_FILE = Path("/tmp/r2_checkpoints/wd_progress.json")
-
-
-def find_bz2_block_start(s3, bucket: str, key: str, consumed: int):
-    """Locate the last valid bz2 block boundary at or before `consumed`.
-
-    A fresh BZ2Decompressor cannot start mid-block, so a restarted process must
-    re-align to a stream/block start. bz2 block boundaries are the stream
-    header 'BZh'+digit or the block-end magic 0x177245385090 + 4-byte CRC.
-    Candidates are validated by actually decompressing (newest first). If the
-    object has no usable boundary near the checkpoint (e.g. a single giant
-    block), this falls back to (0, b"") — a full re-read.
-    """
-    window_bytes = 64 * 1024 * 1024
-    start = max(0, consumed - window_bytes)
-    resp = s3.get_object(Bucket=bucket, Key=key,
-                         Range=f"bytes={start}-{consumed - 1}")
-    win = resp["Body"].read()
-    cands: set[int] = set()
-    i = 0
-    while True:
-        j = win.find(b"BZh", i)
-        if j < 0:
-            break
-        if j + 3 < len(win) and 49 <= win[j + 3] <= 57:  # b'1'..b'9'
-            cands.add(start + j)
-        i = j + 1
-    i = 0
-    while True:
-        j = win.find(b"\x17\x72\x45\x38\x50\x90", i)  # block-end magic
-        if j < 0:
-            break
-        cands.add(start + j + 10)  # magic(6) + CRC(4) → next block start
-        i = j + 1
-    for off in sorted(cands, reverse=True):
-        dec = bz2.BZ2Decompressor()
-        out = bytearray()
-        data = win[off - start:]
-        try:
-            while data:
-                out += dec.decompress(data[: 1 << 20])
-                data = data[1 << 20:]
-        except EOFError:
-            return off, bytes(out)   # valid boundary, tail truncated by window
-        except OSError:
-            continue                 # false positive — try the next older one
-        return off, bytes(out)
-    return 0, b""
+    return bool(p31 & KEEP_CLASSES_B) and any(
+        normalize_external_id(prop, value) is not None
+        for prop, values in props.items()
+        if prop in GENERIC_ID_PROPS
+        for value in values
+    )
 
 
 def stream_nt_lines(bucket: str, key: str, queue: Queue, chunk: int = 1 << 20,
@@ -306,28 +339,23 @@ def stream_nt_lines(bucket: str, key: str, queue: Queue, chunk: int = 1 << 20,
     Connection breaks are retried with an open-ended Range GET resumed from the
     last *compressed* byte successfully fed to the decompressor, so the bz2
     stream stays byte-contiguous (same decompressor instance across retries).
-    A progress checkpoint is written every ~30s; on process restart the
-    checkpoint is used to block-align and resume instead of re-reading.
+    The stream is intentionally restart-from-zero.  A compressed-byte
+    checkpoint cannot safely resume the subject reducer without a durable
+    reducer checkpoint, and replaying a block would duplicate rows.
     """
     s3 = r2_client()
     dec = bz2.BZ2Decompressor()
     tail = b""
     consumed = 0
     attempts = 0
-    last_progress = time.time()
     # Lines are queued in batches: per-line queue.put on a threading.Queue is
     # the pipeline bottleneck (~5µs each → ~1 MB/s); batching makes it ~100x
     # cheaper and the pipeline becomes regex/decompress-bound instead.
     batch: list[bytes] = []
     if start_consumed:
-        off, initial_out = find_bz2_block_start(s3, bucket, key, start_consumed)
-        consumed = off
-        if initial_out:
-            lines = initial_out.split(b"\n")
-            tail = lines.pop()
-            batch.extend(lines)
-        print(f"[resume] block-aligned at byte {off:,} "
-              f"(checkpoint was {start_consumed:,})", flush=True)
+        raise RuntimeError(
+            "compressed checkpoint resume is disabled; restart the reducer from byte zero"
+        )
     try:
         while True:
             try:
@@ -367,16 +395,6 @@ def stream_nt_lines(bucket: str, key: str, queue: Queue, chunk: int = 1 << 20,
                     if len(batch) >= 4096:
                         queue.put(batch)
                         batch = []
-                if time.time() - last_progress > 30:
-                    try:
-                        PROGRESS_FILE.parent.mkdir(parents=True, exist_ok=True)
-                        PROGRESS_FILE.write_text(json.dumps(
-                            {"compressed_consumed": consumed,
-                             "attempts": attempts,
-                             "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}))
-                    except Exception:  # noqa: BLE001
-                        pass
-                    last_progress = time.time()
             if not broken:
                 break  # clean EOF of the whole object
     except Exception as e:  # noqa: BLE001
@@ -461,53 +479,49 @@ def parallel_decompressed_batches(batch_size: int = 4096):
 
 
 class SubgraphBuilder:
-    def __init__(self) -> None:
+    def __init__(self, run_id: str | None = None) -> None:
         self.stats: Counter = Counter()
+        self.run_id = run_id or os.environ.get("WD_RUN_ID") or (
+            time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + f"-{os.getpid()}"
+        )
+        self.music_entities: list[dict] = []
+        self.entity_types: list[dict] = []
+        self.entity_ids: list[dict] = []
         self.artist_ids: list[dict] = []
         self.venue_ids: list[dict] = []
+        self.place_ids: list[dict] = []
         self.coordinates: list[dict] = []
         self.locations: list[dict] = []
         self.websites: list[dict] = []
         self.inceptions: list[dict] = []
+        self.genres: list[dict] = []
+        self.relationships: list[dict] = []
         self.now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         # Incremental spill state — flushes accumulated rows to parquet so the
         # full ~40 GB scan stays far below the 8 GB RAM ceiling. Spill shards
         # are uploaded to R2 as they are produced (the run's row volume ~5 GB
         # exceeds local free disk), so local disk stays near-zero.
         self._s3 = r2_client()
-        self.spill_dir = Path(SPILL_DIR)
-        shutil.rmtree(self.spill_dir, ignore_errors=True)  # stale local shards
+        self.spill_dir = Path(SPILL_DIR) / self.run_id
         self.spill_dir.mkdir(parents=True, exist_ok=True)
-        # stale R2 shards from a dead run (spills are ephemeral by design).
-        # Paginate: a list_objects_v2 page holds at most 1000 keys, and a run
-        # that died before finalizing could have left more spills than that.
-        # Spill keys are deterministic, so wiping all of them at init is what
-        # guarantees restart-idempotency (re-emission overwrites, never appends).
-        try:
-            while True:
-                page = self._s3.list_objects_v2(
-                    Bucket=LAKE_BUCKET,
-                    Prefix="silver/wikidata/_spill/",
-                    MaxKeys=1000)
-                keys = [o["Key"] for o in page.get("Contents", [])]
-                if not keys:
-                    break
-                for k in keys:
-                    self._s3.delete_object(Bucket=LAKE_BUCKET, Key=k)
-                if not page.get("IsTruncated"):
-                    break
-        except Exception:  # noqa: BLE001 — best-effort cleanup
-            pass
+        # Never delete another run's shards at startup.  A run-scoped prefix
+        # prevents concurrent launchd/manual invocations from corrupting one
+        # another; only this run's verified shards are removed after publish.
+        self.spill_prefix = f"silver/wikidata/_spill/{self.run_id}/"
         self._pending = 0
         self.spill_paths: dict[str, list[str]] = {
-            n: [] for n in ("artist_ids", "venue_ids", "coordinates",
-                            "locations", "websites", "inceptions")}
+            n: [] for n in ("music_entities", "entity_types", "entity_ids",
+                            "artist_ids", "venue_ids", "place_ids", "coordinates",
+                            "locations", "websites", "inceptions", "genres",
+                            "relationships")}
 
     def classify(self, p31_values: set) -> str:
         if p31_values & _ARTIST_CLASSES_B:
             return "ARTIST"
         if p31_values & _VENUE_CLASSES_B:
-            return "VENUE"
+            return "LIVE_MUSIC_VENUE"
+        if p31_values & _PLACE_CLASSES_B:
+            return "PLACE"
         if p31_values & _FESTIVAL_CLASSES_B:
             return "FESTIVAL"
         return "OTHER"
@@ -516,9 +530,22 @@ class SubgraphBuilder:
              p31: set) -> None:
         kind = self.classify(p31)
         self.stats[f"kept_{kind}"] += 1
-        subject_qid = subject_qid_b.decode("utf-8", "replace")
+        subject_qid = qid(subject_qid_b).decode("utf-8", "replace")
+        self.music_entities.append({
+            "qid": subject_qid, "classification": kind,
+            "source_system": SOURCE_SYSTEM, "knowledge_time": self.now,
+            "ingested_at": self.now,
+        })
+        for type_qid_b in sorted(p31):
+            type_qid = qid(type_qid_b).decode("utf-8", "replace")
+            self.entity_types.append({
+                "qid": subject_qid, "type_qid": type_qid,
+                "source_system": SOURCE_SYSTEM, "knowledge_time": self.now,
+                "ingested_at": self.now,
+            })
         row = {"qid": subject_qid, "classification": kind,
-               "source_system": SOURCE_SYSTEM, "knowledge_time": self.now}
+               "source_system": SOURCE_SYSTEM, "knowledge_time": self.now,
+               "ingested_at": self.now}
         for prop, name in KEEP_PROPS.items():
             if prop not in props:
                 continue
@@ -534,35 +561,66 @@ class SubgraphBuilder:
                         "qid": subject_qid, "longitude": float(m.group(1)),
                         "latitude": float(m.group(2)),
                         "source_system": SOURCE_SYSTEM, "knowledge_time": self.now,
+                        "ingested_at": self.now,
                     })
                 elif prop in ("P17", "P27", "P131", "P495"):
-                    if is_uri(val):
+                    # object_value() has already removed angle brackets, so
+                    # test the retained Wikidata namespace rather than calling
+                    # is_uri() on the lexical value.
+                    if val_b.startswith(ENTITY_NS_B):
                         self.locations.append({
                             "qid": subject_qid, "location_property": name,
-                            "location_qid": qid(val),
+                            "location_qid": qid(val_b).decode("utf-8", "replace"),
                             "source_system": SOURCE_SYSTEM, "knowledge_time": self.now,
+                            "ingested_at": self.now,
                         })
                 elif prop == "P856":
                     self.websites.append({
                         "qid": subject_qid, "url": val,
                         "source_system": SOURCE_SYSTEM, "knowledge_time": self.now,
+                        "ingested_at": self.now,
                     })
                 elif prop == "P571":
                     self.inceptions.append({
                         "qid": subject_qid, "inception": val,
                         "source_system": SOURCE_SYSTEM, "knowledge_time": self.now,
+                        "ingested_at": self.now,
                     })
-                else:
+                elif prop == "P136":
+                    if val_b.startswith(ENTITY_NS_B):
+                        self.genres.append({
+                            "qid": subject_qid,
+                            "genre_qid": qid(val_b).decode("utf-8", "replace"),
+                            "source_system": SOURCE_SYSTEM, "knowledge_time": self.now,
+                            "ingested_at": self.now,
+                        })
+                elif prop in ("P527", "P361", "P175", "P463"):
+                    if val_b.startswith(ENTITY_NS_B):
+                        self.relationships.append({
+                            "subject_qid": subject_qid,
+                            "relationship_property": name,
+                            "object_qid": qid(val_b).decode("utf-8", "replace"),
+                            "source_system": SOURCE_SYSTEM, "knowledge_time": self.now,
+                            "ingested_at": self.now,
+                        })
+                elif prop in EXTERNAL_ID_PROPS:
+                    normalized_id = normalize_external_id(prop, val)
+                    if normalized_id is None:
+                        self.stats[f"invalid_external_id_{prop}"] += 1
+                        continue
                     r["external_id_property"] = prop
                     r["external_id_name"] = name
-                    r["external_id_value"] = val
-                    if kind == "VENUE":
+                    r["external_id_value"] = normalized_id
+                    self.entity_ids.append(r)
+                    if kind == "LIVE_MUSIC_VENUE":
                         self.venue_ids.append(r)
-                    else:
+                    elif kind == "PLACE":
+                        self.place_ids.append(r)
+                    elif kind == "ARTIST":
                         self.artist_ids.append(r)
-        if kind == "VENUE":
+        if kind == "LIVE_MUSIC_VENUE":
             self.stats["venue_rows"] += 1
-        else:
+        elif kind == "ARTIST":
             self.stats["artist_rows"] += 1
         self._pending += 1
         if self._pending >= SPILL_EVERY:
@@ -570,8 +628,7 @@ class SubgraphBuilder:
 
     def _spill(self) -> None:
         """Flush accumulated rows to parquet, upload the shard to R2, clear."""
-        for name in ("artist_ids", "venue_ids", "coordinates",
-                     "locations", "websites", "inceptions"):
+        for name in self.spill_paths:
             rows = getattr(self, name)
             if not rows:
                 continue
@@ -580,13 +637,40 @@ class SubgraphBuilder:
             pq.write_table(
                 pa.Table.from_pylist(rows, schema=OUTPUT_SCHEMAS[name]),
                 local, compression="zstd")
-            r2_key = f"silver/wikidata/_spill/{name}.{seq:04d}.parquet"
+            r2_key = f"{self.spill_prefix}{name}.{seq:04d}.parquet"
+            digest = hashlib.sha256()
             with open(local, "rb") as f:
-                self._s3.put_object(Bucket=LAKE_BUCKET, Key=r2_key, Body=f.read())
+                for chunk in iter(lambda: f.read(8 * 1024 * 1024), b""):
+                    digest.update(chunk)
+                f.seek(0)
+                self._s3.upload_fileobj(
+                    f,
+                    LAKE_BUCKET,
+                    r2_key,
+                    ExtraArgs={"Metadata": {"sha256": digest.hexdigest()}},
+                )
+            head = self._s3.head_object(Bucket=LAKE_BUCKET, Key=r2_key)
+            if int(head.get("ContentLength", -1)) != local.stat().st_size:
+                raise RuntimeError(f"spill upload size verification failed for {r2_key}")
+            if head.get("Metadata", {}).get("sha256") != digest.hexdigest():
+                raise RuntimeError(f"spill upload hash verification failed for {r2_key}")
             local.unlink(missing_ok=True)
             self.spill_paths[name].append(r2_key)
             getattr(self, name).clear()
         self._pending = 0
+
+
+def verified_source_identity(s3) -> tuple[int, str]:
+    """Return the exact approved raw object identity or fail closed."""
+    head = s3.head_object(Bucket=RAW_BUCKET, Key=RAW_KEY)
+    source_bytes = int(head.get("ContentLength", -1))
+    source_etag = str(head.get("ETag", "")).strip('"')
+    if source_bytes != RAW_BYTES or source_etag != RAW_ETAG:
+        raise RuntimeError(
+            "Wikidata raw source identity changed; refusing to mix dump "
+            f"versions (bytes={source_bytes}, etag={source_etag!r})"
+        )
+    return source_bytes, source_etag
 
 
 def main() -> None:
@@ -600,21 +684,16 @@ def main() -> None:
         help="stream via rclone + pbzip2 instead of Python's single-core bz2",
     )
     args = ap.parse_args()
-
-    # Restart-resume: if a previous run checkpointed compressed progress, pick
-    # up from there (block-aligned) instead of re-reading ~21 GB from byte 0.
-    start_consumed = 0
-    try:
-        ck = json.loads(PROGRESS_FILE.read_text())
-        start_consumed = int(ck.get("compressed_consumed", 0))
-    except Exception:  # noqa: BLE001 — no checkpoint yet
-        pass
-    if start_consumed and not args.parallel_decompress:
-        print(f"[resume] checkpoint found at compressed byte {start_consumed:,}",
-              flush=True)
+    if args.limit and not args.dry_run:
+        ap.error("--limit is incomplete by definition and requires --dry-run")
 
     t0 = time.time()
     builder = SubgraphBuilder()
+    source_bytes, source_etag = verified_source_identity(builder._s3)
+    source_meta = {
+        "source_bytes_expected": source_bytes,
+        "source_etag": source_etag,
+    }
     if args.parallel_decompress:
         print("[stream] rclone + pbzip2 parallel decompression", flush=True)
         source_batches = parallel_decompressed_batches()
@@ -622,7 +701,7 @@ def main() -> None:
         queue: Queue = Queue(maxsize=5000)
         producer = threading.Thread(
             target=stream_nt_lines, args=(RAW_BUCKET, RAW_KEY, queue),
-            kwargs={"start_consumed": start_consumed}, daemon=True)
+            kwargs={"start_consumed": 0}, daemon=True)
         producer.start()
         source_batches = read_lines(queue)
 
@@ -647,7 +726,10 @@ def main() -> None:
         for raw_line in item:
             n_lines += 1
             if n_lines % 2_000_000 == 0:
-                print(f"  ... {n_lines:,} lines, kept={builder.stats['kept_ARTIST'] + builder.stats['kept_VENUE'] + builder.stats['kept_FESTIVAL'] + builder.stats['kept_OTHER']:,}",
+                kept = sum(builder.stats[k] for k in (
+                    "kept_ARTIST", "kept_LIVE_MUSIC_VENUE", "kept_PLACE",
+                    "kept_FESTIVAL", "kept_OTHER"))
+                print(f"  ... {n_lines:,} lines, kept={kept:,}",
                       flush=True)
             if args.limit and builder.stats["subjects_seen"] >= args.limit:
                 stop = True
@@ -657,6 +739,7 @@ def main() -> None:
             m = KEEP_NT_LINE_B.match(raw_line)
             if not m:
                 continue
+            builder.stats["triples_matched"] += 1
             s_uri_b, prop_b, obj_raw_b = m.group(1), m.group(2), m.group(3)
             prop = prop_b.decode()
             if s_uri_b != subject:
@@ -668,6 +751,14 @@ def main() -> None:
         if stop:
             break
     flush()
+
+    # rclone's S3 transport does not expose an If-Match option for `cat`.
+    # Re-verify the object after EOF so a replacement during the stream can
+    # never advance publication. The approved object is immutable by policy;
+    # this is the fail-closed enforcement boundary.
+    end_source_bytes, end_source_etag = verified_source_identity(builder._s3)
+    if (end_source_bytes, end_source_etag) != (source_bytes, source_etag):
+        raise RuntimeError("Wikidata raw source identity changed during the scan")
 
     runtime = time.time() - t0
     print(f"lines: {n_lines:,}")
@@ -683,24 +774,41 @@ def main() -> None:
     if args.dry_run:
         return
 
-    from festival_bloomberg.lake.catalog import register_dataset
+    from festival_bloomberg.lake.catalog import register_dataset_batch
 
     s3 = r2_client()
     dataset_ids = {
+        "music_entities": "silver.wikidata_music_entities",
+        "entity_types": "silver.wikidata_entity_types",
+        "entity_ids": "silver.wikidata_entity_external_ids",
         "artist_ids": "silver.wikidata_artist_external_ids",
         "venue_ids": "silver.wikidata_venue_external_ids",
+        "place_ids": "silver.wikidata_place_external_ids",
         "coordinates": "silver.wikidata_entity_coordinates",
         "locations": "silver.wikidata_entity_locations",
         "websites": "silver.wikidata_entity_websites",
         "inceptions": "silver.wikidata_entity_inception",
+        "genres": "silver.wikidata_genres",
+        "relationships": "silver.wikidata_relationships",
     }
+    file_names = {
+        "music_entities": "music_entities.parquet",
+        "entity_types": "entity_types.parquet",
+        "entity_ids": "entity_external_ids.parquet",
+        "artist_ids": "artist_external_ids.parquet",
+        "venue_ids": "venue_external_ids.parquet",
+        "place_ids": "place_external_ids.parquet",
+        "coordinates": "entity_coordinates.parquet",
+        "locations": "entity_locations.parquet",
+        "websites": "entity_websites.parquet",
+        "inceptions": "entity_inception.parquet",
+        "genres": "genres.parquet",
+        "relationships": "relationships.parquet",
+    }
+    generation_prefix = f"silver/wikidata/generations/{builder.run_id}/"
     r2_keys = {
-        "artist_ids": "silver/wikidata/artist_external_ids.parquet",
-        "venue_ids": "silver/wikidata/venue_external_ids.parquet",
-        "coordinates": "silver/wikidata/entity_coordinates.parquet",
-        "locations": "silver/wikidata/entity_locations.parquet",
-        "websites": "silver/wikidata/entity_websites.parquet",
-        "inceptions": "silver/wikidata/entity_inception.parquet",
+        name: f"{generation_prefix}{file_name}"
+        for name, file_name in file_names.items()
     }
 
     def chunk_rows(rows, n=500_000):
@@ -724,11 +832,8 @@ def main() -> None:
         rows = getattr(builder, name)
         spills = builder.spill_paths[name]
         r2_key = r2_keys[name]
-        if not rows and not spills:
-            print(f"  SKIP {r2_key} (0 rows)")
-            return 0
         key_fields = [f.name for f in OUTPUT_SCHEMAS[name]
-                      if f.name not in ("source_system", "knowledge_time")]
+                      if f.name not in ("source_system", "knowledge_time", "ingested_at")]
         buf = io.BytesIO()
         writer = None
         n_total = 0
@@ -739,70 +844,202 @@ def main() -> None:
                 writer = pq.ParquetWriter(buf, t.schema, compression="zstd")
             writer.write_table(t)
             n_total += t.num_rows
+            if buf.tell() > MAX_FINAL_BUFFER_BYTES:
+                raise RuntimeError(
+                    f"final {name} parquet exceeds bounded buffer "
+                    f"({MAX_FINAL_BUFFER_BYTES} bytes); refusing to publish"
+                )
 
         for sp in spills:
             resp = s3.get_object(Bucket=LAKE_BUCKET, Key=sp)
-            t = pq.read_table(io.BytesIO(resp["Body"].read()))
-            emit_table(pa.Table.from_pylist(
-                dedupe_rows(t.to_pylist(), key_fields), schema=OUTPUT_SCHEMAS[name]))
-            s3.delete_object(Bucket=LAKE_BUCKET, Key=sp)   # free R2 as we consume
+            parquet_file = pq.ParquetFile(io.BytesIO(resp["Body"].read()))
+            for batch in parquet_file.iter_batches(batch_size=100_000):
+                emit_table(pa.Table.from_pylist(
+                    dedupe_rows(batch.to_pylist(), key_fields),
+                    schema=OUTPUT_SCHEMAS[name],
+                ))
         for chunk in chunk_rows(rows):
             emit_table(pa.Table.from_pylist(
                 dedupe_rows(chunk, key_fields), schema=OUTPUT_SCHEMAS[name]))
         if writer is None:
-            return 0
+            emit_table(pa.Table.from_pylist([], schema=OUTPUT_SCHEMAS[name]))
         writer.close()
+        if buf.tell() > MAX_FINAL_BUFFER_BYTES:
+            raise RuntimeError(
+                f"final {name} parquet exceeds bounded buffer after close "
+                f"({MAX_FINAL_BUFFER_BYTES} bytes); refusing to publish"
+            )
         data = buf.getvalue()
-        s3.put_object(Bucket=LAKE_BUCKET, Key=r2_key, Body=data)
+        # Validate the complete artifact before replacing the canonical key.
+        # Spills remain intact until both this check and catalog registration
+        # succeed, so a failed publish is recoverable without a rescan.
+        verified = pq.read_table(io.BytesIO(data))
+        if verified.num_rows != n_total or verified.schema != OUTPUT_SCHEMAS[name]:
+            raise RuntimeError(f"final {name} parquet verification failed")
+        artifact_sha256 = hashlib.sha256(data).hexdigest()
+        s3.put_object(
+            Bucket=LAKE_BUCKET,
+            Key=r2_key,
+            Body=data,
+            Metadata={"sha256": artifact_sha256},
+        )
+        head = s3.head_object(Bucket=LAKE_BUCKET, Key=r2_key)
+        if int(head.get("ContentLength", -1)) != len(data):
+            raise RuntimeError(f"published {r2_key} size verification failed")
+        if head.get("Metadata", {}).get("sha256") != artifact_sha256:
+            raise RuntimeError(f"published {r2_key} checksum verification failed")
         print(f"  → r2://{LAKE_BUCKET}/{r2_key}  {n_total:,} rows, "
               f"{len(data) / 1048576:.1f} MB", flush=True)
-        register_dataset(
-            dataset_id=dataset_ids[name],
-            dataset_version=DUMP_VERSION,
-            layer="SILVER",
-            source="wikidata",
-            source_version=DUMP_VERSION,
-            r2_bucket=LAKE_BUCKET,
-            r2_prefix=r2_key,
-            fmt="parquet",
-            schema_version="silver-v1",
-            row_count=n_total,
-            byte_count=len(data),
-            verification_status="BUILD_COMPLETE",
-            license="CC0-1.0",
-            rights_status="DERIVED_FROM_PUBLIC_DOMAIN",
-            commercial_use_status="ALLOWED",
-            upstream_dataset_ids=["raw.wikidata_truthy_rdf"],
+        return {
+            "name": name,
+            "dataset_id": dataset_ids[name],
+            "r2_key": r2_key,
+            "row_count": n_total,
+            "byte_count": len(data),
+            "sha256": artifact_sha256,
+            "schema": str(OUTPUT_SCHEMAS[name]),
+        }
+
+    artifacts = [write_output(name) for name in builder.spill_paths]
+    row_counts = {
+        artifact["name"]: artifact["row_count"] for artifact in artifacts
+    }
+
+    def put_verified_json(key: str, value: dict) -> str:
+        data = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode()
+        sha256 = hashlib.sha256(data).hexdigest()
+        s3.put_object(
+            Bucket=LAKE_BUCKET,
+            Key=key,
+            Body=data,
+            ContentType="application/json",
+            Metadata={"sha256": sha256},
         )
-        return n_total
+        head = s3.head_object(Bucket=LAKE_BUCKET, Key=key)
+        if int(head.get("ContentLength", -1)) != len(data):
+            raise RuntimeError(f"published {key} size verification failed")
+        if head.get("Metadata", {}).get("sha256") != sha256:
+            raise RuntimeError(f"published {key} checksum verification failed")
+        return sha256
 
-    row_counts: dict[str, int] = {}
-    written = 0
-    for name in ("artist_ids", "venue_ids", "coordinates",
-                 "locations", "websites", "inceptions"):
-        n = write_output(name)
-        if n:
-            written += 1
-        row_counts[name] = n
-    shutil.rmtree(SPILL_DIR, ignore_errors=True)
-    print(f"catalog registered: {written} wikidata silver datasets")
+    artifacts_manifest_key = f"{generation_prefix}artifacts.json"
+    artifacts_manifest = {
+        "schema_version": "wikidata-silver-artifacts-v1",
+        "run_id": builder.run_id,
+        "dump_version": DUMP_VERSION,
+        "source": {
+            "bucket": RAW_BUCKET,
+            "key": RAW_KEY,
+            "bytes": source_bytes,
+            "etag": source_etag,
+        },
+        "knowledge_time": builder.now,
+        "status": "ARTIFACTS_VERIFIED",
+        "artifacts": artifacts,
+    }
+    artifacts_manifest_sha256 = put_verified_json(
+        artifacts_manifest_key, artifacts_manifest
+    )
 
-    # persist run stats for the checkpoint report
+    # The catalog is an artifact index, not the publication authority. Register
+    # only verified immutable artifacts and mark that explicitly. R2 CURRENT is
+    # replaced last and is the sole authority for choosing a complete serving
+    # generation, so a catalog/CURRENT failure gap cannot activate mixed data.
+    registrations = []
+    for artifact in artifacts:
+        registrations.append({
+            "dataset_id": artifact["dataset_id"],
+            "dataset_version": DUMP_VERSION,
+            "layer": "SILVER",
+            "source": "wikidata",
+            "source_version": DUMP_VERSION,
+            "r2_bucket": LAKE_BUCKET,
+            "r2_prefix": artifact["r2_key"],
+            "fmt": "parquet",
+            "schema_version": "silver-v1",
+            "row_count": artifact["row_count"],
+            "byte_count": artifact["byte_count"],
+            "source_checksum": source_etag,
+            "artifact_checksum": artifact["sha256"],
+            "verification_status": "ARTIFACTS_VERIFIED_NOT_PUBLICATION_AUTHORITY",
+            "license": "CC0-1.0",
+            "rights_status": "DERIVED_FROM_PUBLIC_DOMAIN",
+            "commercial_use_status": "ALLOWED",
+            "serving_eligible": False,
+            "access_classification": "PUBLIC",
+            "upstream_dataset_ids": ["raw.wikidata_truthy_rdf"],
+            "notes": (
+                "Verified artifacts manifest: "
+                f"r2://{LAKE_BUCKET}/{artifacts_manifest_key}; "
+                "publication authority is silver/wikidata/CURRENT.json"
+            ),
+        })
+    register_dataset_batch(registrations)
+
+    manifest_key = f"{generation_prefix}manifest.json"
+    manifest_sha256 = put_verified_json(manifest_key, {
+        "schema_version": "wikidata-silver-generation-v1",
+        "run_id": builder.run_id,
+        "dump_version": DUMP_VERSION,
+        "source": artifacts_manifest["source"],
+        "knowledge_time": builder.now,
+        "status": "PUBLISHED",
+        "artifacts_manifest_key": artifacts_manifest_key,
+        "artifacts_manifest_sha256": artifacts_manifest_sha256,
+        "artifact_count": len(artifacts),
+    })
+
+    current_key = "silver/wikidata/CURRENT.json"
+    put_verified_json(current_key, {
+        "schema_version": "wikidata-silver-current-v1",
+        "run_id": builder.run_id,
+        "dump_version": DUMP_VERSION,
+        "manifest_key": manifest_key,
+        "manifest_sha256": manifest_sha256,
+        "published_at": builder.now,
+        "publication_authority": True,
+    })
+
+    for spills in builder.spill_paths.values():
+        for spill_key in spills:
+            s3.delete_object(Bucket=LAKE_BUCKET, Key=spill_key)
+    shutil.rmtree(builder.spill_dir, ignore_errors=True)
+    print(f"catalog registered: {len(artifacts)} wikidata silver datasets")
+    print(f"current generation → r2://{LAKE_BUCKET}/{current_key}")
+
+    peak_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    if sys.platform != "darwin":
+        peak_rss *= 1024
+    spill_object_count = sum(len(keys) for keys in builder.spill_paths.values())
+
+    # Persist run stats for the checkpoint report. Neither transport exposes a
+    # directly observed compressed-byte counter, so do not substitute expected
+    # object size for observed consumption.
     stats_path = Path("control/lake/wikidata_music_graph_stats.json")
     stats_path.parent.mkdir(parents=True, exist_ok=True)
     stats_path.write_text(json.dumps({
+        "run_id": builder.run_id,
         "lines_read": n_lines,
         "stats": dict(builder.stats),
-        "row_counts": {k: v for k, v in [
-            ("artist_external_ids", row_counts["artist_ids"]),
-            ("venue_external_ids", row_counts["venue_ids"]),
-            ("entity_coordinates", row_counts["coordinates"]),
-            ("entity_locations", row_counts["locations"]),
-            ("entity_websites", row_counts["websites"]),
-            ("entity_inception", row_counts["inceptions"]),
-        ]},
+        "row_counts": row_counts,
         "runtime_seconds": round(runtime, 1),
         "dump_version": DUMP_VERSION,
+        **source_meta,
+        "source_bytes_consumed": None,
+        "source_complete": not bool(args.limit),
+        "source_completion_basis": (
+            "EOF_PLUS_POST_STREAM_IDENTITY_CHECK" if not args.limit
+            else "BOUNDED_SUBJECT_LIMIT"
+        ),
+        "retries_observed": None,
+        "peak_rss_bytes": peak_rss,
+        "spill_object_count": spill_object_count,
+        "artifact_count": len(artifacts),
+        "generation_manifest_key": manifest_key,
+        "generation_manifest_sha256": manifest_sha256,
+        "current_pointer_key": current_key,
+        "disk_free_bytes_at_publish": shutil.disk_usage("/tmp").free,
+        "status": "BUILD_COMPLETE",
     }, indent=2) + "\n")
     print(f"stats → {stats_path}")
 
