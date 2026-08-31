@@ -97,6 +97,8 @@ button:hover { border-color: var(--accent); }
 .prov-OBSERVED_PRIVATE { color: #bc8cff; border-color: #bc8cff; }
 .prov-DERIVED { color: var(--accent2); border-color: var(--accent2); }
 .prov-UNKNOWN, .unknown { color: var(--dim); border-color: var(--dim); font-family: var(--mono); font-weight: 700; }
+.security-compare-table td.diff { background: rgba(255, 179, 71, 0.10); border-left: 2px solid rgba(255, 179, 71, 0.45); }
+.security-compare-table td.boundary { color: var(--dim); font-size: 0.85em; }
 .econ-value { color: var(--text); font-family: var(--mono); font-size: 18px; }
 .unsupported { border-style: dashed; }
 .error-line { color: var(--bad); font-family: var(--mono); padding: 8px; }

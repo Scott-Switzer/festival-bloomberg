@@ -372,7 +372,8 @@
           return ((Number(right.historical_shows) || 0) + (Number(right.festival_appearances) || 0) + (Number(right.venues_played) || 0)) - ((Number(left.historical_shows) || 0) + (Number(left.festival_appearances) || 0) + (Number(left.venues_played) || 0));
         });
         document.getElementById("security-market-table").innerHTML = tableOrNone(rows, ["Market", "Historical shows", "Festival appearances", "Venues", "Last played", "Future events", "Ticket evidence", "Latest ticket observation"], function (m) {
-          return row([securityCell(m.market || m.market_name), securityCell(m.historical_shows), securityCell(m.festival_appearances), securityCell(m.venues_played), securityCell(m.last_played || m.last_played_date), securityCell(m.future_events), securityCell(m.ticket_evidence_available != null ? m.ticket_evidence_available : m.ticket_evidence), securityCell(m.latest_ticket_observation)]);
+          var mkey = m.market_key || m.market || m.market_name;
+          return row([linkTo("markets", mkey, m.market || m.market_name || mkey), securityCell(m.historical_shows), securityCell(m.festival_appearances), securityCell(m.venues_played), securityCell(m.last_played || m.last_played_date), securityCell(m.future_events), securityCell(m.ticket_evidence_available != null ? m.ticket_evidence_available : m.ticket_evidence), securityCell(m.latest_ticket_observation)]);
         });
       }
       document.getElementById("security-market-sort").onchange = renderMarkets; renderMarkets();
@@ -422,7 +423,12 @@
         var label = dimension.label || dimension.dimension || dimension.name || "Evidence";
         var lv = dimension.left != null ? dimension.left : (dimension.a != null ? dimension.a : (dimension.values || [])[0]);
         var rv = dimension.right != null ? dimension.right : (dimension.b != null ? dimension.b : (dimension.values || [])[1]);
-        html += row([esc(label), securityCell(securityCompareValue(lv)), securityCell(securityCompareValue(rv)), securityCell(dimension.difference || dimension.diff || dimension.explanation)]);
+        var lvS = securityCompareValue(lv); var rvS = securityCompareValue(rv);
+        var lvText = lvS == null ? '<span class="unknown">UNKNOWN</span>' : esc(lvS);
+        var rvText = rvS == null ? '<span class="unknown">UNKNOWN</span>' : esc(rvS);
+        var differs = lvS != null && rvS != null && String(lvS) !== String(rvS);
+        var boundary = dimension.difference || dimension.diff || dimension.explanation;
+        html += '<tr><td>' + esc(label) + '</td><td' + (differs ? ' class="diff"' : '') + '>' + lvText + '</td><td' + (differs ? ' class="diff"' : '') + '>' + rvText + '</td><td class="boundary">' + (boundary ? esc(boundary) : '<span class="unknown">Same evidence shape</span>') + '</td></tr>';
       });
       content.innerHTML = html + '</tbody></table><p><a href="#/artists/' + encodeURIComponent(a) + '">Open first Artist Security</a> · <a href="#/artists/' + encodeURIComponent(b) + '">Open second Artist Security</a></p>';
     });
@@ -567,7 +573,8 @@
       var html = "<h1>" + esc(m.name) + "</h1><p class='sub'>MARKET · " +
         m.upcoming_count + " upcoming · " + m.history_count + " historical</p>";
       html += "<h2>Upcoming events</h2>" + tableOrNone(m.upcoming, ["Date", "Artist", "Venue", "Status"], function (e) {
-        return row([fmt(e.event_date), esc(e.artist_name), esc(e.venue_name), esc(e.event_status)]);
+        var artistId = e.artist_key || e.artist_id || e.artist_mbid;
+        return row([fmt(e.event_date), artistId ? linkTo("artists", artistId, e.artist_name) : esc(e.artist_name), e.venue_name ? linkTo("venues", String(e.venue_name).toLowerCase(), e.venue_name) : esc(e.venue_name), esc(e.event_status)]);
       });
       html += "<h2>Major venues</h2>" + (m.venues && m.venues.length
         ? "<ul>" + m.venues.map(function (v) { return "<li>" + linkTo("venues", v.toLowerCase(), v) + "</li>"; }).join("") + "</ul>"
@@ -1859,6 +1866,7 @@
       var id = el.getAttribute("data-id");
       location.hash = id ? "#/" + type + "/" + encodeURIComponent(id) : "#/" + type;
       searchResults.classList.add("hidden");
+      searchInput.value = "";
     }
   });
 
@@ -1890,6 +1898,19 @@
     var el = ev.target.closest("[data-nav]");
     if (el) {
       location.hash = "#/" + el.getAttribute("data-nav") + "/" + encodeURIComponent(el.getAttribute("data-id"));
+      searchResults.classList.add("hidden");
+    }
+  });
+
+  document.addEventListener("keydown", function (e) {
+    var tag = (document.activeElement && document.activeElement.tagName) || "";
+    var typing = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+    if ((e.key === "/" || (e.key.toLowerCase() === "k" && (e.metaKey || e.ctrlKey))) && !typing) {
+      e.preventDefault();
+      searchInput.focus();
+      searchInput.select();
+    } else if (e.key === "Escape" && !searchResults.classList.contains("hidden")) {
+      searchInput.value = "";
       searchResults.classList.add("hidden");
     }
   });

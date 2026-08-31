@@ -628,6 +628,17 @@ class TerminalApp:
         market = readmodels.get_market(self.conn, entity_id)
         if market is None:
             return self._not_found()
+        # Resolve upcoming artist names to 25K artist keys so the market page
+        # links into Artist Security like every other entity reference.
+        if self.artist_security_conn is not None:
+            for row in market.get("upcoming", []):
+                name = row.get("artist_name")
+                if not name:
+                    continue
+                hits = artist_security.search_artists(self.artist_security_conn, name, 1)
+                if hits:
+                    row["artist_key"] = hits[0].get("entity_id")
+                    row["artist_name"] = hits[0].get("name") or row["artist_name"]
         if sub == "calendar":
             return self._ok(market["upcoming"])
         if sub == "profile":
@@ -646,7 +657,7 @@ class TerminalApp:
         ctype = "text/html" if fp.endswith(".html") else "text/css" if fp.endswith(".css") else "application/javascript"
         with open(fp, "rb") as fh:
             data = fh.read()
-        return {"status": 200, "headers": {"Content-Type": ctype}, "body": data}
+        return {"status": 200, "headers": {"Content-Type": ctype, "Cache-Control": "no-store"}, "body": data}
 
     def _not_found(self) -> dict[str, Any]:
         return {"status": 404, "headers": {"Content-Type": "application/json"},
