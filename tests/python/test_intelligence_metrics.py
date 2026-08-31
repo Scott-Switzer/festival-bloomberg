@@ -15,7 +15,7 @@ def test_intelligence_tables_and_idempotent_upserts(tmp_path: Path):
     db_path = tmp_path / "intelligence.duckdb"
     connection = duckdb.connect(str(db_path))
     try:
-        assert apply_pending_migrations(connection) == 47
+        assert apply_pending_migrations(connection) == 48
         assert apply_pending_migrations(connection) == 0
 
         tables = {
