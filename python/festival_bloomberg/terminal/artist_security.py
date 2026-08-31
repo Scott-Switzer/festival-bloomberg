@@ -170,6 +170,69 @@ def _attention(conn, artist_key: str) -> dict[str, dict[str, Any]]:
             out[source] = _unknown(source, notes[source])
             continue
         latest = items[0]
+        # Delta vs the PRIOR observation of the same metric kind AND the same
+        # window span (a weekly row must not be compared to an all-time row).
+        # Prior = a strictly LATER row (older observation); a row is never its
+        # own prior. Absence of a comparable prior stays UNKNOWN — never zero.
+        def _span(row: dict[str, Any]):
+            start, end = row.get("period_start"), row.get("period_end")
+            if start is None or end is None:
+                return None
+            try:
+                return (end - start).days
+            except Exception:
+                return None
+
+        keys = [(str(row.get("metric_kind") or ""), _span(row)) for row in items]
+        for i, row in enumerate(items):
+            prior = None
+            for j in range(i + 1, len(items)):
+                if keys[j] == keys[i] and keys[i][1] is not None:
+                    prior = items[j]
+                    break
+            value = row.get("value_sum") if row.get("value_sum") is not None else row.get("value")
+            if prior is None or value is None:
+                row["change"] = None
+                continue
+            prior_value = prior.get("value_sum") if prior.get("value_sum") is not None else prior.get("value")
+            if prior_value is None:
+                row["change"] = None
+                continue
+            row["prior_value"] = prior_value
+            row["prior_observation"] = prior.get("period_end") or prior.get("period_start") or prior.get("retrieved_at")
+            row["change"] = value - prior_value
+            if prior_value not in (None, 0):
+                row["change_pct"] = round(100.0 * (value - prior_value) / abs(prior_value), 2)
+        # Chart series: only SAME metric kind AND SAME window span (weekly vs
+        # weekly, daily vs daily) with >=2 dated points. Different windows are
+        # never plotted on one axis.
+        series: list[dict[str, Any]] = []
+        by_key: dict[tuple[str, object], list[dict[str, Any]]] = defaultdict(list)
+        for row in items:
+            t = row.get("period_end") or row.get("period_start")
+            if t is None:
+                continue
+            v = row.get("value_sum") if row.get("value_sum") is not None else row.get("value")
+            if v is None:
+                continue
+            kind = str(row.get("metric_kind") or "metric")
+            start, end = row.get("period_start"), row.get("period_end")
+            span = (end - start).days if (start is not None and end is not None) else None
+            by_key[(kind, span)].append({"t": str(t)[:10], "v": float(v), "kind": kind, "span": span})
+        for (kind, span), points in by_key.items():
+            if len(points) < 2:
+                continue
+            points.sort(key=lambda p: p["t"])
+            label = kind.replace("LISTENBRAINZ_", "").replace("_", " ").title()
+            if span == 7:
+                label += " (weekly)"
+            elif span == 1:
+                label += " (daily)"
+            elif span == 30 or span == 31:
+                label += " (monthly)"
+            elif span is None:
+                label += " (cumulative snapshot)"
+            series.append({"metric_kind": kind, "span": span, "label": label, "points": points[-400:]})
         out[source] = {
             "status": "OBSERVED",
             "source_system": latest.get("source_system") or source,
@@ -177,6 +240,7 @@ def _attention(conn, artist_key: str) -> dict[str, dict[str, Any]]:
             "latest_knowledge_time": latest.get("knowledge_time"),
             "metrics": items[:24],
             "items": items[:24],
+            "series": series,
             "note": (
                 "Descriptive attention/consumption evidence only; it is not local demand "
                 "or ticket-purchase intent."
@@ -276,6 +340,48 @@ def _evidence_items(
     return items
 
 
+def _market_city_form(slug: str) -> str:
+    """Derive the display city from a slug market key.
+    'chicago-il' -> 'chicago'; 'new-york-ny' -> 'new york';
+    'las-vegas-nv-us' -> 'las vegas'; 'st-louis-mo' -> 'st louis'.
+    Only forms derivable from the slug itself — no fabricated mapping."""
+    parts = [p for p in str(slug).lower().split("-") if p]
+    if len(parts) >= 4:
+        return " ".join(parts[:-2])
+    return " ".join(parts[:-1]) if len(parts) > 1 else str(slug).lower()
+
+
+def _enrich_markets_from_future(
+    markets: list[dict[str, Any]], future: list[dict[str, Any]]
+) -> None:
+    """Join the artist's own forward/ticket rows into market profile rows.
+    Markets with no forward evidence keep UNKNOWN fields (no zeros)."""
+    for m in markets:
+        slug = m.get("market_key") or m.get("market") or m.get("market_name")
+        if not slug:
+            continue
+        city = _market_city_form(str(slug))
+        matches = [
+            f for f in future
+            if (str(f.get("city") or "").lower() == city
+                or str(f.get("market_name") or "").lower().startswith(city))
+        ]
+        if not matches:
+            continue
+        dated = [f for f in matches if f.get("event_date")]
+        m["future_events"] = len(matches)
+        m["ticket_evidence_available"] = sum(
+            1 for f in matches if f.get("price_min") is not None or f.get("price_max") is not None
+        ) or None
+        if dated:
+            nxt = sorted(dated, key=lambda f: str(f.get("event_date")))[0]
+            m["next_event"] = {
+                "date": nxt.get("event_date"),
+                "venue": nxt.get("venue_name") or nxt.get("venue"),
+                "event": nxt.get("event_name"),
+            }
+
+
 def get_artist_security(conn, artist_key: str) -> dict[str, Any] | None:
     """Return the full buyer-facing Artist Security contract."""
     artist = _one(conn, "SELECT * FROM artists WHERE artist_key = ?", [artist_key])
@@ -303,7 +409,19 @@ def get_artist_security(conn, artist_key: str) -> dict[str, Any] | None:
         peer["source_artist_key"] = peer.get("subject_key")
         peer["artist_key"] = peer.get("peer_key")
         peer["artist_name"] = peer.get("resolved_peer_name") or peer.get("peer_name")
-        peer["why_related"] = peer.get("explanation")
+        # Row-specific explanation composed from the peer edge's own evidence.
+        # No boilerplate: only fields this edge actually supports.
+        parts: list[str] = []
+        if peer.get("shared_listeners") is not None:
+            parts.append(f"{peer['shared_listeners']} shared listeners")
+        if peer.get("jaccard") is not None:
+            parts.append(f"Jaccard {peer['jaccard']}")
+        if peer.get("shared_markets"):
+            parts.append(f"{peer['shared_markets']} shared markets")
+        if peer.get("shared_festival_bills"):
+            parts.append(f"{peer['shared_festival_bills']} shared festival bills")
+        peer["why_related"] = " · ".join(parts) if parts else peer.get("explanation")
+        peer["evidence_parts"] = parts
         peer["differences"] = (
             f"Shared observed markets: {peer.get('shared_markets') or 0}; "
             f"shared festival bills: {peer.get('shared_festival_bills') or 0}. "
@@ -339,6 +457,7 @@ def get_artist_security(conn, artist_key: str) -> dict[str, Any] | None:
         LIMIT 150
     """, [artist_key])
     alternatives = _alternatives(peers)
+    _enrich_markets_from_future(markets, future)
     ticket_evidence_count = sum(has_advertised_structured_range(event) for event in future)
     market_status = "OBSERVED" if markets else "UNKNOWN"
     festival_status = "OBSERVED" if festivals else "UNKNOWN"
