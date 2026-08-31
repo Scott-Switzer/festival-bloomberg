@@ -547,26 +547,40 @@ def _venue_name_for_key(conn, venue_key: str) -> str | None:
 # Market
 # ---------------------------------------------------------------------------
 def get_market(conn, market_key: str) -> dict[str, Any] | None:
+    # Market keys arrive as slugs ("chicago-il"); the serving tables store
+    # display forms ("Chicago, IL" in forward_watch_events.market, "Chicago"
+    # in canonical_boxoffice_engagements.city). Match against both forms so an
+    # artist-page slug resolves to the market it actually refers to. No
+    # fabricated mapping: only forms derivable from the slug itself.
+    slug = str(market_key).lower()
+    parts = [p for p in slug.split("-") if p]
+    city_prefix = " ".join(parts[:-1]) if len(parts) > 1 else slug
     upcoming = _rows(conn, """
         SELECT watch_event_id, artist_name, venue_name, event_date, event_status
         FROM flywheel.forward_watch_events
-        WHERE lower(market) = ? AND event_date >= CURRENT_DATE ORDER BY event_date
-    """, [market_key])
+        WHERE (lower(market) = ?
+               OR lower(market) = ?
+               OR lower(market) LIKE ? || ' (%)'
+               OR lower(market) LIKE ? || ', %'
+               OR lower(market) LIKE ? || ' %')
+          AND event_date >= CURRENT_DATE ORDER BY event_date
+    """, [slug, city_prefix, city_prefix, city_prefix, slug])
     history = _rows(conn, """
         SELECT canonical_engagement_id, artist, venue, start_date
         FROM research.canonical_boxoffice_engagements
-        WHERE lower(city) LIKE ? ORDER BY start_date DESC LIMIT 100
-    """, [f"{market_key}%"])
+        WHERE lower(city) LIKE ? || '%' ORDER BY start_date DESC LIMIT 100
+    """, [city_prefix])
     venues = _rows(conn, """
         SELECT DISTINCT venue AS name FROM research.canonical_boxoffice_engagements
-        WHERE lower(city) LIKE ? AND venue IS NOT NULL
-    """, [f"{market_key}%"])
+        WHERE lower(city) LIKE ? || '%' AND venue IS NOT NULL
+    """, [city_prefix])
     if not upcoming and not history and not venues:
         return None
+    display = " ".join(parts[:-1]) if len(parts) > 1 else slug
     return {
         "entity_type": "MARKET",
         "entity_id": market_key,
-        "name": market_key.title(),
+        "name": display.title(),
         "upcoming_count": len(upcoming),
         "history_count": len(history),
         "upcoming": upcoming,
