@@ -159,6 +159,275 @@
     });
   }
 
+  /* ---- TALENT BUYER: ARTIST SECURITY ---------------------------------- */
+
+  function securityItems(section) {
+    if (Array.isArray(section)) return section;
+    return section && Array.isArray(section.items) ? section.items : [];
+  }
+
+  function securityCell(value) {
+    return value == null || value === ""
+      ? '<span class="unknown">UNKNOWN</span>' : esc(value);
+  }
+
+  function securityStatus(section) {
+    return section && section.status ? section.status : (securityItems(section).length ? "OBSERVED" : "UNKNOWN");
+  }
+
+  function securityReasons(value) {
+    if (Array.isArray(value)) return value.join(", ");
+    return value || "UNKNOWN";
+  }
+
+  function securityUrl(url, label) {
+    if (!url) return securityCell(label);
+    return '<a href="' + esc(url) + '" target="_blank" rel="noopener">' + esc(label || url) + '</a>';
+  }
+
+  function securitySourceLine(source) {
+    if (!source) return '<span class="unknown">UNKNOWN</span>';
+    var sourceName = source.source || source.provider || source.source_system || "UNKNOWN";
+    var observed = source.observed_at || source.latest_observation || source.retrieved_at;
+    var knowledge = source.knowledge_time || source.known_at;
+    var freshness = source.freshness || source.freshness_status;
+    return '<span class="security-source">' + esc(sourceName) + '</span>' +
+      ' <span class="muted">obs ' + securityCell(observed ? String(observed).slice(0, 19) : null) +
+      ' · knowledge ' + securityCell(knowledge ? String(knowledge).slice(0, 19) : null) +
+      (freshness ? ' · ' + esc(freshness) : '') + '</span>';
+  }
+
+  function attentionPanel(title, source) {
+    var rows = securityItems(source);
+    var observations = source && (source.observations || source.series || source.items) || rows;
+    if (!Array.isArray(observations)) observations = [];
+    var status = securityStatus(source);
+    var html = '<div class="security-card"><div class="security-card-head"><h3>' + esc(title) +
+      '</h3><span class="pill ' + (status === "OBSERVED" ? "ok" : "off") + '">' + esc(status) + '</span></div>';
+    if (source && source.note) html += '<p class="muted">' + esc(source.note) + '</p>';
+    if (!observations.length) {
+      return html + '<div class="none">UNKNOWN — no source observations available.</div></div>';
+    }
+    html += '<table><thead><tr><th>Window</th><th>Latest observation</th><th>Value</th><th>Change</th><th>Evidence</th></tr></thead><tbody>';
+    observations.slice(0, 24).forEach(function (o) {
+      var window = o.observation_window || o.window || ((o.period_start || "") + (o.period_end ? " → " + o.period_end : ""));
+      var latest = o.latest_observation || o.observed_at || o.period_end || o.retrieved_at;
+      var value = o.value != null ? o.value : (o.value_sum != null ? o.value_sum : o.listeners);
+      var change = o.change != null ? o.change : (o.delta != null ? o.delta : o.change_pct);
+      html += row([securityCell(window), securityCell(latest ? String(latest).slice(0, 19) : null),
+        securityCell(value == null ? null : String(value) + (o.unit ? " " + o.unit : "")),
+        securityCell(change == null ? null : (o.change_pct != null ? String(change) + "%" : change)),
+        securityUrl(o.source_url || o.url, o.source_provider || o.provider || o.source_system || "source")]);
+    });
+    return html + '</tbody></table>' + (source && source.source ? '<p class="muted">' + securitySourceLine(source) + '</p>' : '') + '</div>';
+  }
+
+  function renderSecurityHistory(items, filter) {
+    var selected = filter || "ALL";
+    var filtered = items.filter(function (item) {
+      var type = String(item.event_type || item.type || "").toUpperCase();
+      if (selected === "ALL") return true;
+      if (selected === "YEAR:") return true;
+      if (selected.indexOf("YEAR:") === 0) return String(item.date || item.event_date || item.start_date || "").slice(0, 4) === selected.slice(5);
+      if (selected === "MARKET") return !!(item.market || item.city);
+      return type === selected || (selected === "FESTIVAL" && (item.festival || /festival/i.test(String(item.series || ""))));
+    });
+    if (!filtered.length) return '<div class="none">UNKNOWN — no matching live-history evidence.</div>';
+    return '<table><thead><tr><th>Date</th><th>Event</th><th>Venue</th><th>Market</th><th>Type</th><th>Series / festival</th><th>Source</th></tr></thead><tbody>' +
+      filtered.map(function (item) {
+        var eid = item.event_id || item.event_key || item.id;
+        var eventLabel = item.event || item.event_name || eid;
+        var event = item.source_url || item.url
+          ? securityUrl(item.source_url || item.url, eventLabel)
+          : (eid ? linkTo("events", eid, eventLabel) : securityCell(eventLabel));
+        return row([securityCell(item.date || item.event_date || item.start_date), event,
+          securityCell(item.venue || item.venue_name), securityCell(item.market || item.city),
+          securityCell(item.event_type || item.type), securityCell(item.series || item.festival || item.series_name),
+          securityUrl(item.source_url || item.url, item.source || item.provider || item.source_system || "source")]);
+      }).join("") + '</tbody></table>';
+  }
+
+  function viewArtistSecurity(id) {
+    setNav("artists");
+    content.innerHTML = '<div class="security-loading">Loading Artist Security…</div>';
+    api("/api/artist-security/" + encodeURIComponent(id)).then(function (payload) {
+      if (!payload || !payload.artist) {
+        content.innerHTML = '<h1>ARTIST SECURITY</h1><div class="none">Artist security record not found.</div>';
+        return;
+      }
+      var artist = payload.artist || {};
+      var name = artist.name || artist.artist_name || artist.display_name || id;
+      var artistKey = artist.artist_key || artist.key || id;
+      var facts = payload.quick_facts || {};
+      var identity = artist.primary_identity || artist.identity || {};
+      var attention = payload.attention || {};
+      var peers = payload.peers || {};
+      var markets = payload.markets || {};
+      var history = payload.history || {};
+      var festivals = payload.festivals || {};
+      var future = payload.future || {};
+      var alternatives = payload.alternatives || {};
+      var evidence = payload.evidence || {};
+      var html = '<div class="security-kicker">' + esc(payload.release_label || "TALENT BUYER TERMINAL") +
+        ' · ' + esc(payload.contract_version || "artist-security") + '</div>' +
+        '<div class="security-header"><div><h1>' + esc(name) + '</h1><p class="sub">ARTIST SECURITY · evidence for underwriting research · no booking recommendation</p>' +
+        '<p class="muted">Identity: ' + securityCell(identity.name || artistKey) +
+        ' · ' + securityCell(identity.type || artist.type) + ' · ' + securityCell(identity.area || artist.area) + '</p></div>' +
+        '<div class="security-header-meta"><span class="pill ok">READ ONLY</span><span class="pill">' + esc(artist.tier || "UNIVERSE") + '</span>' +
+        '<div class="muted">freshness ' + securityCell(artist.freshness || payload.freshness) + '</div><div class="muted">coverage ' + securityCell(artist.evidence_coverage || payload.evidence_coverage) + '</div></div></div>';
+
+      html += '<div class="security-actions panel"><label>Project <select id="security-project"><option value="">Choose existing project…</option></select></label> ' +
+        '<button id="security-add-project" data-key="' + esc(artistKey) + '" data-name="' + esc(name) + '">ADD TO PROJECT</button> ' +
+        '<button id="security-add-shortlist" data-key="' + esc(artistKey) + '" data-name="' + esc(name) + '">ADD TO SHORTLIST</button> ' +
+        '<button id="security-underwrite">UNDERWRITE</button> ' +
+        '<button id="security-compare" data-key="' + esc(artistKey) + '">COMPARE</button><span id="security-action-message" class="muted"></span></div>';
+
+      var factKeys = [
+        ["future_events", "Future events"], ["historical_live_events", "Historical live events"],
+        ["festival_appearances", "Festival appearances"], ["markets_played", "Markets played"],
+        ["venues_played", "Venues played"], ["active_ticket_evidence", "Active ticket evidence"],
+        ["audience_affinity_available", "Audience affinity"]
+      ];
+      html += '<div class="security-facts">' + factKeys.map(function (pair) {
+        return '<div class="security-fact"><div class="security-fact-label">' + esc(pair[1]) + '</div><div class="security-fact-value">' + securityCell(facts[pair[0]]) + '</div></div>';
+      }).join("") + '</div>';
+
+      html += '<div class="security-grid"><section><h2>ATTENTION / MOMENTUM</h2><p class="sub">Source-separated attention evidence. Attention is not demand or ticket intent.</p>' +
+        attentionPanel("Wikimedia", attention.wikimedia) + attentionPanel("ListenBrainz", attention.listenbrainz) + attentionPanel("YouTube", attention.youtube) + '</section>';
+      html += '<section><h2>AUDIENCE PEERS</h2><div class="security-card"><div class="security-card-head"><h3>' + esc(peers.label || "PILOT AUDIENCE DATA") + '</h3><span class="pill ' + (securityStatus(peers) === "OBSERVED" ? "ok" : "off") + '">' + esc(securityStatus(peers)) + '</span></div>';
+      html += '<p class="muted">Shared listeners and Jaccard are descriptive affinity evidence. Pilot coverage remains labeled until a full-corpus replacement is published.</p>';
+      var peerItems = securityItems(peers);
+      if (!peerItems.length) html += '<div class="none">UNKNOWN — no audience peer evidence available.</div>';
+      else html += '<table><thead><tr><th>Artist</th><th>Shared listeners</th><th>Jaccard</th><th>Why related</th><th>Differences</th></tr></thead><tbody>' + peerItems.slice(0, 25).map(function (p) {
+        var peerKey = p.artist_key || p.key || p.id;
+        var peerName = p.artist_name || p.name || peerKey;
+        var reason = p.why_related || p.reason || securityReasons(p.reasons) || "shared audience";
+        var difference = p.differences || p.difference || "UNKNOWN";
+        return row([peerKey ? linkTo("artists", peerKey, peerName) : securityCell(peerName), securityCell(p.shared_listener_count != null ? p.shared_listener_count : p.shared_listeners), securityCell(p.jaccard), securityCell(reason), securityCell(difference)]);
+      }).join("") + '</tbody></table>';
+      html += '</div></section></div>';
+
+      html += '<section><h2>MARKET PROFILE</h2><div class="panel"><label>Sort <select id="security-market-sort"><option value="activity">Observable activity</option><option value="last_played">Last played</option><option value="future">Future events</option><option value="market">Market</option></select></label></div><div id="security-market-table"></div></section>';
+      html += '<section><h2>LIVE HISTORY</h2><div class="panel security-filters"><label>Filter <select id="security-history-filter"><option>ALL</option><option>FESTIVAL</option><option>CONCERT</option><option>MARKET</option><option>YEAR</option></select></label> <label>Year <select id="security-history-year"><option value="ALL">All years</option></select></label></div><div id="security-history-table"></div></section>';
+      html += '<section><h2>FESTIVAL HISTORY</h2><div class="security-card"><p class="sub">Observed festival/series appearances and co-billing; repeat count remains descriptive.</p>' + tableOrNone(securityItems(festivals), ["Festival / series", "Year", "Event", "Market", "Venue / site", "Co-billed artists", "Repeat"], function (f) {
+        return row([securityCell(f.festival || f.series || f.festival_name || f.series_name), securityCell(f.year || f.edition_year), securityCell(f.event || f.event_name), securityCell(f.market || f.market_name || f.city), securityCell(f.venue || f.site || f.venue_name), securityCell(Array.isArray(f.co_billed_artists) ? f.co_billed_artists.join(", ") : (f.co_billed_artists || f.cobilled || f.co_billed_artist_names)), securityCell(f.repeat_appearances || f.repeat_count || f.repeat_appearance_count)]);
+      }) + '</div></section>';
+      html += '<section><h2>FORWARD EVENTS / TICKET EVIDENCE</h2><div class="security-card"><p class="strict-note"><strong>Ticketmaster priceRange = advertised structured price evidence.</strong> It is not transaction price, resale execution, attendance, or ticket sales.</p>' +
+        tableOrNone(securityItems(future), ["Date", "Venue", "Market", "Provider", "Advertised price range", "Latest observation"], function (f) {
+          var price = f.price_range || ((f.price_min != null || f.price_max != null) ? String(f.price_min == null ? "UNKNOWN" : f.price_min) + "–" + String(f.price_max == null ? "UNKNOWN" : f.price_max) + " " + (f.currency || "") : null);
+          return row([securityCell(f.date || f.event_date), securityCell(f.venue || f.venue_name), securityCell(f.market || f.market_name || f.city), securityCell(f.provider || f.source || f.source_system), securityCell(price), securityCell(f.latest_observation || f.observed_at || f.retrieved_at)]);
+        }) + (securityStatus(future) !== "OBSERVED" || !securityItems(future).some(function (f) { return f.price_range || f.price_min != null || f.price_max != null; }) ? '<p class="strict-note">NO CURRENT TICKET EVIDENCE</p>' : '') + '</div></section>';
+
+      html += '<div class="security-grid"><section><h2>EXPLAINABLE ALTERNATIVES</h2><div class="security-card"><p class="sub">Related artists are shown with reasons and observable differences, never fixed model weights.</p>' + tableOrNone(securityItems(alternatives), ["Artist", "Why related", "Differences", "Evidence"], function (alt) {
+        var altKey = alt.artist_key || alt.key || alt.id;
+        return row([altKey ? linkTo("artists", altKey, alt.artist_name || alt.name || altKey) : securityCell(alt.artist_name || alt.name), securityCell(alt.why_related || alt.reason || securityReasons(alt.reasons)), securityCell(alt.differences || alt.difference), securityCell(alt.evidence || alt.source || alt.source_system)]);
+      }) + '</div></section>';
+      html += '<section><h2>EVIDENCE / FRESHNESS</h2><div class="security-card">' + tableOrNone(securityItems(evidence), ["Panel", "Source", "Observed", "Knowledge", "Freshness", "Status"], function (e) {
+        return row([securityCell(e.panel || e.scope), securityUrl(e.source_url || e.url, e.source || e.provider || e.source_system || "source"), securityCell(e.observed_at || e.observation_time), securityCell(e.knowledge_time || e.known_at), securityCell(e.freshness || e.freshness_status), securityCell(e.status)]);
+      }) + '<p class="muted">UNKNOWN remains distinct from zero. Source conflicts are retained as separate evidence.</p></div></section></div>';
+
+      content.innerHTML = html;
+
+      var projectSelect = document.getElementById("security-project");
+      api("/api/planning/projects").then(function (projects) {
+        (projects || []).forEach(function (project) {
+          var option = document.createElement("option"); option.value = project.project_key; option.textContent = project.name; projectSelect.appendChild(option);
+        });
+      });
+      var message = document.getElementById("security-action-message");
+      function selectedProject() { return projectSelect && projectSelect.value; }
+      function actionMessage(text) { if (message) message.textContent = text; }
+      document.getElementById("security-add-project").onclick = function () {
+        var project = selectedProject(); if (!project) { actionMessage("Choose a project first."); return; }
+        api("/api/planning/projects/" + encodeURIComponent(project) + "/candidates", { method: "POST", body: JSON.stringify({ artist_key: artistKey, artist_name: name }) }).then(function () { actionMessage("Added to project."); });
+      };
+      document.getElementById("security-add-shortlist").onclick = function () {
+        var project = selectedProject(); if (!project) { actionMessage("Choose a project first."); return; }
+        api("/api/planning/projects/" + encodeURIComponent(project) + "/shortlist", { method: "POST", body: JSON.stringify({ artist_key: artistKey, artist_name: name, status: "SHORTLIST" }) }).then(function () { actionMessage("Added to shortlist."); });
+      };
+      document.getElementById("security-underwrite").onclick = function () {
+        var project = selectedProject(); if (!project) { actionMessage("Choose a project first."); return; }
+        location.hash = "#/build/" + encodeURIComponent(project) + "/economics/" + encodeURIComponent(artistKey);
+      };
+      document.getElementById("security-compare").onclick = function () {
+        var peerInput = document.getElementById("security-compare-artist");
+        if (peerInput && peerInput.value.trim()) {
+          api("/api/search?q=" + encodeURIComponent(peerInput.value.trim()) + "&limit=5").then(function (hits) {
+            var hit = (hits || []).filter(function (h) { return h.entity_type === "ARTIST"; })[0];
+            if (hit) location.hash = "#/compare-security/" + encodeURIComponent(artistKey) + "/" + encodeURIComponent(hit.entity_id);
+            else actionMessage("No artist match found.");
+          });
+        } else actionMessage("Enter an artist below to compare.");
+      };
+      var compareButton = document.getElementById("security-compare");
+      compareButton.insertAdjacentHTML("afterend", '<input id="security-compare-artist" placeholder="artist to compare…" aria-label="Artist to compare" />');
+
+      var marketItems = securityItems(markets);
+      function renderMarkets() {
+        var sort = document.getElementById("security-market-sort").value;
+        var rows = marketItems.slice().sort(function (left, right) {
+          if (sort === "market") return String(left.market || left.market_name || "").localeCompare(String(right.market || right.market_name || ""));
+          if (sort === "last_played") return String(right.last_played || right.last_played_date || "").localeCompare(String(left.last_played || left.last_played_date || ""));
+          if (sort === "future") return (Number(right.future_events) || 0) - (Number(left.future_events) || 0);
+          return ((Number(right.historical_shows) || 0) + (Number(right.festival_appearances) || 0) + (Number(right.venues_played) || 0)) - ((Number(left.historical_shows) || 0) + (Number(left.festival_appearances) || 0) + (Number(left.venues_played) || 0));
+        });
+        document.getElementById("security-market-table").innerHTML = tableOrNone(rows, ["Market", "Historical shows", "Festival appearances", "Venues", "Last played", "Future events", "Ticket evidence", "Latest ticket observation"], function (m) {
+          return row([securityCell(m.market || m.market_name), securityCell(m.historical_shows), securityCell(m.festival_appearances), securityCell(m.venues_played), securityCell(m.last_played || m.last_played_date), securityCell(m.future_events), securityCell(m.ticket_evidence_available != null ? m.ticket_evidence_available : m.ticket_evidence), securityCell(m.latest_ticket_observation)]);
+        });
+      }
+      document.getElementById("security-market-sort").onchange = renderMarkets; renderMarkets();
+      var historyItems = securityItems(history);
+      var yearSelect = document.getElementById("security-history-year");
+      Array.from(new Set(historyItems.map(function (item) { return String(item.date || item.event_date || item.start_date || "").slice(0, 4); }).filter(function (year) { return /^\d{4}$/.test(year); }))).sort().reverse().forEach(function (year) { yearSelect.insertAdjacentHTML("beforeend", '<option value="' + esc(year) + '">' + esc(year) + '</option>'); });
+      function renderHistory() { var year = yearSelect.value; var kind = document.getElementById("security-history-filter").value; var selected = kind === "YEAR" && year !== "ALL" ? "YEAR:" + year : (kind === "YEAR" ? "ALL" : (year === "ALL" ? kind : "YEAR:" + year)); document.getElementById("security-history-table").innerHTML = renderSecurityHistory(historyItems, selected); }
+      document.getElementById("security-history-filter").onchange = renderHistory; yearSelect.onchange = renderHistory; renderHistory();
+    });
+  }
+
+  function securityCompareValue(value) {
+    if (value == null) return null;
+    if (Array.isArray(value)) {
+      if (!value.length) return "UNKNOWN";
+      return value.map(function (item) {
+        if (item && typeof item === "object") {
+          var market = item.market_key || item.market || item.name || "evidence";
+          var count = item.historical_shows != null ? " · " + item.historical_shows + " observed shows" : "";
+          var last = item.last_play ? " · last " + item.last_play : "";
+          return market + count + last;
+        }
+        return String(item);
+      }).join("; ");
+    }
+    if (typeof value === "object") {
+      return Object.keys(value).map(function (key) {
+        var item = value[key];
+        return key.replace(/_/g, " ") + ": " + (item == null || item === "" ? "UNKNOWN" : String(item));
+      }).join("; ");
+    }
+    return value;
+  }
+
+  function viewSecurityCompare(a, b) {
+    setNav("compare");
+    content.innerHTML = '<h1>COMPARE</h1><p class="sub">Side-by-side artist evidence. No winner, no opaque score, no automated booking advice.</p><div class="security-loading">Loading comparison…</div>';
+    api("/api/artist-security/compare?a=" + encodeURIComponent(a) + "&b=" + encodeURIComponent(b)).then(function (comparison) {
+      if (!comparison) { content.innerHTML += '<div class="none">Comparison unavailable.</div>'; return; }
+      var left = comparison.left || {}, right = comparison.right || {};
+      var dims = Array.isArray(comparison.dimensions) ? comparison.dimensions : Object.keys(comparison.dimensions || {}).map(function (key) {
+        var value = comparison.dimensions[key];
+        return typeof value === "object" && value !== null ? Object.assign({ label: key }, value) : { label: key, left: value };
+      });
+      var html = '<h1>COMPARE</h1><p class="sub">A/B evidence review · ' + esc(comparison.no_winner === false ? "review only" : "no winner") + '</p><div class="security-compare-head"><div><strong>' + esc(left.name || left.artist_name || a) + '</strong></div><div><strong>' + esc(right.name || right.artist_name || b) + '</strong></div></div><table class="security-compare-table"><thead><tr><th>Dimension</th><th>' + esc(left.name || left.artist_name || a) + '</th><th>' + esc(right.name || right.artist_name || b) + '</th><th>Evidence boundary</th></tr></thead><tbody>';
+      dims.forEach(function (dimension) {
+        var label = dimension.label || dimension.dimension || dimension.name || "Evidence";
+        var lv = dimension.left != null ? dimension.left : (dimension.a != null ? dimension.a : (dimension.values || [])[0]);
+        var rv = dimension.right != null ? dimension.right : (dimension.b != null ? dimension.b : (dimension.values || [])[1]);
+        html += row([esc(label), securityCell(securityCompareValue(lv)), securityCell(securityCompareValue(rv)), securityCell(dimension.difference || dimension.diff || dimension.explanation)]);
+      });
+      content.innerHTML = html + '</tbody></table><p><a href="#/artists/' + encodeURIComponent(a) + '">Open first Artist Security</a> · <a href="#/artists/' + encodeURIComponent(b) + '">Open second Artist Security</a></p>';
+    });
+  }
+
   function viewArtist(id) {
     setNav("artists");
     api("/api/artists/" + encodeURIComponent(id)).then(function (a) {
@@ -1201,8 +1470,8 @@
 
   function viewCompare() {
     setNav("compare");
-    var html = "<h1>COMPARE</h1><p class='sub'>Side-by-side artist investigation — evidence, not a recommendation. No winner badge.</p>";
-    html += "<div class='panel'><input id='cp-add' placeholder='Search artist to add…' style='width:40%' /> <button id='cp-add-btn'>Add</button></div>";
+    var html = "<h1>COMPARE</h1><p class='sub'>Two-artist evidence review — no score, winner, fixed weights, or booking recommendation.</p>";
+    html += "<div class='panel'><input id='cp-add' placeholder='Search artist to add…' style='width:40%' /> <button id='cp-add-btn'>Add artist</button></div>";
     html += "<div id='cp-set'></div><div id='cp-out'></div>";
     content.innerHTML = html;
     var btn = document.getElementById("cp-add-btn");
@@ -1213,7 +1482,7 @@
         if (!hits || !hits.length) return;
         var hit = hits[0];
         var key = hit.entity_id;
-        if (compareSet.length >= 10) { compareSet.shift(); }
+        if (compareSet.length >= 2) { compareSet.shift(); }
         if (compareSet.indexOf(key) === -1) compareSet.push(key);
         renderCompare();
       });
@@ -1226,7 +1495,7 @@
     var outEl = document.getElementById("cp-out");
     if (!setEl || !outEl) return;
     if (!compareSet.length) {
-      setEl.innerHTML = '<div class="none">Add 2–10 artists to compare.</div>';
+      setEl.innerHTML = '<div class="none">Add exactly two artists to compare their evidence.</div>';
       outEl.innerHTML = "";
       return;
     }
@@ -1239,52 +1508,14 @@
         renderCompare();
       });
     });
-    outEl.innerHTML = '<div class="muted">Loading scorecards…</div>';
-    Promise.all(compareSet.map(function (key) {
-      return api("/api/planning/scorecard?artist_key=" + encodeURIComponent(key)).then(function (sc) {
-        if (sc && !sc.artist_name) return api("/api/planning/scorecard?artist_name=" + encodeURIComponent(key));
-        return sc;
-      });
-    })).then(function (cards) {
-      renderCompareTable(cards);
-    });
-  }
-
-  function compCell(card, pick) {
-    var v = pick(card);
-    if (v == null || v === "" || (typeof v === "number" && isNaN(v))) return '<span class="muted">—</span>';
-    return esc(typeof v === "number" ? String(Math.round(v * 100) / 100) : String(v));
-  }
-
-  function renderCompareTable(cards) {
-    var outEl = document.getElementById("cp-out");
-    if (!outEl) return;
-    var rows = [
-      ["Artist", function (c) { return c.artist_name; }],
-      ["Identity", function (c) { var i = c.identity || {}; return i.type ? i.type + (i.area ? " · " + i.area : "") : "UNKNOWN"; }],
-      ["External IDs", function (c) { var ids = Object.keys((c.identity || {}).external_ids || {}); return ids.length ? ids.join(", ") : "—"; }],
-      ["Upcoming shows", function (c) { var l = c.live || {}; return l.upcoming_count; }],
-      ["Historical shows", function (c) { var l = c.live || {}; return l.historical_count; }],
-      ["Festival editions", function (c) { var f = c.festival || {}; return f.edition_count; }],
-      ["Festival billing tiers", function (c) { var f = c.festival || {}; var t = Object.keys(f.billing_tiers || {}); return t.length ? t.join(", ") : "—"; }],
-      ["Attention", function (c) { var a = c.attention || {}; return a.wikimedia ? "wikimedia " + a.wikimedia.value_sum : a.latest && a.latest.length ? a.latest[0].source_system : "—"; }],
-      ["Gross comp median", function (c) { var g = (c.comparables || {}).gross || {}; return g.status === "OBSERVED" || g.status === "DERIVED" ? g.weighted_median : "UNKNOWN"; }],
-      ["Gross comp range", function (c) { var g = (c.comparables || {}).gross || {}; return (g.status === "OBSERVED" || g.status === "DERIVED") && g.p10 != null ? g.p10 + "–" + g.p90 : "—"; }],
-      ["Attendance comp median", function (c) { var a = (c.comparables || {}).attendance || {}; return a.status === "OBSERVED" || a.status === "DERIVED" ? a.weighted_median : "UNKNOWN"; }],
-      ["Market shows", function (c) { var m = c.market_history || {}; return m.shows_in_market; }],
-      ["Data coverage", function (c) { return (c.coverage || {}).coverage_score; }],
-      ["Sources known", function (c) { return (c.coverage || {}).known_source_count; }],
-    ];
-    var html = "<table><thead><tr><th>Attribute</th>" + cards.map(function (c) {
-      return "<th>" + esc(c.artist_name || c.artist_key || "?") + "</th>";
-    }).join("") + "</tr></thead><tbody>";
-    rows.forEach(function (r) {
-      html += "<tr><th>" + esc(r[0]) + "</th>" + cards.map(function (c) { return "<td>" + compCell(c, r[1]) + "</td>"; }).join("") + "</tr>";
-    });
-    html += "</tbody></table>";
-    html += "<p class='muted'>Evidence is per-scorecard; UNKNOWN cells are shown explicitly, never as zero. Comparable medians are RESEARCH-ONLY ranges." +
-      " <a href='#/artists/" + esc(cards[0].artist_key || "") + "'>Open full scorecard</a></p>";
-    outEl.innerHTML = html;
+    if (compareSet.length < 2) {
+      outEl.innerHTML = '<div class="none">Add one more artist. Comparison starts only when two governed Artist Security records are selected.</div>';
+      return;
+    }
+    outEl.innerHTML = '<button id="cp-run">COMPARE EVIDENCE</button><p class="muted">The result shows source-separated facts and explicit UNKNOWN states; it never chooses a winner.</p>';
+    document.getElementById("cp-run").onclick = function () {
+      viewSecurityCompare(compareSet[0], compareSet[1]);
+    };
   }
 
   function viewMonitors() {
@@ -1592,7 +1823,8 @@
     var parts = hash.split("/").filter(Boolean);
     var view = parts[0] || "tape";
     var id = parts[1];
-    if (view === "artists" && id) return viewArtist(decodeURIComponent(id));
+    if (view === "artists" && id) return viewArtistSecurity(decodeURIComponent(id));
+    if (view === "compare-security" && id && parts[2]) return viewSecurityCompare(decodeURIComponent(id), decodeURIComponent(parts[2]));
     if (view === "events" && id) return viewEvent(decodeURIComponent(id));
     if (view === "venues" && id) return viewVenue(decodeURIComponent(id));
     if (view === "markets" && id) return viewMarket(decodeURIComponent(id));
@@ -1645,7 +1877,13 @@
   searchInput.addEventListener("keydown", function (e) {
     if (e.key === "Enter") {
       searchResults.classList.add("hidden");
-      viewSearch(searchInput.value);
+      var q = searchInput.value.trim();
+      if (!q) return;
+      api("/api/search?q=" + encodeURIComponent(q) + "&limit=10").then(function (items) {
+        var artist = (items || []).filter(function (item) { return item.entity_type === "ARTIST"; })[0];
+        if (artist) location.hash = "#/artists/" + encodeURIComponent(artist.entity_id);
+        else viewSearch(q);
+      });
     }
   });
   searchResults.addEventListener("click", function (ev) {

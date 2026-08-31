@@ -1,0 +1,1581 @@
+{
+  "browser_acceptance": {
+    "artists": [
+      "Metallica",
+      "Jamie xx",
+      "Unknown Mortal Orchestra",
+      "Robert Glasper"
+    ],
+    "browser": "Codex In-app Browser",
+    "flow": "SEARCH -> ARTIST SECURITY -> COMPARE; eight artist panels, strict advertised-range and no-current-ticket states, nine compare dimensions, and no-winner boundary verified with zero console errors",
+    "screenshots": [
+      {
+        "path": "reports/talent_buyer_terminal_v1/metallica_artist_security.png",
+        "sha256": "ba83b258d7fe3d35d760815d53dc6a156d21ccfb03dc1b5cb10b306e253eb74c"
+      },
+      {
+        "path": "reports/talent_buyer_terminal_v1/jamie_xx_artist_security.png",
+        "sha256": "d118b0110dfb776dbdf380c24ac9801dd474c394c432e838e27569ae8c2d52d0"
+      },
+      {
+        "path": "reports/talent_buyer_terminal_v1/unknown_mortal_orchestra_artist_security.png",
+        "sha256": "99be2897f0520d6b43504a3b483ebb42600ad643e1f312540440ffcfe89990fc"
+      },
+      {
+        "path": "reports/talent_buyer_terminal_v1/unknown_mortal_orchestra_vs_jamie_xx_compare.png",
+        "sha256": "c226b0cce5840cb8345ad1cff17d8157d2a3d0188de3f278eeb3a605052df6d7"
+      },
+      {
+        "path": "reports/talent_buyer_terminal_v1/robert_glasper_ticket_evidence.png",
+        "sha256": "a63883e9ea9673960045c67c44c66059aaf969975d6e6084492c95b57b58b02e"
+      }
+    ],
+    "status": "PASS",
+    "verified_at": "2026-08-31T02:40:44Z"
+  },
+  "cohort": [
+    {
+      "artist_key": "mbid::00136dd9-1047-4999-af1f-d709c5fa09f9",
+      "artist_name": "Andrew Watt",
+      "capabilities": {
+        "alternatives": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "attention": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "evidence": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "festival_history": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "forward": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "live_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "markets": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "peers": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "search": {
+          "reason": "canonical result found",
+          "status": "PASS"
+        },
+        "security_initial": {
+          "latency_ms": 17.608,
+          "reason": "security payload returned",
+          "status": "PASS"
+        }
+      },
+      "evidence_family_count": 4,
+      "evidence_profile": "medium",
+      "mbid": "00136dd9-1047-4999-af1f-d709c5fa09f9",
+      "musicbrainz_id": "00136dd9-1047-4999-af1f-d709c5fa09f9",
+      "name": "Andrew Watt",
+      "search_latency_ms": 12.568,
+      "tier": "HOT_1000"
+    },
+    {
+      "artist_key": "mbid::00370693-7679-46c1-8ddd-63e1d082c459",
+      "artist_name": "Barbara Morgenstern",
+      "capabilities": {
+        "alternatives": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "attention": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "evidence": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "festival_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "forward": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "live_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "markets": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "peers": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "search": {
+          "reason": "canonical result found",
+          "status": "PASS"
+        },
+        "security_initial": {
+          "latency_ms": 34.081,
+          "reason": "security payload returned",
+          "status": "PASS"
+        }
+      },
+      "evidence_family_count": 6,
+      "evidence_profile": "deep",
+      "mbid": "00370693-7679-46c1-8ddd-63e1d082c459",
+      "musicbrainz_id": "00370693-7679-46c1-8ddd-63e1d082c459",
+      "name": "Barbara Morgenstern",
+      "search_latency_ms": 12.539,
+      "tier": "HOT_1000"
+    },
+    {
+      "artist_key": "mbid::0039c7ae-e1a7-4a7d-9b49-0cbc716821a6",
+      "artist_name": "Death Cab for Cutie",
+      "capabilities": {
+        "alternatives": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "attention": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "evidence": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "festival_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "forward": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "live_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "markets": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "peers": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "search": {
+          "reason": "canonical result found",
+          "status": "PASS"
+        },
+        "security_initial": {
+          "latency_ms": 46.414,
+          "reason": "security payload returned",
+          "status": "PASS"
+        }
+      },
+      "evidence_family_count": 6,
+      "evidence_profile": "deep",
+      "mbid": "0039c7ae-e1a7-4a7d-9b49-0cbc716821a6",
+      "musicbrainz_id": "0039c7ae-e1a7-4a7d-9b49-0cbc716821a6",
+      "name": "Death Cab for Cutie",
+      "search_latency_ms": 10.452,
+      "tier": "HOT_1000"
+    },
+    {
+      "artist_key": "mbid::003ecf7a-01f6-4dda-a041-e71366e70c42",
+      "artist_name": "Burgerkill",
+      "capabilities": {
+        "alternatives": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "attention": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "evidence": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "festival_history": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "forward": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "live_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "markets": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "peers": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "search": {
+          "reason": "canonical result found",
+          "status": "PASS"
+        },
+        "security_initial": {
+          "latency_ms": 20.703,
+          "reason": "security payload returned",
+          "status": "PASS"
+        }
+      },
+      "evidence_family_count": 4,
+      "evidence_profile": "medium",
+      "mbid": "003ecf7a-01f6-4dda-a041-e71366e70c42",
+      "musicbrainz_id": "003ecf7a-01f6-4dda-a041-e71366e70c42",
+      "name": "Burgerkill",
+      "search_latency_ms": 10.02,
+      "tier": "HOT_1000"
+    },
+    {
+      "artist_key": "mbid::00a9f935-ba93-4fc8-a33a-993abe9c936b",
+      "artist_name": "Nightwish",
+      "capabilities": {
+        "alternatives": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "attention": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "evidence": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "festival_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "forward": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "live_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "markets": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "peers": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "search": {
+          "reason": "canonical result found",
+          "status": "PASS"
+        },
+        "security_initial": {
+          "latency_ms": 34.932,
+          "reason": "security payload returned",
+          "status": "PASS"
+        }
+      },
+      "evidence_family_count": 6,
+      "evidence_profile": "deep",
+      "mbid": "00a9f935-ba93-4fc8-a33a-993abe9c936b",
+      "musicbrainz_id": "00a9f935-ba93-4fc8-a33a-993abe9c936b",
+      "name": "Nightwish",
+      "search_latency_ms": 11.424,
+      "tier": "HOT_1000"
+    },
+    {
+      "artist_key": "mbid::00b952be-6c97-4880-84f9-06de584b491b",
+      "artist_name": "Cancer Bats",
+      "capabilities": {
+        "alternatives": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "attention": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "evidence": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "festival_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "forward": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "live_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "markets": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "peers": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "search": {
+          "reason": "canonical result found",
+          "status": "PASS"
+        },
+        "security_initial": {
+          "latency_ms": 29.966,
+          "reason": "security payload returned",
+          "status": "PASS"
+        }
+      },
+      "evidence_family_count": 6,
+      "evidence_profile": "deep",
+      "mbid": "00b952be-6c97-4880-84f9-06de584b491b",
+      "musicbrainz_id": "00b952be-6c97-4880-84f9-06de584b491b",
+      "name": "Cancer Bats",
+      "search_latency_ms": 10.473,
+      "tier": "HOT_1000"
+    },
+    {
+      "artist_key": "mbid::00eeed6b-5897-4359-8347-b8cd28375331",
+      "artist_name": "Manowar",
+      "capabilities": {
+        "alternatives": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "attention": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "evidence": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "festival_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "forward": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "live_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "markets": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "peers": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "search": {
+          "reason": "canonical result found",
+          "status": "PASS"
+        },
+        "security_initial": {
+          "latency_ms": 31.971,
+          "reason": "security payload returned",
+          "status": "PASS"
+        }
+      },
+      "evidence_family_count": 6,
+      "evidence_profile": "deep",
+      "mbid": "00eeed6b-5897-4359-8347-b8cd28375331",
+      "musicbrainz_id": "00eeed6b-5897-4359-8347-b8cd28375331",
+      "name": "Manowar",
+      "search_latency_ms": 11.019,
+      "tier": "HOT_1000"
+    },
+    {
+      "artist_key": "mbid::0103c1cc-4a09-4a5d-a344-56ad99a77193",
+      "artist_name": "Avril Lavigne",
+      "capabilities": {
+        "alternatives": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "attention": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "evidence": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "festival_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "forward": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "live_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "markets": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "peers": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "search": {
+          "reason": "canonical result found",
+          "status": "PASS"
+        },
+        "security_initial": {
+          "latency_ms": 30.282,
+          "reason": "security payload returned",
+          "status": "PASS"
+        }
+      },
+      "evidence_family_count": 6,
+      "evidence_profile": "deep",
+      "mbid": "0103c1cc-4a09-4a5d-a344-56ad99a77193",
+      "musicbrainz_id": "0103c1cc-4a09-4a5d-a344-56ad99a77193",
+      "name": "Avril Lavigne",
+      "search_latency_ms": 11.864,
+      "tier": "HOT_1000"
+    },
+    {
+      "artist_key": "mbid::012151a8-0f9a-44c9-997f-ebd68b5389f9",
+      "artist_name": "Imagine Dragons",
+      "capabilities": {
+        "alternatives": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "attention": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "evidence": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "festival_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "forward": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "live_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "markets": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "peers": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "search": {
+          "reason": "canonical result found",
+          "status": "PASS"
+        },
+        "security_initial": {
+          "latency_ms": 31.945,
+          "reason": "security payload returned",
+          "status": "PASS"
+        }
+      },
+      "evidence_family_count": 6,
+      "evidence_profile": "deep",
+      "mbid": "012151a8-0f9a-44c9-997f-ebd68b5389f9",
+      "musicbrainz_id": "012151a8-0f9a-44c9-997f-ebd68b5389f9",
+      "name": "Imagine Dragons",
+      "search_latency_ms": 11.101,
+      "tier": "HOT_1000"
+    },
+    {
+      "artist_key": "mbid::00034ede-a1f1-4219-be39-02f36853373e",
+      "artist_name": "O Rappa",
+      "capabilities": {
+        "alternatives": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "attention": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "evidence": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "festival_history": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "forward": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "live_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "markets": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "peers": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "search": {
+          "reason": "canonical result found",
+          "status": "PASS"
+        },
+        "security_initial": {
+          "latency_ms": 27.758,
+          "reason": "security payload returned",
+          "status": "PASS"
+        }
+      },
+      "evidence_family_count": 4,
+      "evidence_profile": "medium",
+      "mbid": "00034ede-a1f1-4219-be39-02f36853373e",
+      "musicbrainz_id": "00034ede-a1f1-4219-be39-02f36853373e",
+      "name": "O Rappa",
+      "search_latency_ms": 11.606,
+      "tier": "CORE_5000"
+    },
+    {
+      "artist_key": "mbid::000fc734-b7e1-4a01-92d1-f544261b43f5",
+      "artist_name": "Cocteau Twins",
+      "capabilities": {
+        "alternatives": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "attention": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "evidence": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "festival_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "forward": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "live_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "markets": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "peers": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "search": {
+          "reason": "canonical result found",
+          "status": "PASS"
+        },
+        "security_initial": {
+          "latency_ms": 27.915,
+          "reason": "security payload returned",
+          "status": "PASS"
+        }
+      },
+      "evidence_family_count": 6,
+      "evidence_profile": "deep",
+      "mbid": "000fc734-b7e1-4a01-92d1-f544261b43f5",
+      "musicbrainz_id": "000fc734-b7e1-4a01-92d1-f544261b43f5",
+      "name": "Cocteau Twins",
+      "search_latency_ms": 10.285,
+      "tier": "CORE_5000"
+    },
+    {
+      "artist_key": "mbid::000fabd0-277f-41ab-90a1-26ace71a82b2",
+      "artist_name": "Rocco Granata",
+      "capabilities": {
+        "alternatives": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "attention": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "evidence": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "festival_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "forward": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "live_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "markets": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "peers": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "search": {
+          "reason": "canonical result found",
+          "status": "PASS"
+        },
+        "security_initial": {
+          "latency_ms": 21.298,
+          "reason": "security payload returned",
+          "status": "PASS"
+        }
+      },
+      "evidence_family_count": 4,
+      "evidence_profile": "medium",
+      "mbid": "000fabd0-277f-41ab-90a1-26ace71a82b2",
+      "musicbrainz_id": "000fabd0-277f-41ab-90a1-26ace71a82b2",
+      "name": "Rocco Granata",
+      "search_latency_ms": 11.111,
+      "tier": "CORE_5000"
+    },
+    {
+      "artist_key": "mbid::002379ce-27d5-4084-9a5d-4fd28335d9cb",
+      "artist_name": "Laura Gibson",
+      "capabilities": {
+        "alternatives": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "attention": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "evidence": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "festival_history": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "forward": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "live_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "markets": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "peers": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "search": {
+          "reason": "canonical result found",
+          "status": "PASS"
+        },
+        "security_initial": {
+          "latency_ms": 29.404,
+          "reason": "security payload returned",
+          "status": "PASS"
+        }
+      },
+      "evidence_family_count": 4,
+      "evidence_profile": "medium",
+      "mbid": "002379ce-27d5-4084-9a5d-4fd28335d9cb",
+      "musicbrainz_id": "002379ce-27d5-4084-9a5d-4fd28335d9cb",
+      "name": "Laura Gibson",
+      "search_latency_ms": 12.642,
+      "tier": "CORE_5000"
+    },
+    {
+      "artist_key": "mbid::002e9f6e-13af-4347-83c5-f5ace70e0ec4",
+      "artist_name": "Lulu",
+      "capabilities": {
+        "alternatives": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "attention": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "evidence": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "festival_history": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "forward": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "live_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "markets": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "peers": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "search": {
+          "reason": "canonical result found",
+          "status": "PASS"
+        },
+        "security_initial": {
+          "latency_ms": 28.968,
+          "reason": "security payload returned",
+          "status": "PASS"
+        }
+      },
+      "evidence_family_count": 5,
+      "evidence_profile": "deep",
+      "mbid": "002e9f6e-13af-4347-83c5-f5ace70e0ec4",
+      "musicbrainz_id": "002e9f6e-13af-4347-83c5-f5ace70e0ec4",
+      "name": "Lulu",
+      "search_latency_ms": 14.962,
+      "tier": "CORE_5000"
+    },
+    {
+      "artist_key": "mbid::00467da8-2a92-498f-8b10-a80889bcded7",
+      "artist_name": "The Horrors",
+      "capabilities": {
+        "alternatives": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "attention": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "evidence": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "festival_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "forward": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "live_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "markets": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "peers": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "search": {
+          "reason": "canonical result found",
+          "status": "PASS"
+        },
+        "security_initial": {
+          "latency_ms": 29.257,
+          "reason": "security payload returned",
+          "status": "PASS"
+        }
+      },
+      "evidence_family_count": 6,
+      "evidence_profile": "deep",
+      "mbid": "00467da8-2a92-498f-8b10-a80889bcded7",
+      "musicbrainz_id": "00467da8-2a92-498f-8b10-a80889bcded7",
+      "name": "The Horrors",
+      "search_latency_ms": 12.728,
+      "tier": "CORE_5000"
+    },
+    {
+      "artist_key": "mbid::004913ca-cc81-44ca-b1b5-6f82149cf475",
+      "artist_name": "Lee Aaron",
+      "capabilities": {
+        "alternatives": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "attention": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "evidence": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "festival_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "forward": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "live_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "markets": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "peers": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "search": {
+          "reason": "canonical result found",
+          "status": "PASS"
+        },
+        "security_initial": {
+          "latency_ms": 22.673,
+          "reason": "security payload returned",
+          "status": "PASS"
+        }
+      },
+      "evidence_family_count": 5,
+      "evidence_profile": "deep",
+      "mbid": "004913ca-cc81-44ca-b1b5-6f82149cf475",
+      "musicbrainz_id": "004913ca-cc81-44ca-b1b5-6f82149cf475",
+      "name": "Lee Aaron",
+      "search_latency_ms": 12.866,
+      "tier": "CORE_5000"
+    },
+    {
+      "artist_key": "mbid::004e5eed-e267-46ea-b504-54526f1f377d",
+      "artist_name": "The Gathering",
+      "capabilities": {
+        "alternatives": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "attention": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "evidence": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "festival_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "forward": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "live_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "markets": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "peers": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "search": {
+          "reason": "canonical result found",
+          "status": "PASS"
+        },
+        "security_initial": {
+          "latency_ms": 41.9,
+          "reason": "security payload returned",
+          "status": "PASS"
+        }
+      },
+      "evidence_family_count": 6,
+      "evidence_profile": "deep",
+      "mbid": "004e5eed-e267-46ea-b504-54526f1f377d",
+      "musicbrainz_id": "004e5eed-e267-46ea-b504-54526f1f377d",
+      "name": "The Gathering",
+      "search_latency_ms": 14.609,
+      "tier": "CORE_5000"
+    },
+    {
+      "artist_key": "mbid::032889a1-8820-44b6-b6d1-e27b7120cd24",
+      "artist_name": "Alireza Kohany",
+      "capabilities": {
+        "alternatives": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "attention": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "evidence": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "festival_history": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "forward": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "live_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "markets": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "peers": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "search": {
+          "reason": "canonical result found",
+          "status": "PASS"
+        },
+        "security_initial": {
+          "latency_ms": 29.238,
+          "reason": "security payload returned",
+          "status": "PASS"
+        }
+      },
+      "evidence_family_count": 2,
+      "evidence_profile": "sparse",
+      "mbid": "032889a1-8820-44b6-b6d1-e27b7120cd24",
+      "musicbrainz_id": "032889a1-8820-44b6-b6d1-e27b7120cd24",
+      "name": "Alireza Kohany",
+      "search_latency_ms": 19.051,
+      "tier": "COVERAGE_25000"
+    },
+    {
+      "artist_key": "mbid::0004537a-4b12-43eb-a023-04009e738d2e",
+      "artist_name": "Ultra Nat\u00e9",
+      "capabilities": {
+        "alternatives": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "attention": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "evidence": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "festival_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "forward": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "live_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "markets": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "peers": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "search": {
+          "reason": "canonical result found",
+          "status": "PASS"
+        },
+        "security_initial": {
+          "latency_ms": 37.752,
+          "reason": "security payload returned",
+          "status": "PASS"
+        }
+      },
+      "evidence_family_count": 4,
+      "evidence_profile": "medium",
+      "mbid": "0004537a-4b12-43eb-a023-04009e738d2e",
+      "musicbrainz_id": "0004537a-4b12-43eb-a023-04009e738d2e",
+      "name": "Ultra Nat\u00e9",
+      "search_latency_ms": 17.14,
+      "tier": "COVERAGE_25000"
+    },
+    {
+      "artist_key": "mbid::0004d643-96e3-486a-bafe-eb792871ce9f",
+      "artist_name": "Siddhartha",
+      "capabilities": {
+        "alternatives": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "attention": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "evidence": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "festival_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "forward": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "live_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "markets": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "peers": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "search": {
+          "reason": "canonical result found",
+          "status": "PASS"
+        },
+        "security_initial": {
+          "latency_ms": 42.57,
+          "reason": "security payload returned",
+          "status": "PASS"
+        }
+      },
+      "evidence_family_count": 5,
+      "evidence_profile": "deep",
+      "mbid": "0004d643-96e3-486a-bafe-eb792871ce9f",
+      "musicbrainz_id": "0004d643-96e3-486a-bafe-eb792871ce9f",
+      "name": "Siddhartha",
+      "search_latency_ms": 19.149,
+      "tier": "COVERAGE_25000"
+    },
+    {
+      "artist_key": "mbid::000b1990-4dd8-4835-abcd-bb6038c13ac7",
+      "artist_name": "Hayden",
+      "capabilities": {
+        "alternatives": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "attention": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "evidence": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "festival_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "forward": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "live_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "markets": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "peers": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "search": {
+          "reason": "canonical result found",
+          "status": "PASS"
+        },
+        "security_initial": {
+          "latency_ms": 36.848,
+          "reason": "security payload returned",
+          "status": "PASS"
+        }
+      },
+      "evidence_family_count": 5,
+      "evidence_profile": "deep",
+      "mbid": "000b1990-4dd8-4835-abcd-bb6038c13ac7",
+      "musicbrainz_id": "000b1990-4dd8-4835-abcd-bb6038c13ac7",
+      "name": "Hayden",
+      "search_latency_ms": 18.899,
+      "tier": "COVERAGE_25000"
+    },
+    {
+      "artist_key": "mbid::000d90ec-d64c-48a1-b775-e726fd240e9f",
+      "artist_name": "Get Cape. Wear Cape. Fly",
+      "capabilities": {
+        "alternatives": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "attention": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "evidence": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "festival_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "forward": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "live_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "markets": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "peers": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "search": {
+          "reason": "canonical result found",
+          "status": "PASS"
+        },
+        "security_initial": {
+          "latency_ms": 33.103,
+          "reason": "security payload returned",
+          "status": "PASS"
+        }
+      },
+      "evidence_family_count": 5,
+      "evidence_profile": "deep",
+      "mbid": "000d90ec-d64c-48a1-b775-e726fd240e9f",
+      "musicbrainz_id": "000d90ec-d64c-48a1-b775-e726fd240e9f",
+      "name": "Get Cape. Wear Cape. Fly",
+      "search_latency_ms": 11.903,
+      "tier": "COVERAGE_25000"
+    },
+    {
+      "artist_key": "mbid::000fecd9-ae03-49bc-9a08-636dde5d405d",
+      "artist_name": "Crystal Stilts",
+      "capabilities": {
+        "alternatives": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "attention": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "evidence": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "festival_history": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "forward": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "live_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "markets": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "peers": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "search": {
+          "reason": "canonical result found",
+          "status": "PASS"
+        },
+        "security_initial": {
+          "latency_ms": 21.251,
+          "reason": "security payload returned",
+          "status": "PASS"
+        }
+      },
+      "evidence_family_count": 3,
+      "evidence_profile": "medium",
+      "mbid": "000fecd9-ae03-49bc-9a08-636dde5d405d",
+      "musicbrainz_id": "000fecd9-ae03-49bc-9a08-636dde5d405d",
+      "name": "Crystal Stilts",
+      "search_latency_ms": 13.759,
+      "tier": "COVERAGE_25000"
+    },
+    {
+      "artist_key": "mbid::00144d0c-5b7b-4bde-b07c-0792eef171e0",
+      "artist_name": "Ronin Op F",
+      "capabilities": {
+        "alternatives": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "attention": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "evidence": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "festival_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "forward": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "live_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "markets": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "peers": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "search": {
+          "reason": "canonical result found",
+          "status": "PASS"
+        },
+        "security_initial": {
+          "latency_ms": 26.248,
+          "reason": "security payload returned",
+          "status": "PASS"
+        }
+      },
+      "evidence_family_count": 5,
+      "evidence_profile": "deep",
+      "mbid": "00144d0c-5b7b-4bde-b07c-0792eef171e0",
+      "musicbrainz_id": "00144d0c-5b7b-4bde-b07c-0792eef171e0",
+      "name": "Ronin Op F",
+      "search_latency_ms": 15.885,
+      "tier": "COVERAGE_25000"
+    },
+    {
+      "artist_key": "mbid::00161f8c-e592-42eb-81b2-1d3df20cf6d5",
+      "artist_name": "Nightbox",
+      "capabilities": {
+        "alternatives": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "attention": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "evidence": {
+          "reason": "panel returned a value",
+          "status": "PASS"
+        },
+        "festival_history": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "forward": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "live_history": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "markets": {
+          "reason": "panel returned evidence",
+          "state": "OBSERVED",
+          "status": "PASS"
+        },
+        "peers": {
+          "reason": "explicit UNKNOWN; no value fabricated",
+          "status": "PASS"
+        },
+        "search": {
+          "reason": "canonical result found",
+          "status": "PASS"
+        },
+        "security_initial": {
+          "latency_ms": 22.576,
+          "reason": "security payload returned",
+          "status": "PASS"
+        }
+      },
+      "evidence_family_count": 5,
+      "evidence_profile": "deep",
+      "mbid": "00161f8c-e592-42eb-81b2-1d3df20cf6d5",
+      "musicbrainz_id": "00161f8c-e592-42eb-81b2-1d3df20cf6d5",
+      "name": "Nightbox",
+      "search_latency_ms": 15.61,
+      "tier": "COVERAGE_25000"
+    }
+  ],
+  "cohort_source": "artists",
+  "compare": {
+    "issues": [],
+    "result_keys": [
+      "contract_version",
+      "dimensions",
+      "left",
+      "no_winner",
+      "note",
+      "release_label",
+      "right"
+    ],
+    "status": "PASS"
+  },
+  "milestone": "TALENT_BUYER_TERMINAL_V1",
+  "performance": {
+    "artist_search": {
+      "errors": [],
+      "iterations": 25,
+      "max_ms": 16.994,
+      "min_ms": 14.155,
+      "p50_ms": 14.969,
+      "p95_ms": 16.913
+    },
+    "artist_security": {
+      "errors": [],
+      "iterations": 25,
+      "max_ms": 21.636,
+      "min_ms": 18.018,
+      "p50_ms": 19.619,
+      "p95_ms": 21.474
+    },
+    "compare": {
+      "errors": [],
+      "iterations": 25,
+      "max_ms": 67.297,
+      "min_ms": 44.568,
+      "p50_ms": 53.518,
+      "p95_ms": 65.634
+    },
+    "market_panel": {
+      "errors": [],
+      "iterations": 25,
+      "max_ms": 26.828,
+      "min_ms": 18.075,
+      "p50_ms": 23.149,
+      "p95_ms": 26.486
+    },
+    "peer_panel": {
+      "errors": [],
+      "iterations": 25,
+      "max_ms": 27.712,
+      "min_ms": 21.486,
+      "p50_ms": 24.945,
+      "p95_ms": 27.067
+    }
+  },
+  "product_db": "/Users/scottthomasswitzer/CascadeProjects/festival-bloomberg/serving/artist_security_terminal_v1/CURRENT.duckdb",
+  "serving_artifact": {
+    "counts": {
+      "artists": 25000,
+      "events": 153749,
+      "festivals": 14721,
+      "future_events": 6229,
+      "markets": 27322,
+      "peers": 135468
+    },
+    "size_bytes": 203436032,
+    "validation": {
+      "actual_artist_count": 25000,
+      "actual_estate_market_links": 27322,
+      "affinity_source_rows": 508894,
+      "affinity_source_sha256": "3ceb67149b88635dbd1edb46d5ee05684c26b6fb80c3e6e6dfdfab87b137117d",
+      "affinity_supplied": true,
+      "browser_reads_compact_file_only": true,
+      "expected_artist_count": 25000,
+      "expected_estate_market_links": 27322,
+      "ticket_zero_prices_null": true,
+      "unknown_preserved": true
+    }
+  },
+  "shortlist": {
+    "issues": [],
+    "rows": 25,
+    "status": "PASS"
+  },
+  "status": "PASS",
+  "summary": {
+    "capability_failures": 0,
+    "capability_passes": 252,
+    "cohort_size": 25,
+    "honest_unknown_panels": 60,
+    "profile_counts": {
+      "deep": 17,
+      "medium": 7,
+      "sparse": 1
+    },
+    "tier_counts": {
+      "CORE_5000": 8,
+      "COVERAGE_25000": 8,
+      "HOT_1000": 9
+    }
+  }
+}

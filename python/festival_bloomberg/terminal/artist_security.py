@@ -1,0 +1,506 @@
+"""Compact read models for the Talent Buyer Terminal.
+
+The browser-facing product reads only the materialized DuckDB artifact under
+``serving/artist_security_terminal_v1``.  It never joins the canonical
+warehouse or the full terminal snapshot at request time.  Every returned fact
+retains a source/status/time boundary; an absent observation is represented as
+``UNKNOWN`` rather than a numeric zero.
+"""
+
+from __future__ import annotations
+
+from collections import defaultdict
+from pathlib import Path
+import re
+from typing import Any
+
+import duckdb
+
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_PRODUCT_DB = str(
+    _PROJECT_ROOT / "serving" / "artist_security_terminal_v1" / "CURRENT.duckdb"
+)
+CONTRACT_VERSION = "artist_security_terminal_v1"
+RELEASE_LABEL = "UNDERWRITING RESEARCH — not automated booking advice"
+
+
+class ArtistSecurityServingError(RuntimeError):
+    """The compact serving artifact is missing or incompatible."""
+
+
+def _rows(conn, sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
+    cur = conn.execute(sql, params or [])
+    cols = [column[0] for column in cur.description]
+    return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def _one(conn, sql: str, params: list[Any] | None = None) -> dict[str, Any] | None:
+    rows = _rows(conn, sql, params)
+    return rows[0] if rows else None
+
+
+def _table_exists(conn, table: str) -> bool:
+    schema, name = table.split(".", 1) if "." in table else ("main", table)
+    return bool(conn.execute(
+        "SELECT COUNT(*) FROM duckdb_tables() WHERE schema_name=? AND table_name=?",
+        [schema, name],
+    ).fetchone()[0])
+
+
+def open_product_db(path: str = DEFAULT_PRODUCT_DB) -> duckdb.DuckDBPyConnection:
+    """Open and validate the immutable compact product artifact read-only."""
+    artifact = Path(path)
+    if not artifact.is_file():
+        raise ArtistSecurityServingError(f"ARTIST_SECURITY_SERVING_MISSING: {artifact}")
+    conn = duckdb.connect(str(artifact), read_only=True)
+    try:
+        required = (
+            "product_meta", "artists", "artist_search_terms", "artist_external_ids",
+            "attention_observations", "artist_peers", "artist_markets", "event_history",
+            "festival_appearances", "future_events",
+        )
+        missing = [table for table in required if not _table_exists(conn, table)]
+        if missing:
+            raise ArtistSecurityServingError(
+                "ARTIST_SECURITY_SERVING_INCOMPATIBLE: missing " + ", ".join(missing)
+            )
+        meta = _one(conn, "SELECT * FROM product_meta LIMIT 1") or {}
+        version = meta.get("contract_version") or meta.get("product_version")
+        if version != CONTRACT_VERSION:
+            raise ArtistSecurityServingError(
+                f"ARTIST_SECURITY_SERVING_INCOMPATIBLE: contract_version={version!r}"
+            )
+        return conn
+    except Exception:
+        conn.close()
+        raise
+
+
+def normalize_search_term(value: str) -> str:
+    return re.sub(r"\s+", " ", value.strip().lower())
+
+
+def search_artists(conn, query: str, limit: int = 25) -> list[dict[str, Any]]:
+    """Search the 25K product universe by canonical name and stored aliases."""
+    q = normalize_search_term(query)
+    if not q:
+        return []
+    limit = max(1, min(int(limit), 100))
+    rows = _rows(conn, """
+        WITH candidates AS (
+            SELECT st.artist_key, a.name, a.musicbrainz_id, a.tier, st.term_type,
+                   CASE
+                     WHEN st.normalized_term = ? THEN 0
+                     WHEN st.normalized_term LIKE ? THEN 1
+                     ELSE 2
+                   END AS match_priority,
+                   length(st.normalized_term) AS term_length
+            FROM artist_search_terms st
+            JOIN artists a USING (artist_key)
+            WHERE st.normalized_term = ? OR st.normalized_term LIKE ? OR st.normalized_term LIKE ?
+        ), ranked AS (
+            SELECT *, ROW_NUMBER() OVER (
+                PARTITION BY artist_key ORDER BY match_priority, term_length, term_type
+            ) AS artist_rank
+            FROM candidates
+        )
+        SELECT artist_key, name, musicbrainz_id, tier, term_type, match_priority
+        FROM ranked WHERE artist_rank = 1
+        ORDER BY match_priority, length(name), lower(name), artist_key
+        LIMIT ?
+    """, [q, f"{q}%", q, f"{q}%", f"%{q}%", limit])
+    return [{
+        "entity_type": "ARTIST",
+        "entity_id": row["artist_key"],
+        "name": row["name"],
+        "mbid": row.get("musicbrainz_id"),
+        "tier": row.get("tier"),
+        "matched_term_type": row.get("term_type"),
+    } for row in rows]
+
+
+def _unknown(source_system: str, note: str) -> dict[str, Any]:
+    return {
+        "status": "UNKNOWN",
+        "source_system": source_system,
+        "latest_observation": None,
+        "latest_knowledge_time": None,
+        "metrics": [],
+        "items": [],
+        "note": note,
+    }
+
+
+def has_advertised_structured_range(event: dict[str, Any]) -> bool:
+    """Whether a forward row carries provider-advertised structured prices."""
+    return (
+        event.get("ticket_price_basis") == "ADVERTISED_STRUCTURED_RANGE"
+        and event.get("ticket_evidence_status") == "ADVERTISED_RANGE"
+        and (event.get("ticket_price_min") is not None or event.get("ticket_price_max") is not None)
+    )
+
+
+def _attention(conn, artist_key: str) -> dict[str, dict[str, Any]]:
+    rows = _rows(conn, """
+        SELECT * FROM attention_observations
+        WHERE artist_key = ?
+        ORDER BY COALESCE(period_end, period_start) DESC NULLS LAST,
+                 knowledge_time DESC NULLS LAST
+    """, [artist_key])
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        source = str(row.get("source_system") or "").lower()
+        if "wiki" in source:
+            grouped["wikimedia"].append(row)
+        elif "listenbrainz" in source:
+            grouped["listenbrainz"].append(row)
+        elif "youtube" in source:
+            grouped["youtube"].append(row)
+
+    out: dict[str, dict[str, Any]] = {}
+    notes = {
+        "wikimedia": "No Wikimedia attention observation is present in this serving generation.",
+        "listenbrainz": "No ListenBrainz consumption observation is present in this serving generation.",
+        "youtube": "No YouTube channel observation is present in this serving generation.",
+    }
+    for source in ("wikimedia", "listenbrainz", "youtube"):
+        items = grouped.get(source, [])
+        if not items:
+            out[source] = _unknown(source, notes[source])
+            continue
+        latest = items[0]
+        out[source] = {
+            "status": "OBSERVED",
+            "source_system": latest.get("source_system") or source,
+            "latest_observation": latest.get("period_end") or latest.get("period_start"),
+            "latest_knowledge_time": latest.get("knowledge_time"),
+            "metrics": items[:24],
+            "items": items[:24],
+            "note": (
+                "Descriptive attention/consumption evidence only; it is not local demand "
+                "or ticket-purchase intent."
+            ),
+        }
+    return out
+
+
+def _peer_rows(conn, artist_key: str, limit: int = 20) -> list[dict[str, Any]]:
+    return _rows(conn, """
+        SELECT p.*, a.name AS resolved_peer_name, a.tier AS peer_tier,
+               (SELECT COUNT(*) FROM artist_markets mine
+                JOIN artist_markets theirs ON mine.market_key = theirs.market_key
+                WHERE mine.artist_key = p.subject_key
+                  AND theirs.artist_key = p.peer_key) AS shared_markets,
+               (SELECT COUNT(DISTINCT mine.event_key)
+                FROM festival_appearances mine
+                JOIN festival_appearances theirs ON mine.event_key = theirs.event_key
+                WHERE mine.artist_key = p.subject_key
+                  AND theirs.artist_key = p.peer_key) AS shared_festival_bills
+        FROM artist_peers p
+        JOIN artists a ON a.artist_key = p.peer_key
+        WHERE p.subject_key = ?
+        ORDER BY p.rank, p.shared_listeners DESC, p.peer_key
+        LIMIT ?
+    """, [artist_key, limit])
+
+
+def _alternatives(peers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    alternatives: list[dict[str, Any]] = []
+    for peer in peers[:10]:
+        reasons = [
+            f"{peer.get('shared_listeners')} shared listeners in the 1% ListenBrainz pilot",
+            f"Jaccard {peer.get('jaccard')}",
+        ]
+        if peer.get("shared_festival_bills"):
+            reasons.append(f"{peer['shared_festival_bills']} shared festival bills")
+        if peer.get("shared_markets"):
+            reasons.append(f"{peer['shared_markets']} shared observed markets")
+        alternatives.append({
+            "artist_key": peer.get("peer_key"),
+            "artist_name": peer.get("resolved_peer_name") or peer.get("peer_name"),
+            "reasons": reasons,
+            "differences": [
+                "Audience affinity is descriptive pilot evidence, not interchangeability or availability.",
+                "Compare market, festival, forward, and ticket evidence before underwriting.",
+            ],
+            "source_system": peer.get("source_system") or "listenbrainz",
+            "source_scope": peer.get("source_scope") or "PILOT_1_PERCENT",
+            "knowledge_time": peer.get("knowledge_time"),
+        })
+    return alternatives
+
+
+def _evidence_items(
+    artist: dict[str, Any],
+    attention: dict[str, dict[str, Any]],
+    peers: list[dict[str, Any]],
+    markets: list[dict[str, Any]],
+    history: list[dict[str, Any]],
+    festivals: list[dict[str, Any]],
+    future: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = [{
+        "panel": "identity",
+        "source_system": artist.get("source_system") or "musicbrainz",
+        "observation_time": artist.get("source_observation_time"),
+        "knowledge_time": artist.get("knowledge_time"),
+        "status": artist.get("identity_status") or "OBSERVED",
+    }]
+    for key, block in attention.items():
+        items.append({
+            "panel": f"attention.{key}",
+            "source_system": block["source_system"],
+            "observation_time": block["latest_observation"],
+            "knowledge_time": block["latest_knowledge_time"],
+            "status": block["status"],
+        })
+    for panel, rows in (
+        ("audience_peers", peers), ("markets", markets), ("live_history", history),
+        ("festival_history", festivals), ("future_tickets", future),
+    ):
+        if rows:
+            latest = rows[0]
+            items.append({
+                "panel": panel,
+                "source_system": latest.get("source_system"),
+                "observation_time": latest.get("event_date") or latest.get("last_play"),
+                "knowledge_time": latest.get("knowledge_time"),
+                "status": "OBSERVED",
+            })
+        else:
+            items.append({
+                "panel": panel, "source_system": None, "observation_time": None,
+                "knowledge_time": None, "status": "UNKNOWN",
+            })
+    return items
+
+
+def get_artist_security(conn, artist_key: str) -> dict[str, Any] | None:
+    """Return the full buyer-facing Artist Security contract."""
+    artist = _one(conn, "SELECT * FROM artists WHERE artist_key = ?", [artist_key])
+    if artist is None and not artist_key.startswith("mbid::"):
+        artist = _one(conn, "SELECT * FROM artists WHERE musicbrainz_id = ?", [artist_key])
+    if artist is None:
+        return None
+    artist_key = artist["artist_key"]
+    external_ids = _rows(conn, """
+        SELECT * FROM artist_external_ids WHERE artist_key = ?
+        ORDER BY id_type, source_system, id_value
+    """, [artist_key])
+    attention = _attention(conn, artist_key)
+    peers = _peer_rows(conn, artist_key)
+    markets = _rows(conn, """
+        SELECT *, observed_shows AS historical_shows,
+               last_play_date AS last_play,
+               market_key AS market_name,
+               ticket_evidence_count AS ticket_evidence
+        FROM artist_markets WHERE artist_key = ?
+        ORDER BY observed_shows DESC NULLS LAST, last_play_date DESC NULLS LAST, market_key
+        LIMIT 24
+    """, [artist_key])
+    for peer in peers:
+        peer["source_artist_key"] = peer.get("subject_key")
+        peer["artist_key"] = peer.get("peer_key")
+        peer["artist_name"] = peer.get("resolved_peer_name") or peer.get("peer_name")
+        peer["why_related"] = peer.get("explanation")
+        peer["differences"] = (
+            f"Shared observed markets: {peer.get('shared_markets') or 0}; "
+            f"shared festival bills: {peer.get('shared_festival_bills') or 0}. "
+            "Availability, deal terms, and local ticket intent remain UNKNOWN."
+        )
+    for market in markets:
+        market["market"] = market.get("market_name") or market.get("market_key")
+        market["last_played"] = market.get("last_play_date")
+    history = _rows(conn, """
+        SELECT * FROM event_history WHERE artist_key = ?
+        ORDER BY event_date DESC NULLS LAST, event_name, event_key
+        LIMIT 250
+    """, [artist_key])
+    festivals = _rows(conn, """
+        SELECT f.*,
+               (SELECT COUNT(DISTINCT other.artist_key)
+                FROM festival_appearances other
+                WHERE other.event_key = f.event_key AND other.artist_key <> f.artist_key) AS co_billed_artist_count
+        FROM festival_appearances f WHERE f.artist_key = ?
+        ORDER BY COALESCE(f.event_date, f.performance_date) DESC NULLS LAST,
+                 f.festival_name, f.event_key
+        LIMIT 150
+    """, [artist_key])
+    future = _rows(conn, """
+        SELECT *, future_event_key AS event_key,
+               ticket_price_min AS price_min,
+               ticket_price_max AS price_max,
+               ticket_price_currency AS currency,
+               source_system AS provider,
+               retrieved_at AS latest_observation
+        FROM future_events WHERE artist_key = ?
+        ORDER BY event_date, event_name, future_event_key
+        LIMIT 150
+    """, [artist_key])
+    alternatives = _alternatives(peers)
+    ticket_evidence_count = sum(has_advertised_structured_range(event) for event in future)
+    market_status = "OBSERVED" if markets else "UNKNOWN"
+    festival_status = "OBSERVED" if festivals else "UNKNOWN"
+    future_status = "OBSERVED" if future else "UNKNOWN"
+    peer_status = "OBSERVED" if peers else "UNKNOWN"
+    quick_facts = {
+        "historical_events": artist.get("historical_event_count") if artist.get("historical_event_count") is not None else len(history),
+        "festival_appearances": artist.get("festival_appearance_count") if artist.get("festival_appearance_count") is not None else len(festivals),
+        "markets": artist.get("market_count") if artist.get("market_count") is not None else len(markets),
+        "venues_played": artist.get("venues_played"),
+        "future_events": len(future),
+        "current_ticket_ranges": ticket_evidence_count,
+        "audience_peers": len(peers),
+    }
+    # Stable V1 contract names plus compatibility aliases used by the existing
+    # SPA while the product replaces the legacy artist page.
+    quick_facts.update({
+        "historical_live_events": quick_facts["historical_events"],
+        "markets_played": quick_facts["markets"],
+        "active_ticket_evidence": quick_facts["current_ticket_ranges"],
+        "audience_affinity_available": "OBSERVED" if peers else "UNKNOWN",
+    })
+    artist["external_ids"] = external_ids
+    artist["identity"] = {
+        "name": artist.get("name"),
+        "type": artist.get("artist_type") or artist.get("type"),
+        "area": artist.get("area"),
+        "mbid": artist.get("musicbrainz_id"),
+    }
+    artist["coverage_state"] = {
+        "identity": "OBSERVED",
+        "attention_sources": sum(1 for block in attention.values() if block["status"] == "OBSERVED"),
+        "audience_peers": peer_status,
+        "markets": market_status,
+        "live_history": "OBSERVED" if history else "UNKNOWN",
+        "festival_history": festival_status,
+        "future": future_status,
+    }
+    evidence_items = _evidence_items(
+        artist, attention, peers, markets, history, festivals, future
+    )
+    latest_knowledge = max(
+        (item["knowledge_time"] for item in evidence_items if item.get("knowledge_time") is not None),
+        default=None,
+        key=str,
+    )
+    observed_panels = (
+        1
+        + artist["coverage_state"]["attention_sources"]
+        + sum(
+            1 for key in ("audience_peers", "markets", "live_history", "festival_history", "future")
+            if artist["coverage_state"][key] == "OBSERVED"
+        )
+    )
+    artist["freshness"] = (
+        f"latest knowledge {latest_knowledge}" if latest_knowledge is not None else "UNKNOWN"
+    )
+    artist["evidence_coverage"] = f"{observed_panels}/9 panels observed"
+    return {
+        "contract_version": CONTRACT_VERSION,
+        "release_label": RELEASE_LABEL,
+        "artist": artist,
+        "quick_facts": quick_facts,
+        "attention": attention,
+        "peers": {
+            "status": peer_status,
+            "label": "PILOT AUDIENCE DATA — 1% ListenBrainz sample",
+            "items": peers,
+            "note": "Shared listening is not local demand, ticket intent, or a booking recommendation.",
+        },
+        "markets": {
+            "status": market_status,
+            "items": markets,
+            "note": "Sorted by transparent observed historical show count; absent measures remain UNKNOWN.",
+        },
+        "history": {"status": "OBSERVED" if history else "UNKNOWN", "items": history},
+        "festivals": {"status": festival_status, "items": festivals},
+        "future": {
+            "status": future_status,
+            "ticket_evidence_status": (
+                "ADVERTISED_STRUCTURED_RANGE" if ticket_evidence_count
+                else "NO_CURRENT_TICKET_EVIDENCE"
+            ),
+            "items": future,
+            "note": (
+                "Ticketmaster prices are provider-advertised structured ranges only; "
+                "they are not transactions, resale prices, attendance, sell-through, or sales."
+            ),
+        },
+        "alternatives": {
+            "status": "OBSERVED" if alternatives else "UNKNOWN",
+            "items": alternatives,
+            "note": "Alternatives are evidence explanations, never a weighted ranking.",
+        },
+        "evidence": {
+            "items": evidence_items
+        },
+    }
+
+
+def _compare_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    artist = payload["artist"]
+    facts = payload["quick_facts"]
+    attention = payload["attention"]
+    markets = payload["markets"]["items"][:5]
+    return {
+        "artist_key": artist["artist_key"],
+        "artist_name": artist["name"],
+        "identity": {
+            "type": artist.get("artist_type") or artist.get("type"),
+            "area": artist.get("area"),
+            "tier": artist.get("tier"),
+        },
+        "attention": {key: value["status"] for key, value in attention.items()},
+        "historical_events": facts.get("historical_events"),
+        "festival_appearances": facts.get("festival_appearances"),
+        "future_events": facts.get("future_events"),
+        "current_ticket_ranges": facts.get("current_ticket_ranges"),
+        "audience_peers": facts.get("audience_peers"),
+        "strongest_markets": [{
+            "market_key": row.get("market_key"),
+            "historical_shows": row.get("observed_shows") or row.get("historical_shows"),
+            "last_play": row.get("last_play_date") or row.get("last_play"),
+        } for row in markets],
+        "coverage_state": artist.get("coverage_state"),
+        "evidence": payload["evidence"]["items"],
+    }
+
+
+def compare_artists(conn, artist_a: str, artist_b: str) -> dict[str, Any] | None:
+    """Return a side-by-side evidence comparison with no ranking or winner."""
+    left = get_artist_security(conn, artist_a)
+    right = get_artist_security(conn, artist_b)
+    if left is None or right is None:
+        return None
+    left_summary = _compare_summary(left)
+    right_summary = _compare_summary(right)
+    return {
+        "contract_version": CONTRACT_VERSION,
+        "release_label": RELEASE_LABEL,
+        "left": left_summary,
+        "right": right_summary,
+        "dimensions": [
+            {"label": "Identity", "left": left_summary["identity"], "right": right_summary["identity"],
+             "explanation": "Public reference identity; no identity quality score."},
+            {"label": "Attention sources", "left": left_summary["attention"], "right": right_summary["attention"],
+             "explanation": "Source-separated attention states; attention is not local demand."},
+            {"label": "Audience peers", "left": left_summary["audience_peers"], "right": right_summary["audience_peers"],
+             "explanation": "Count of available 1% ListenBrainz pilot peer edges."},
+            {"label": "Strongest observed markets", "left": left_summary["strongest_markets"], "right": right_summary["strongest_markets"],
+             "explanation": "Ordered by observed historical shows; UNKNOWN dates stay unknown."},
+            {"label": "Live history", "left": left_summary["historical_events"], "right": right_summary["historical_events"],
+             "explanation": "Descriptive observed event counts, not attendance."},
+            {"label": "Festival history", "left": left_summary["festival_appearances"], "right": right_summary["festival_appearances"],
+             "explanation": "Observed festival/series appearances and co-bills."},
+            {"label": "Future events", "left": left_summary["future_events"], "right": right_summary["future_events"],
+             "explanation": "Latest retained Ticketmaster Discovery observations."},
+            {"label": "Current ticket ranges", "left": left_summary["current_ticket_ranges"], "right": right_summary["current_ticket_ranges"],
+             "explanation": "Provider-advertised structured ranges only; not transactions or sales."},
+            {"label": "Evidence coverage", "left": left_summary["coverage_state"], "right": right_summary["coverage_state"],
+             "explanation": "Explicit observed/unknown states; no composite score."},
+        ],
+        "no_winner": True,
+        "note": "No fixed weights, artist score, ranking, or booking recommendation is produced.",
+    }
