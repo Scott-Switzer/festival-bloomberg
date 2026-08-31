@@ -61,7 +61,7 @@ from ..economics.show_economics_repository import (
     load_show_economics_scenario,
     save_show_economics_scenario,
 )
-from . import storage
+from . import artist_security, storage
 
 STATIC_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
@@ -154,11 +154,13 @@ class TerminalApp:
         conn,
         workspace_conn=None,
         *,
+        artist_security_conn=None,
         deepseek: Any = None,
         llm: Any = None,
     ) -> None:
         self.conn = conn
         self.workspace_conn = workspace_conn if workspace_conn is not None else conn
+        self.artist_security_conn = artist_security_conn
         self.deepseek = deepseek
         self.llm = llm
         # DuckDB connections are not thread-safe; ThreadingHTTPServer serves
@@ -181,8 +183,44 @@ class TerminalApp:
 
         # ---- API --------------------------------------------------------
         if path == "/api/search":
+            limit = int(params.get("limit", 25))
+            if self.artist_security_conn is not None:
+                product_hits = artist_security.search_artists(
+                    self.artist_security_conn, params.get("q", ""), limit
+                )
+                # The buyer flow is artist-first. Fall back to broader entity
+                # search only when the compact 25K product has no artist hit.
+                if product_hits:
+                    return self._ok(product_hits)
             return self._ok(readmodels.search_entities(
-                self.conn, params.get("q", ""), int(params.get("limit", 25))))
+                self.conn, params.get("q", ""), limit))
+        if path == "/api/artist-security/search":
+            if self.artist_security_conn is None:
+                return self._service_unavailable("ARTIST_SECURITY_SERVING_MISSING")
+            return self._ok(artist_security.search_artists(
+                self.artist_security_conn,
+                params.get("q", ""),
+                int(params.get("limit", 25)),
+            ))
+        if path == "/api/artist-security/compare":
+            if self.artist_security_conn is None:
+                return self._service_unavailable("ARTIST_SECURITY_SERVING_MISSING")
+            left = params.get("a")
+            right = params.get("b")
+            if not left or not right:
+                return self._bad_request("compare requires a and b artist keys")
+            comparison = artist_security.compare_artists(
+                self.artist_security_conn, left, right
+            )
+            return self._ok(comparison) if comparison is not None else self._not_found()
+        if path.startswith("/api/artist-security/"):
+            if self.artist_security_conn is None:
+                return self._service_unavailable("ARTIST_SECURITY_SERVING_MISSING")
+            artist_key = unquote(path[len("/api/artist-security/"):])
+            payload = artist_security.get_artist_security(
+                self.artist_security_conn, artist_key
+            )
+            return self._ok(payload) if payload is not None else self._not_found()
         if path == "/api/tape":
             return self._ok(readmodels.query_tape(
                 self.conn,
@@ -622,6 +660,10 @@ class TerminalApp:
         return {"status": 400, "headers": {"Content-Type": "application/json"},
                 "body": _json({"error": message})}
 
+    def _service_unavailable(self, message: str) -> dict[str, Any]:
+        return {"status": 503, "headers": {"Content-Type": "application/json"},
+                "body": _json({"error": message})}
+
 
 class _Handler(BaseHTTPRequestHandler):
     app: TerminalApp
@@ -654,6 +696,7 @@ class _Handler(BaseHTTPRequestHandler):
 def make_app(
     serving_db: str = storage.SERVING_DIR,
     workspace_db: str = storage.WORKSPACE_DEFAULT_DB,
+    artist_security_db: str = artist_security.DEFAULT_PRODUCT_DB,
 ) -> TerminalApp:
     """Build the terminal from a serving snapshot + workspace sidecar.
 
@@ -663,11 +706,21 @@ def make_app(
     load_local_env()
     serving_conn = storage.open_serving_snapshot(serving_db)
     workspace_conn = storage.create_workspace_db(workspace_db)
+    security_conn = None
+    if os.path.isfile(artist_security_db):
+        security_conn = artist_security.open_product_db(artist_security_db)
     deepseek = DeepSeekAskClient(api_key=os.environ.get("DEEPSEEK_API_KEY"))
     llm = NimClient()          # NVIDIA NIM (fail-closed without a key)
-    app = TerminalApp(serving_conn, workspace_conn, deepseek=deepseek, llm=llm)
+    app = TerminalApp(
+        serving_conn,
+        workspace_conn,
+        artist_security_conn=security_conn,
+        deepseek=deepseek,
+        llm=llm,
+    )
     app._serving_conn = serving_conn
     app._workspace_conn = workspace_conn
+    app._artist_security_conn = security_conn
     return app
 
 
@@ -688,8 +741,12 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--serving-db", default=storage.SERVING_DIR)
     parser.add_argument("--workspace-db", default=storage.WORKSPACE_DEFAULT_DB)
+    parser.add_argument("--artist-security-db", default=artist_security.DEFAULT_PRODUCT_DB)
     args = parser.parse_args()
-    serve(make_app(args.serving_db, args.workspace_db), args.port)
+    serve(
+        make_app(args.serving_db, args.workspace_db, args.artist_security_db),
+        args.port,
+    )
 
 
 if __name__ == "__main__":

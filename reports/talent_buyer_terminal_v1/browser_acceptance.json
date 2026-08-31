@@ -1,0 +1,34 @@
+{
+  "status": "PASS",
+  "verified_at": "2026-08-31T02:40:44Z",
+  "browser": "Codex In-app Browser",
+  "flow": "SEARCH -> ARTIST SECURITY -> COMPARE; eight artist panels, strict advertised-range and no-current-ticket states, nine compare dimensions, and no-winner boundary verified with zero console errors",
+  "artists": [
+    "Metallica",
+    "Jamie xx",
+    "Unknown Mortal Orchestra",
+    "Robert Glasper"
+  ],
+  "screenshots": [
+    {
+      "path": "reports/talent_buyer_terminal_v1/metallica_artist_security.png",
+      "sha256": "ba83b258d7fe3d35d760815d53dc6a156d21ccfb03dc1b5cb10b306e253eb74c"
+    },
+    {
+      "path": "reports/talent_buyer_terminal_v1/jamie_xx_artist_security.png",
+      "sha256": "d118b0110dfb776dbdf380c24ac9801dd474c394c432e838e27569ae8c2d52d0"
+    },
+    {
+      "path": "reports/talent_buyer_terminal_v1/unknown_mortal_orchestra_artist_security.png",
+      "sha256": "99be2897f0520d6b43504a3b483ebb42600ad643e1f312540440ffcfe89990fc"
+    },
+    {
+      "path": "reports/talent_buyer_terminal_v1/unknown_mortal_orchestra_vs_jamie_xx_compare.png",
+      "sha256": "c226b0cce5840cb8345ad1cff17d8157d2a3d0188de3f278eeb3a605052df6d7"
+    },
+    {
+      "path": "reports/talent_buyer_terminal_v1/robert_glasper_ticket_evidence.png",
+      "sha256": "a63883e9ea9673960045c67c44c66059aaf969975d6e6084492c95b57b58b02e"
+    }
+  ]
+}
