@@ -105,7 +105,7 @@ class TestListenerKeyPrivacy:
         """The secret itself must never appear in manifest metadata."""
         from festival_bloomberg.cloud.listener_key import ListenerKeyContract
 
-        contract = ListenerKeyContract()
+        contract = ListenerKeyContract(secret_version="2026-09-v1")
         metadata = contract.to_metadata()
         # Only version identifiers, never the secret.
         for key, val in metadata.items():
@@ -206,7 +206,7 @@ class TestVerificationFailureModes:
             validate_contract_compatibility,
         )
 
-        contract = ListenerKeyContract()
+        contract = ListenerKeyContract(secret_version="2026-09-v1")
         expected_meta = contract.to_metadata()
 
         # Mismatched key_version
@@ -228,7 +228,7 @@ class TestVerificationFailureModes:
             validate_contract_compatibility,
         )
 
-        contract = ListenerKeyContract()
+        contract = ListenerKeyContract(secret_version="2026-09-v1")
         # Missing listener_key_version
         incomplete_meta = {
             "listener_key_algorithm": "HMAC-SHA256",
@@ -510,3 +510,377 @@ class TestR2VerificationHelpers:
 
         result = lake.verify_object("bucket", "key", expected_sha)
         assert result is True
+
+
+# ════════════════════════════════════════════════════════════════
+# V1B — SECRET VERSION GOVERNANCE (P1)
+# ════════════════════════════════════════════════════════════════
+
+
+class TestSecretVersionGovernance:
+    """FI_LISTENER_HMAC_SECRET_VERSION must be required and versioned."""
+
+    def test_missing_version_raises(self):
+        """Missing FI_LISTENER_HMAC_SECRET_VERSION fails closed."""
+        from festival_bloomberg.cloud.listener_key import get_secret_version
+
+        with patch.dict(os.environ, {}, clear=True):
+            with pytest.raises(RuntimeError, match="FI_LISTENER_HMAC_SECRET_VERSION"):
+                get_secret_version()
+
+    def test_malformed_version_raises(self):
+        """Malformed version identifier fails closed."""
+        from festival_bloomberg.cloud.listener_key import get_secret_version
+
+        with patch.dict(
+            os.environ, {"FI_LISTENER_HMAC_SECRET_VERSION": "bad version/../"}
+        ):
+            with pytest.raises(ValueError):
+                get_secret_version()
+
+    def test_from_env_requires_version(self):
+        """ListenerKeyContract.from_env() fails without version env."""
+        from festival_bloomberg.cloud.listener_key import ListenerKeyContract
+
+        with patch.dict(os.environ, {}, clear=True):
+            with pytest.raises(RuntimeError):
+                ListenerKeyContract.from_env()
+
+    def test_same_secret_same_version_compatible(self):
+        """Same secret + same version → compatible contract."""
+        from festival_bloomberg.cloud.listener_key import (
+            ListenerKeyContract, validate_contract_compatibility,
+        )
+
+        contract = ListenerKeyContract(secret_version="2026-09-v1")
+        meta = contract.to_metadata()
+        meta["listener_hash_partitions"] = 64
+        # Should not raise.
+        validate_contract_compatibility(
+            meta, expected_contract=contract, expected_partition_count=64,
+        )
+
+    def test_different_version_incompatible(self):
+        """Different secret version → incompatible generation, fails closed."""
+        from festival_bloomberg.cloud.listener_key import (
+            ListenerKeyContract, validate_contract_compatibility,
+        )
+
+        contract = ListenerKeyContract(secret_version="2026-09-v1")
+        other_meta = contract.to_metadata()
+        other_meta["listener_key_secret_version"] = "2026-10-v2"
+        with pytest.raises(RuntimeError, match="generation mismatch"):
+            validate_contract_compatibility(other_meta, expected_contract=contract)
+
+    def test_empty_expected_version_fails_closed(self):
+        """Empty expected secret version must fail closed (never compare blindly)."""
+        from festival_bloomberg.cloud.listener_key import (
+            ListenerKeyContract, validate_contract_compatibility,
+        )
+
+        contract = ListenerKeyContract()  # secret_version empty
+        meta = {
+            "listener_key_algorithm": "HMAC-SHA256",
+            "listener_key_version": "v1",
+            "listener_key_input": "listenbrainz_user_id_decimal_v1",
+            "listener_key_secret_version": "2026-09-v1",
+            "partition_algorithm": "hmac_sha256_prefix_u64_be_mod_v1",
+        }
+        with pytest.raises(RuntimeError, match="empty"):
+            validate_contract_compatibility(meta, expected_contract=contract)
+
+    def test_rotated_secret_new_version_requires_new_generation(self):
+        """Rotating the secret with a new version produces a different key and
+        an incompatible generation — never silently combined."""
+        from festival_bloomberg.cloud.listener_key import (
+            ListenerKeyContract, derive_listener_key, validate_contract_compatibility,
+        )
+
+        secret_v1 = b"a" * 32
+        secret_v2 = b"b" * 32
+        key_v1 = derive_listener_key(42, secret_v1)
+        key_v2 = derive_listener_key(42, secret_v2)
+        assert key_v1 != key_v2
+
+        contract_v1 = ListenerKeyContract(secret_version="2026-09-v1")
+        contract_v2 = ListenerKeyContract(secret_version="2026-10-v2")
+        meta_v1 = contract_v1.to_metadata()
+        with pytest.raises(RuntimeError, match="generation mismatch"):
+            validate_contract_compatibility(meta_v1, expected_contract=contract_v2)
+
+
+# ════════════════════════════════════════════════════════════════
+# V1B — PUBLICATION ORDERING (P0-1)
+# ════════════════════════════════════════════════════════════════
+
+
+class _RecordingLake:
+    """Fake R2Lake recording calls for ordering assertions."""
+
+    def __init__(self, verify_result: bool = True, current_ok: bool = True):
+        self.verify_result = verify_result
+        self.current_ok = current_ok
+        self.calls: list[str] = []
+        self.manifests: list[dict] = []
+        self.current_writes: list[tuple[str, str]] = []
+
+    def verify_object(self, bucket: str, key: str, expected_sha256: str) -> bool:
+        self.calls.append(f"verify:{key}")
+        return self.verify_result
+
+    def write_manifest(self, bucket: str, key: str, manifest: dict) -> str:
+        self.calls.append(f"manifest:{manifest.get('status')}")
+        self.manifests.append(manifest)
+        return f"r2://{bucket}/{key}"
+
+    def write_current_pointer(self, bucket: str, key: str, target_key: str) -> str:
+        self.calls.append(f"current:{target_key}")
+        self.current_writes.append((key, target_key))
+        if not self.current_ok:
+            raise RuntimeError("simulated CURRENT write failure")
+        return f"r2://{bucket}/{key}"
+
+    def head(self, bucket: str, key: str):
+        return {"key": key}
+
+    def get_bytes(self, bucket: str, key: str) -> bytes:
+        return b""
+
+
+class TestPublicationOrdering:
+    """P0-1: CURRENT pointer must move ONLY after VERIFIED, and PUBLISHED
+    only after the pointer write succeeds."""
+
+    def _make_manifest(self):
+        from festival_bloomberg.cloud.job_manifest import JobManifest
+        return JobManifest(
+            job_id="identity_v2_test",
+            job_type="identity_graph_v2",
+            status="BUILD_COMPLETE",
+            output_hashes={"identity/graph_v2/test/db.duckdb": "a" * 64},
+        )
+
+    def test_verification_failure_leaves_current_untouched(self):
+        """Old CURRENT must remain unchanged when output verification fails."""
+        from festival_bloomberg.cloud.batch_jobs import verify_outputs, ERR_R2_VERIFY_FAILED
+
+        lake = _RecordingLake(verify_result=False)
+        manifest = self._make_manifest()
+
+        with pytest.raises(RuntimeError, match="Verification failed"):
+            verify_outputs(
+                lake,
+                bucket="lake",
+                output_hashes=manifest.output_hashes,
+                manifest=manifest,
+                manifest_key_path="control/jobs/identity_graph_v2/x/manifest.json",
+            )
+
+        # CURRENT pointer must NEVER have been touched.
+        assert lake.current_writes == []
+        # Manifest persisted as FAILED with fixed error code.
+        assert manifest.status == "FAILED"
+        assert manifest.error_code == ERR_R2_VERIFY_FAILED
+
+    def test_success_flow_order_verified_then_current_then_published(self):
+        """Ordering: VERIFIED manifest → CURRENT write → PUBLISHED manifest."""
+        from festival_bloomberg.cloud.batch_jobs import (
+            verify_outputs, transition_verified_to_published,
+        )
+
+        lake = _RecordingLake(verify_result=True, current_ok=True)
+        manifest = self._make_manifest()
+        key_path = "control/jobs/identity_graph_v2/x/manifest.json"
+
+        verify_outputs(
+            lake, bucket="lake", output_hashes=manifest.output_hashes,
+            manifest=manifest, manifest_key_path=key_path,
+        )
+        assert manifest.status == "VERIFIED"
+        assert lake.current_writes == []  # not yet moved
+
+        transition_verified_to_published(
+            lake, bucket="lake",
+            current_key="identity/graph_v2/CURRENT.json",
+            target_key="identity/graph_v2/job_x",
+            manifest=manifest, manifest_key_path=key_path,
+        )
+
+        # ORDER: verify → VERIFIED manifest → CURRENT → PUBLISHED manifest
+        verify_idx = lake.calls.index("verify:identity/graph_v2/test/db.duckdb")
+        verified_manifest_idx = lake.calls.index("manifest:VERIFIED")
+        current_idx = lake.calls.index("current:identity/graph_v2/job_x")
+        published_manifest_idx = lake.calls.index("manifest:PUBLISHED")
+        assert verify_idx < verified_manifest_idx < current_idx < published_manifest_idx
+        assert manifest.status == "PUBLISHED"
+        assert manifest.publication_state == "PUBLISHED"
+
+    def test_current_write_failure_keeps_verified_never_published(self):
+        """If CURRENT write fails, generation remains VERIFIED — never PUBLISHED."""
+        from festival_bloomberg.cloud.batch_jobs import (
+            verify_outputs, transition_verified_to_published,
+        )
+
+        lake = _RecordingLake(verify_result=True, current_ok=False)
+        manifest = self._make_manifest()
+        key_path = "control/jobs/identity_graph_v2/x/manifest.json"
+
+        verify_outputs(
+            lake, bucket="lake", output_hashes=manifest.output_hashes,
+            manifest=manifest, manifest_key_path=key_path,
+        )
+
+        with pytest.raises(RuntimeError, match="PUBLICATION_FAILED"):
+            transition_verified_to_published(
+                lake, bucket="lake",
+                current_key="identity/graph_v2/CURRENT.json",
+                target_key="identity/graph_v2/job_x",
+                manifest=manifest, manifest_key_path=key_path,
+            )
+
+        # Generation stays VERIFIED, never PUBLISHED.
+        assert manifest.status == "VERIFIED"
+        assert manifest.publication_state == "VERIFIED"
+        assert manifest.error_code == "PUBLICATION_FAILED"
+        # No PUBLISHED manifest was ever written.
+        assert "manifest:PUBLISHED" not in lake.calls
+
+
+# ════════════════════════════════════════════════════════════════
+# V1B — SECRETS NEVER IN SPEC / STATUS (P0-3)
+# ════════════════════════════════════════════════════════════════
+
+
+class TestFakeSecretAbsence:
+    """Conspicuous fake secrets must never appear in spec/status/manifest."""
+
+    FAKE_SECRET = "THIS_SECRET_MUST_NEVER_APPEAR"
+
+    def test_spec_with_env_vars_rejected(self):
+        """FI_BATCH_JOB must contain only the sanitized spec; env_vars rejected."""
+        import importlib.util
+        entrypoint = importlib.util.spec_from_file_location(
+            "batch_entrypoint",
+            Path(__file__).resolve().parents[2] / "cloud-runtime" / "docker" / "batch_entrypoint.py",
+        )
+        mod = importlib.util.module_from_spec(entrypoint)
+        entrypoint.loader.exec_module(mod)
+
+        raw = {
+            "job_type": "listenbrainz_map",
+            "job_id": "map_001",
+            "env_vars": {"FI_LISTENER_HMAC_SECRET": self.FAKE_SECRET},
+        }
+        with pytest.raises(ValueError, match="env_vars"):
+            mod.sanitize_job_spec(raw)
+
+    def test_sanitized_spec_has_no_secret_fields(self):
+        """Sanitized spec contains only safe logical fields."""
+        import importlib.util
+        entrypoint = importlib.util.spec_from_file_location(
+            "batch_entrypoint",
+            Path(__file__).resolve().parents[2] / "cloud-runtime" / "docker" / "batch_entrypoint.py",
+        )
+        mod = importlib.util.module_from_spec(entrypoint)
+        entrypoint.loader.exec_module(mod)
+
+        raw = {
+            "job_type": "cloud_smoke",
+            "job_id": "smoke_001",
+            "params": {"partitions": 64},
+            # A malicious/legacy field that must be dropped:
+            "env_vars": {"FI_LISTENER_HMAC_SECRET": self.FAKE_SECRET},
+        }
+        with pytest.raises(ValueError):
+            mod.sanitize_job_spec(raw)
+
+    def test_manifest_metadata_never_contains_secret(self):
+        """Manifest/checkpoint metadata carries only version identifiers."""
+        from festival_bloomberg.cloud.listener_key import ListenerKeyContract
+
+        contract = ListenerKeyContract(secret_version="2026-09-v1")
+        serialized = json.dumps(contract.to_metadata())
+        assert self.FAKE_SECRET not in serialized
+        # Secret value itself is not derivable from metadata.
+        assert "THIS_SECRET" not in serialized
+
+    def test_job_result_schema_has_no_secret_fields(self):
+        """BatchJobResult carries only safe fields — no env_vars/secret."""
+        # Verify the TS interface contract is respected in the Python
+        # counterpart: the entrypoint result dict keys are safe.
+        import importlib.util
+        entrypoint = importlib.util.spec_from_file_location(
+            "batch_entrypoint",
+            Path(__file__).resolve().parents[2] / "cloud-runtime" / "docker" / "batch_entrypoint.py",
+        )
+        mod = importlib.util.module_from_spec(entrypoint)
+        entrypoint.loader.exec_module(mod)
+        import inspect
+        main_src = inspect.getsource(mod.main)
+        # The result dict must not include env_vars or raw secret fields.
+        assert "env_vars" not in main_src.split("result: dict")[1].split("try:")[0]
+
+
+# ════════════════════════════════════════════════════════════════
+# V1B — SAFE ERROR CODES (P1)
+# ════════════════════════════════════════════════════════════════
+
+
+class TestSafeErrorCodes:
+    """Internal exceptions map to fixed codes, never raw exception text."""
+
+    def test_verify_failure_uses_fixed_code(self):
+        """Verification failure → R2_VERIFY_FAILED."""
+        from festival_bloomberg.cloud.batch_jobs import verify_outputs, ERR_R2_VERIFY_FAILED
+        from festival_bloomberg.cloud.job_manifest import JobManifest
+
+        lake = _RecordingLake(verify_result=False)
+        manifest = JobManifest(
+            job_id="x", job_type="cloud_smoke",
+            status="BUILD_COMPLETE",
+            output_hashes={"k": "a" * 64},
+        )
+        with pytest.raises(RuntimeError):
+            verify_outputs(lake, bucket="b", output_hashes=manifest.output_hashes,
+                           manifest=manifest, manifest_key_path="m.json")
+        assert manifest.error_code == ERR_R2_VERIFY_FAILED
+
+    def test_publication_failure_uses_fixed_code(self):
+        """CURRENT write failure → PUBLICATION_FAILED."""
+        from festival_bloomberg.cloud.batch_jobs import (
+            verify_outputs, transition_verified_to_published, ERR_PUBLICATION_FAILED,
+        )
+        from festival_bloomberg.cloud.job_manifest import JobManifest
+
+        lake = _RecordingLake(verify_result=True, current_ok=False)
+        manifest = JobManifest(
+            job_id="x", job_type="cloud_smoke",
+            status="BUILD_COMPLETE",
+            output_hashes={"k": "a" * 64},
+        )
+        verify_outputs(lake, bucket="b", output_hashes=manifest.output_hashes,
+                       manifest=manifest, manifest_key_path="m.json")
+        with pytest.raises(RuntimeError):
+            transition_verified_to_published(
+                lake, bucket="b", current_key="CURRENT.json", target_key="t",
+                manifest=manifest, manifest_key_path="m.json",
+            )
+        assert manifest.error_code == ERR_PUBLICATION_FAILED
+
+    def test_entrypoint_validation_error_code(self):
+        """Entrypoint validation failure → JOB_VALIDATION_FAILED."""
+        import importlib.util
+        entrypoint = importlib.util.spec_from_file_location(
+            "batch_entrypoint",
+            Path(__file__).resolve().parents[2] / "cloud-runtime" / "docker" / "batch_entrypoint.py",
+        )
+        mod = importlib.util.module_from_spec(entrypoint)
+        entrypoint.loader.exec_module(mod)
+        assert mod.ERR_JOB_VALIDATION_FAILED == "JOB_VALIDATION_FAILED"
+
+        # A spec with a forbidden key raises ValueError carrying the fixed code.
+        with pytest.raises(ValueError, match="env_vars"):
+            mod.validate_spec({
+                "job_type": "cloud_smoke",
+                "env_vars": {"FI_LISTENER_HMAC_SECRET": "x"},
+            })

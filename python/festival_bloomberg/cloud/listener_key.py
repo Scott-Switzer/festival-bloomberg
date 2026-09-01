@@ -16,8 +16,18 @@ Metadata (recorded in manifests/checkpoints, never the secret itself):
     listener_key_algorithm = HMAC-SHA256
     listener_key_version = v1
     listener_key_input = listenbrainz_user_id_decimal_v1
-    listener_key_secret_version = 2026-09-v1   # identifier only
+    listener_key_secret_version = <FI_LISTENER_HMAC_SECRET_VERSION>  # identifier only
     partition_algorithm = hmac_sha256_prefix_u64_be_mod_v1
+
+Secret-version governance (V1B):
+    - FI_LISTENER_HMAC_SECRET_VERSION is REQUIRED (non-secret identifier) for
+      ListenBrainz map/reduce. Missing secret OR missing version fails BEFORE
+      processing.
+    - The secret version is recorded in manifests/checkpoints (never the
+      secret itself) so generations are reproducible.
+    - Reducer refuses mixed secret versions.
+    - Rotating the secret REQUIRES a new FI_LISTENER_HMAC_SECRET_VERSION and a
+      new generation; v1 and v2 partials must never be silently combined.
 
 Requirements:
     - secret only in Cloudflare secret binding (FI_LISTENER_HMAC_SECRET)
@@ -34,29 +44,88 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 # ── Contract metadata (public, not secret) ─────────────────────────
 
 LISTENER_KEY_ALGORITHM = "HMAC-SHA256"
 LISTENER_KEY_VERSION = "v1"
 LISTENER_KEY_INPUT = "listenbrainz_user_id_decimal_v1"
-LISTENER_KEY_SECRET_VERSION = "2026-09-v1"
 PARTITION_ALGORITHM = "hmac_sha256_prefix_u64_be_mod_v1"
 
 # Minimum secret length (256 bits = 32 bytes for HMAC-SHA256 key).
 MIN_SECRET_BYTES = 32
 
+# Maximum length of the non-secret secret-version identifier.
+MAX_SECRET_VERSION_LEN = 64
+
+
+def get_secret_version() -> str:
+    """Read the non-secret secret-version identifier from the environment.
+
+    FI_LISTENER_HMAC_SECRET_VERSION is REQUIRED for ListenBrainz map/reduce.
+    It identifies WHICH secret generation produced the listener keys — it is
+    never the secret itself.
+
+    Raises RuntimeError if unset, ValueError if malformed.
+    """
+    version = os.environ.get("FI_LISTENER_HMAC_SECRET_VERSION", "").strip()
+    if not version:
+        raise RuntimeError(
+            "FI_LISTENER_HMAC_SECRET_VERSION is not set. "
+            "This non-secret version identifier is required so listener-key "
+            "generations are reproducible and never silently mixed."
+        )
+    if len(version) > MAX_SECRET_VERSION_LEN:
+        raise ValueError(
+            f"FI_LISTENER_HMAC_SECRET_VERSION too long: "
+            f"max {MAX_SECRET_VERSION_LEN} chars"
+        )
+    if not all(c.isalnum() or c in "-_." for c in version):
+        raise ValueError(
+            "FI_LISTENER_HMAC_SECRET_VERSION contains invalid characters; "
+            "use alphanumeric, dash, underscore, or dot"
+        )
+    return version
+
 
 @dataclass(frozen=True)
 class ListenerKeyContract:
-    """Immutable description of the pseudonymization contract for this run."""
+    """Immutable description of the pseudonymization contract for this run.
+
+    secret_version is the non-secret identifier of the HMAC secret generation.
+    Production callers must use from_env(); tests may pass an explicit value.
+    """
 
     algorithm: str = LISTENER_KEY_ALGORITHM
     key_version: str = LISTENER_KEY_VERSION
     key_input: str = LISTENER_KEY_INPUT
-    secret_version: str = LISTENER_KEY_SECRET_VERSION
+    secret_version: str = ""
     partition_algorithm: str = PARTITION_ALGORITHM
+
+    def __post_init__(self) -> None:
+        # Allow explicit construction (tests) or fill from env when unset.
+        if not self.secret_version:
+            version = os.environ.get("FI_LISTENER_HMAC_SECRET_VERSION", "").strip()
+            if version:
+                object.__setattr__(self, "secret_version", version)
+
+    @classmethod
+    def from_env(cls) -> "ListenerKeyContract":
+        """Build the contract from required environment configuration.
+
+        Raises RuntimeError if FI_LISTENER_HMAC_SECRET_VERSION is missing.
+        """
+        return cls(secret_version=get_secret_version())
+
+    def require_version(self) -> str:
+        """Return the secret version, failing closed if it was never set."""
+        if not self.secret_version:
+            raise RuntimeError(
+                "ListenerKeyContract has no secret_version — "
+                "FI_LISTENER_HMAC_SECRET_VERSION must be set before processing."
+            )
+        return self.secret_version
 
     def to_metadata(self) -> dict:
         """Return a metadata dict suitable for manifests/checkpoints.
@@ -221,6 +290,14 @@ def validate_contract_compatibility(
         expected_contract = ListenerKeyContract()
 
     expected = expected_contract.to_metadata()
+
+    # The secret version must be concrete, never empty, before any comparison.
+    if not expected.get("listener_key_secret_version"):
+        raise RuntimeError(
+            "Expected listener_key_secret_version is empty — "
+            "FI_LISTENER_HMAC_SECRET_VERSION must be set before validating "
+            "generation compatibility."
+        )
 
     for field in (
         "listener_key_algorithm",

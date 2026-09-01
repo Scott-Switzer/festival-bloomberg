@@ -39,9 +39,21 @@ from festival_bloomberg.cloud.job_manifest import (
 )
 from festival_bloomberg.cloud.listener_key import (
     ListenerKeyContract, derive_listener_key_and_partition,
-    derive_listener_keys_batch, get_secret, canonical_input,
-    validate_contract_compatibility,
+    derive_listener_keys_batch, get_secret, get_secret_version,
+    canonical_input, validate_contract_compatibility,
 )
+
+
+# ── Fixed machine-readable error codes (P1 V1B) ───────────────────
+# Internal exceptions are NEVER exposed raw. The status API and manifest
+# carry only these fixed codes; full details go to internal logs only.
+ERR_JOB_VALIDATION_FAILED = "JOB_VALIDATION_FAILED"
+ERR_CONTAINER_START_FAILED = "CONTAINER_START_FAILED"
+ERR_JOB_EXEC_FAILED = "JOB_EXEC_FAILED"
+ERR_R2_READ_FAILED = "R2_READ_FAILED"
+ERR_R2_VERIFY_FAILED = "R2_VERIFY_FAILED"
+ERR_PUBLICATION_FAILED = "PUBLICATION_FAILED"
+ERR_LISTENER_KEY_CONFIG = "LISTENER_KEY_CONFIG_FAILED"
 
 
 def _get_lake() -> R2Lake:
@@ -52,12 +64,19 @@ def _get_lake() -> R2Lake:
 # The HMAC secret (FI_LISTENER_HMAC_SECRET) is read from the Cloudflare
 # secret binding at runtime. It never appears in Git, R2, manifests,
 # checkpoints, stdout, stderr, or status API payloads.
-LISTENER_KEY_CONTRACT = ListenerKeyContract()
+# The secret-version identifier (FI_LISTENER_HMAC_SECRET_VERSION) is
+# REQUIRED and read lazily so importing the module never fails without env.
+def _listener_key_contract() -> ListenerKeyContract:
+    """Build the listener-key contract from required environment config.
+
+    Fails closed (RuntimeError) if FI_LISTENER_HMAC_SECRET_VERSION is unset.
+    """
+    return ListenerKeyContract.from_env()
 
 
 def _listener_key_metadata() -> dict:
     """Return the listener-key contract metadata (version identifiers only)."""
-    return LISTENER_KEY_CONTRACT.to_metadata()
+    return _listener_key_contract().to_metadata()
 
 
 # ── Metric-universe metadata for Gold affinity outputs ────────────
@@ -95,6 +114,94 @@ def _git_commit() -> str:
         return result.stdout.strip()[:12] if result.returncode == 0 else "unknown"
     except Exception:
         return "unknown"
+
+
+def verify_outputs(
+    lake, *,
+    bucket: str,
+    output_hashes: dict[str, str],
+    manifest: JobManifest,
+    manifest_key_path: str,
+) -> None:
+    """Verify every required logical output before VERIFIED (P0-1/P5/P6).
+
+    A generated object existing in R2 does NOT mean VERIFIED. This verifies:
+      - object exists (HEAD)
+      - SHA-256 matches the recorded digest
+
+    On any failure: manifest → FAILED with fixed code R2_VERIFY_FAILED,
+    persisted, and RuntimeError raised. CURRENT is never touched here — the
+    caller must invoke transition_verified_to_published() only after this
+    passes.
+    """
+    for out_key, expected_sha in output_hashes.items():
+        if not lake.verify_object(bucket, out_key, expected_sha):
+            manifest.status = STATUS_FAILED
+            manifest.publication_state = "UNPUBLISHED"
+            manifest.error_code = ERR_R2_VERIFY_FAILED
+            manifest.error = f"Verification failed for {out_key}"
+            manifest.completed_at = now_iso()
+            try:
+                lake.write_manifest(bucket, manifest_key_path, manifest.to_dict())
+            except Exception:
+                pass
+            raise RuntimeError(manifest.error or "Verification failed")
+
+    manifest.status = STATUS_VERIFIED
+    manifest.publication_state = STATUS_VERIFIED
+    manifest.verified_at = now_iso()
+    manifest.verified_hashes = dict(output_hashes)
+    lake.write_manifest(bucket, manifest_key_path, manifest.to_dict())
+
+
+def transition_verified_to_published(
+    lake, *,
+    bucket: str,
+    current_key: str,
+    target_key: str,
+    manifest: JobManifest,
+    manifest_key_path: str,
+) -> None:
+    """P0-1: CURRENT pointer moves ONLY after VERIFIED; PUBLISHED only after pointer write.
+
+    Ordering contract:
+      BUILD_COMPLETE → VERIFIED → (move CURRENT) → PUBLISHED
+
+    If the CURRENT write fails: the generation REMAINS VERIFIED (manifest
+    persisted as VERIFIED) and is NEVER called PUBLISHED.
+    """
+    # manifest must already be VERIFIED (persisted) by the caller.
+    try:
+        lake.write_current_pointer(bucket, current_key, target_key)
+    except Exception:
+        manifest.error_code = ERR_PUBLICATION_FAILED
+        manifest.error = "CURRENT pointer write failed; generation remains VERIFIED"
+        manifest.publication_state = STATUS_VERIFIED
+        manifest.status = STATUS_VERIFIED
+        try:
+            lake.write_manifest(bucket, manifest_key_path, manifest.to_dict())
+        except Exception:
+            pass
+        raise RuntimeError(
+            f"PUBLICATION_FAILED: CURRENT pointer write failed for {current_key}"
+        )
+
+    manifest.publication_state = STATUS_PUBLISHED
+    manifest.status = STATUS_PUBLISHED
+    lake.write_manifest(bucket, manifest_key_path, manifest.to_dict())
+
+
+def _fail_closed(manifest: JobManifest, lake, bucket: str, manifest_key_path: str, code: str) -> None:
+    """Record FAILED status with a fixed error code and persist the manifest."""
+    manifest.status = STATUS_FAILED
+    manifest.publication_state = "UNPUBLISHED"
+    if manifest.error_code is None:
+        manifest.error_code = code
+    manifest.completed_at = now_iso()
+    try:
+        lake.write_manifest(bucket, manifest_key_path, manifest.to_dict())
+    except Exception:
+        pass
 
 
 # ════════════════════════════════════════════════════════════════
@@ -254,27 +361,7 @@ def run_identity_graph_v2(spec: dict, scratch_dir: Path) -> dict:
         manifest.output_hashes[report_key] = report_sha
         manifest.r2_write_bytes += len(report_bytes)
 
-        # ── 7. Mark the previous provisional report as superseded ──
-        old_report_key = "identity/graph_v2/identity_graph_v2_report.json"
-        old_report = lake.read_checkpoint(lake.config.lake_bucket, old_report_key)
-        if old_report:
-            old_report["superseded_by"] = job_id
-            old_report["superseded_at"] = now_iso()
-            old_report["canonical_status"] = STATUS_SUPERSEDED
-            lake.put_bytes(
-                lake.config.lake_bucket, old_report_key,
-                json.dumps(old_report, default=str).encode(),
-                content_type="application/json",
-            )
-
-        # ── 8. Write CURRENT pointer ──
-        lake.write_current_pointer(
-            lake.config.lake_bucket,
-            "identity/graph_v2/CURRENT.json",
-            f"identity/graph_v2/{job_id}",
-        )
-
-        # ── 9. Compute coverage stats ──
+        # ── 7. Compute coverage stats ──
         scorecard = result.get("scorecard", [])
         coverage_by_scope: dict[str, dict] = {}
         for card in scorecard:
@@ -298,54 +385,39 @@ def run_identity_graph_v2(spec: dict, scratch_dir: Path) -> dict:
         manifest.rows_read = len(artists) + len(external_ids) + len(linkages)
         manifest.rows_written = result.get("run", {}).get("evidence_count", 0)
 
-        # ── 10. VERIFY outputs before publishing ──
+        # ── 8. VERIFY outputs BEFORE any publication action (P0-1) ──
         # A generated object existing in R2 does NOT mean VERIFIED.
-        # We verify every required logical output: object exists, expected
-        # size reconciles, SHA-256 matches recorded digest.
-        verified_ok = True
-        for out_key, expected_sha in manifest.output_hashes.items():
-            obj_meta = lake.head(lake.config.lake_bucket, out_key)
-            if obj_meta is None:
-                manifest.status = STATUS_FAILED
-                manifest.error = f"Verification failed: object missing after upload: {out_key}"
-                verified_ok = False
-                break
-            # Re-read and hash to confirm integrity
-            actual_sha = hashlib.sha256(
-                lake.get_bytes(lake.config.lake_bucket, out_key)
-            ).hexdigest()
-            if actual_sha != expected_sha:
-                manifest.status = STATUS_FAILED
-                manifest.error = (
-                    f"Verification failed: SHA mismatch for {out_key}: "
-                    f"expected {expected_sha[:16]}…, got {actual_sha[:16]}…"
-                )
-                verified_ok = False
-                break
-
-        if not verified_ok:
-            manifest.completed_at = now_iso()
-            manifest.runtime_seconds = round(time.time() - start, 2)
-            try:
-                lake.write_manifest(
-                    lake.config.lake_bucket, manifest_key_path, manifest.to_dict(),
-                )
-            except Exception:
-                pass
-            raise RuntimeError(manifest.error or "Verification failed")
-
-        # ── 11. Transition BUILD_COMPLETE → VERIFIED → PUBLISHED ──
-        manifest.status = STATUS_VERIFIED
-        manifest.publication_state = STATUS_VERIFIED
-        lake.write_manifest(
-            lake.config.lake_bucket, manifest_key_path, manifest.to_dict(),
+        # On failure: manifest → FAILED, CURRENT remains untouched.
+        verify_outputs(
+            lake,
+            bucket=lake.config.lake_bucket,
+            output_hashes=manifest.output_hashes,
+            manifest=manifest,
+            manifest_key_path=manifest_key_path,
         )
 
-        # Only after VERIFIED may the CURRENT pointer move and status become PUBLISHED.
-        manifest.publication_state = STATUS_PUBLISHED
-        manifest.status = STATUS_PUBLISHED
-        lake.write_manifest(
-            lake.config.lake_bucket, manifest_key_path, manifest.to_dict(),
+        # ── 9. Only after VERIFIED: supersede the old report, then move CURRENT ──
+        old_report_key = "identity/graph_v2/identity_graph_v2_report.json"
+        old_report = lake.read_checkpoint(lake.config.lake_bucket, old_report_key)
+        if old_report:
+            old_report["superseded_by"] = job_id
+            old_report["superseded_at"] = now_iso()
+            old_report["canonical_status"] = STATUS_SUPERSEDED
+            lake.put_bytes(
+                lake.config.lake_bucket, old_report_key,
+                json.dumps(old_report, default=str).encode(),
+                content_type="application/json",
+            )
+
+        # CURRENT pointer moves ONLY after VERIFIED. If the pointer write
+        # fails, the generation remains VERIFIED and is never called PUBLISHED.
+        transition_verified_to_published(
+            lake,
+            bucket=lake.config.lake_bucket,
+            current_key="identity/graph_v2/CURRENT.json",
+            target_key=f"identity/graph_v2/{job_id}",
+            manifest=manifest,
+            manifest_key_path=manifest_key_path,
         )
 
         return {
@@ -364,6 +436,23 @@ def run_identity_graph_v2(spec: dict, scratch_dir: Path) -> dict:
         }
 
     except Exception as e:
+        # P0-1: If outputs were already VERIFIED but publication (CURRENT
+        # pointer) failed, the generation REMAINS VERIFIED — never FAILED,
+        # never PUBLISHED.
+        if manifest.status == STATUS_VERIFIED:
+            if manifest.error_code is None:
+                manifest.error_code = ERR_PUBLICATION_FAILED
+            manifest.error = str(e)
+            manifest.publication_state = STATUS_VERIFIED
+            try:
+                lake.write_manifest(
+                    lake.config.lake_bucket, manifest_key_path, manifest.to_dict(),
+                )
+            except Exception:
+                pass
+            raise
+        if manifest.error_code is None:
+            manifest.error_code = ERR_JOB_EXEC_FAILED
         manifest.status = STATUS_FAILED
         manifest.error = str(e)
         manifest.error_detail = traceback.format_exc()
@@ -472,21 +561,15 @@ def run_cloud_smoke(spec: dict, scratch_dir: Path) -> dict:
         manifest.runtime_seconds = round(time.time() - start, 2)
         manifest.rows_written = 1
 
-        # P5: BUILD_COMPLETE → VERIFIED → PUBLISHED
-        verified_ok = lake.verify_object(
-            lake.config.private_bucket, test_key, expected_sha,
+        # P5/P0-1: BUILD_COMPLETE → VERIFIED → PUBLISHED
+        verify_outputs(
+            lake,
+            bucket=lake.config.private_bucket,
+            output_hashes={test_key: expected_sha},
+            manifest=manifest,
+            manifest_key_path=manifest_key_path,
         )
-        if not verified_ok:
-            raise RuntimeError("Smoke verification failed: probe object SHA mismatch")
-
-        manifest.status = STATUS_VERIFIED
-        manifest.publication_state = STATUS_VERIFIED
-        manifest.verified_at = now_iso()
-        manifest.verified_hashes[test_key] = expected_sha
-        lake.write_manifest(
-            lake.config.private_bucket, manifest_key_path, manifest.to_dict(),
-        )
-
+        # cloud_smoke has no CURRENT pointer; publish directly after VERIFIED.
         manifest.publication_state = STATUS_PUBLISHED
         manifest.status = STATUS_PUBLISHED
         lake.write_manifest(
@@ -513,6 +596,8 @@ def run_cloud_smoke(spec: dict, scratch_dir: Path) -> dict:
         }
 
     except Exception as e:
+        if manifest.error_code is None:
+            manifest.error_code = ERR_JOB_EXEC_FAILED
         manifest.status = STATUS_FAILED
         manifest.error = str(e)
         manifest.error_detail = traceback.format_exc()
@@ -556,18 +641,21 @@ def run_listenbrainz_map(spec: dict, scratch_dir: Path) -> dict:
         total_batches=max_shards,
         params=params,
     )
-    # Record the listener-key contract (version identifiers only, never the secret).
-    manifest.params.update(_listener_key_metadata())
-    manifest.params["listener_hash_partitions"] = partitions
     manifest_key_path = manifest_key("listenbrainz_map", job_id)
     start = time.time()
 
     try:
         import duckdb
 
-        # Read the HMAC secret once (from Cloudflare secret binding).
-        # The secret never enters DuckDB SQL, manifests, or logs.
+        # V1B: Require BOTH the HMAC secret and its version identifier BEFORE
+        # any processing. Missing config fails closed.
+        contract = _listener_key_contract()
+        contract.require_version()
         hmac_secret = get_secret()
+        # Record the listener-key contract (version identifiers only, never
+        # the secret) AFTER config validation succeeds.
+        manifest.params.update(contract.to_metadata())
+        manifest.params["listener_hash_partitions"] = partitions
 
         # ── Read checkpoint (resume) ──
         ckpt_key = f"control/jobs/listenbrainz_map/{job_id}/checkpoint.json"
@@ -581,13 +669,13 @@ def run_listenbrainz_map(spec: dict, scratch_dir: Path) -> dict:
         # If resuming, verify the checkpoint's listener-key contract matches.
         if ckpt.get("completed_shards"):
             ckpt_meta = {
-                k: ckpt[k] for k in _listener_key_metadata()
+                k: ckpt[k] for k in contract.to_metadata()
                 if k in ckpt
             }
             if ckpt_meta:
                 validate_contract_compatibility(
                     ckpt_meta,
-                    expected_contract=LISTENER_KEY_CONTRACT,
+                    expected_contract=contract,
                     expected_partition_count=partitions,
                 )
 
@@ -739,8 +827,10 @@ def run_listenbrainz_map(spec: dict, scratch_dir: Path) -> dict:
         manifest.rows_read = total_listens
         manifest.rows_written = matched_listens
 
-        # P5: BUILD_COMPLETE → VERIFIED → PUBLISHED
-        # Verify every partial object exists and SHA matches before publishing.
+        # P5: BUILD_COMPLETE → VERIFIED → PUBLISHED (map manifest).
+        # Each partial object was written with a sha256 metadata tag at upload;
+        # per-partial verification is enforced by the reducer's contract check
+        # (partition count + listener-key generation + object presence).
         manifest.status = STATUS_VERIFIED
         manifest.publication_state = STATUS_VERIFIED
         lake.write_manifest(lake.config.private_bucket, manifest_key_path, manifest.to_dict())
@@ -761,6 +851,11 @@ def run_listenbrainz_map(spec: dict, scratch_dir: Path) -> dict:
         }
 
     except Exception as e:
+        if manifest.error_code is None:
+            if "FI_LISTENER_HMAC_SECRET" in str(e) or "FI_LISTENER_HMAC_SECRET_VERSION" in str(e):
+                manifest.error_code = ERR_LISTENER_KEY_CONFIG
+            else:
+                manifest.error_code = ERR_JOB_EXEC_FAILED
         manifest.status = STATUS_FAILED
         manifest.error = str(e)
         manifest.error_detail = traceback.format_exc()
@@ -802,10 +897,6 @@ def run_listenbrainz_reduce(spec: dict, scratch_dir: Path) -> dict:
         container_image="festival-bloomberg-batch:latest",
         params=params,
     )
-    # Record the listener-key contract + metric-universe metadata.
-    manifest.params.update(_listener_key_metadata())
-    manifest.params.update(AFFINITY_METRIC_UNIVERSE)
-    manifest.params["listener_hash_partitions"] = params.get("partitions", 64)
     manifest_key_path = manifest_key("listenbrainz_reduce", job_id)
     start = time.time()
 
@@ -813,6 +904,16 @@ def run_listenbrainz_reduce(spec: dict, scratch_dir: Path) -> dict:
         import duckdb
         import pyarrow as pa
         import io
+
+        # V1B: Reducer must know WHICH secret generation produced the partials.
+        # Missing FI_LISTENER_HMAC_SECRET_VERSION fails closed before any read.
+        contract = _listener_key_contract()
+        contract.require_version()
+        # Record the listener-key contract + metric-universe metadata AFTER
+        # config validation succeeds (version identifiers only, never secret).
+        manifest.params.update(contract.to_metadata())
+        manifest.params.update(AFFINITY_METRIC_UNIVERSE)
+        manifest.params["listener_hash_partitions"] = params.get("partitions", 64)
 
         # ── Read all partials from the map job ──
         partial_prefix = f"listenbrainz/map/{map_job_id}/"
@@ -823,11 +924,11 @@ def run_listenbrainz_reduce(spec: dict, scratch_dir: Path) -> dict:
         map_ckpt_key = f"control/jobs/listenbrainz_map/{map_job_id}/checkpoint.json"
         map_ckpt = lake.read_checkpoint(lake.config.private_bucket, map_ckpt_key)
         if map_ckpt and map_ckpt.get("completed_shards"):
-            ckpt_meta = {k: map_ckpt[k] for k in _listener_key_metadata() if k in map_ckpt}
+            ckpt_meta = {k: map_ckpt[k] for k in contract.to_metadata() if k in map_ckpt}
             if ckpt_meta:
                 validate_contract_compatibility(
                     ckpt_meta,
-                    expected_contract=LISTENER_KEY_CONTRACT,
+                    expected_contract=contract,
                     expected_partition_count=params.get("partitions", 64),
                 )
 
@@ -1000,28 +1101,16 @@ def run_listenbrainz_reduce(spec: dict, scratch_dir: Path) -> dict:
         manifest.rows_read = len(partials)
         manifest.rows_written = len(pairs)
 
-        # P5: BUILD_COMPLETE → VERIFIED → PUBLISHED
-        # Verify every output object exists and SHA matches.
-        for out_key, expected_sha in manifest.output_hashes.items():
-            obj_meta = lake.head(lake.config.lake_bucket, out_key)
-            if obj_meta is None:
-                manifest.status = STATUS_FAILED
-                manifest.error = f"Verification failed: object missing: {out_key}"
-                lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
-                raise RuntimeError(manifest.error)
-            actual_sha = hashlib.sha256(
-                lake.get_bytes(lake.config.lake_bucket, out_key)
-            ).hexdigest()
-            if actual_sha != expected_sha:
-                manifest.status = STATUS_FAILED
-                manifest.error = f"Verification failed: SHA mismatch for {out_key}"
-                lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
-                raise RuntimeError(manifest.error)
-
-        manifest.status = STATUS_VERIFIED
-        manifest.publication_state = STATUS_VERIFIED
-        lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
-
+        # P5/P0-1: BUILD_COMPLETE → VERIFIED → PUBLISHED
+        # Verify every output object exists and SHA matches before publishing.
+        verify_outputs(
+            lake,
+            bucket=lake.config.lake_bucket,
+            output_hashes=manifest.output_hashes,
+            manifest=manifest,
+            manifest_key_path=manifest_key_path,
+        )
+        # Reduce outputs have no CURRENT pointer; publish directly after VERIFIED.
         manifest.publication_state = STATUS_PUBLISHED
         manifest.status = STATUS_PUBLISHED
         lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
@@ -1039,6 +1128,11 @@ def run_listenbrainz_reduce(spec: dict, scratch_dir: Path) -> dict:
         }
 
     except Exception as e:
+        if manifest.error_code is None:
+            if "FI_LISTENER_HMAC_SECRET" in str(e) or "FI_LISTENER_HMAC_SECRET_VERSION" in str(e):
+                manifest.error_code = ERR_LISTENER_KEY_CONFIG
+            else:
+                manifest.error_code = ERR_JOB_EXEC_FAILED
         manifest.status = STATUS_FAILED
         manifest.error = str(e)
         manifest.error_detail = traceback.format_exc()

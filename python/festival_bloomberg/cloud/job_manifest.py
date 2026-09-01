@@ -80,6 +80,8 @@ class JobManifest:
     scratch_peak_bytes: int = 0
     error: str | None = None
     error_detail: str | None = None
+    # V1B: fixed machine-readable error code (never raw exception text).
+    error_code: str | None = None
     publication_state: str = "UNPUBLISHED"
     params: dict[str, Any] = field(default_factory=dict)
     # Verification metadata — filled during the VERIFIED transition.

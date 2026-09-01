@@ -174,10 +174,16 @@
   // DO NOT commit them to Git.
   //
   // ADMIN_TOKEN              — admin auth for /batch/trigger, /batch/status.
-  //                            In production, unset token FAILS CLOSED.
+  //                            In production, unset token FAILS CLOSED (503).
   // FI_LISTENER_HMAC_SECRET  — HMAC-SHA256 key for listener pseudonymization.
   //                            >=32 bytes. Only in Cloudflare secret binding.
   //                            Never in Git/R2/manifests/logs/status API.
+  // FI_LISTENER_HMAC_SECRET_VERSION
+  //                          — NON-SECRET identifier of the HMAC secret
+  //                            generation (e.g. 2026-09-v1). Required for
+  //                            ListenBrainz map/reduce; records which secret
+  //                            produced the listener keys so generations are
+  //                            reproducible and never silently mixed.
   // R2 credentials (FI_R2_ACCESS_KEY_ID, FI_R2_SECRET_ACCESS_KEY, FI_R2_ENDPOINT)
   //                          — set as secrets or via R2 token bindings.
 }
