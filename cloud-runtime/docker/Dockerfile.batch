@@ -26,8 +26,8 @@ ENV PYTHONPATH=/app/python
 # Copy batch scripts
 COPY scripts/ scripts/
 
-# Copy batch entrypoint
-COPY cloud-runtime/docker/batch_entrypoint.py .
+# Copy batch entrypoint (context = this docker/ dir)
+COPY batch_entrypoint.py .
 
 # Copy schema migrations (needed by some jobs)
 COPY schema/ schema/
