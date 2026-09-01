@@ -2,30 +2,31 @@
  * Batch Container — Durable Object managing a reusable Container instance
  * for heavy data-processing jobs (Identity Graph V2, ListenBrainz map/reduce).
  *
- * Unlike AcquisitionContainer (short tasks), this DO runs long multi-hour
- * Python/DuckDB jobs via exec(). The contract is:
+ * Lifecycle contract (V1B P0-2):
+ *   POST /batch/trigger
+ *     → validate
+ *     → persist RUNNING durable status to R2
+ *     → launch container process (no await on output())
+ *     → return HTTP 202 immediately
  *
- *   1. Job spec arrives via runJob() RPC.
- *   2. DO starts container if needed (standard-4: 4 vCPU / 12 GiB / 20 GB).
- *   3. DO exec()s batch_entrypoint.py with the job spec as env.
- *   4. The entrypoint reads source from R2, processes with bounded scratch,
- *      writes partials + checkpoint to R2, then exits.
- *   5. On restart, the entrypoint reads the R2 checkpoint, skips completed
- *      batches, and resumes. The DO can re-exec() safely.
+ * The logical job continues independently. Completion is read from durable
+ * R2 manifest/checkpoint state, never from a long-lived HTTP connection.
+ *
+ * Secrets (V1B P0-3): the job spec contains ONLY safe logical control data.
+ * R2 credentials and FI_LISTENER_HMAC_SECRET are read from THIS DO's own
+ * environment bindings and passed to the container env — never through
+ * FI_BATCH_JOB, never through the status API.
  *
  * Ephemeral container disk is NOT persistent. All canonical state is in R2.
  */
 
 import { DurableObject } from "cloudflare:workers";
-
-export interface BatchJobSpec {
-  job_id: string;
-  job_type: string; // "identity_graph_v2" | "listenbrainz_map" | "listenbrainz_reduce" | ...
-  params: Record<string, unknown>;
-  source_generation?: string;
-  max_batches?: number;
-  env_vars: Record<string, string>;
-}
+import {
+  BatchJobSpec,
+  buildContainerEnv,
+  mapErrorToCode,
+  BATCH_ERROR_CODES,
+} from "./batch-spec";
 
 export interface BatchJobResult {
   job_id: string;
@@ -61,11 +62,20 @@ export interface BatchStatusResponse {
   last_safe_error_code?: string;
 }
 
+// P0-3: The DO obtains all secrets from its OWN environment bindings.
 interface BatchEnv {
   PRIVATE_BUCKET: R2Bucket;
   LAKE_BUCKET: R2Bucket;
+  FI_R2_ENDPOINT?: string;
+  FI_R2_ACCESS_KEY_ID?: string;
+  FI_R2_SECRET_ACCESS_KEY?: string;
+  FI_R2_RAW_BUCKET?: string;
+  FI_R2_LAKE_BUCKET?: string;
+  FI_R2_PRIVATE_BUCKET?: string;
+  FI_R2_BACKUP_BUCKET?: string;
+  FI_LISTENER_HMAC_SECRET?: string;
+  FI_LISTENER_HMAC_SECRET_VERSION?: string;
 }
-
 
 export class BatchContainer extends DurableObject<BatchEnv> {
   private containerReady = false;
@@ -76,26 +86,48 @@ export class BatchContainer extends DurableObject<BatchEnv> {
     super(state, env);
   }
 
-  private async ensureContainer(envVars?: Record<string, string>): Promise<void> {
+  /**
+   * P0-3: Start the container with env built from THIS DO's bindings only.
+   * Never accepts env/secrets from a job spec.
+   */
+  /** P0-3: string-only view of the DO bindings for container env construction. */
+  private containerEnvSource(): Record<string, string | undefined> {
+    return {
+      FI_R2_ENDPOINT: this.env.FI_R2_ENDPOINT,
+      FI_R2_ACCESS_KEY_ID: this.env.FI_R2_ACCESS_KEY_ID,
+      FI_R2_SECRET_ACCESS_KEY: this.env.FI_R2_SECRET_ACCESS_KEY,
+      FI_R2_RAW_BUCKET: this.env.FI_R2_RAW_BUCKET,
+      FI_R2_LAKE_BUCKET: this.env.FI_R2_LAKE_BUCKET,
+      FI_R2_PRIVATE_BUCKET: this.env.FI_R2_PRIVATE_BUCKET,
+      FI_R2_BACKUP_BUCKET: this.env.FI_R2_BACKUP_BUCKET,
+      FI_LISTENER_HMAC_SECRET: this.env.FI_LISTENER_HMAC_SECRET,
+      FI_LISTENER_HMAC_SECRET_VERSION: this.env.FI_LISTENER_HMAC_SECRET_VERSION,
+    };
+  }
+
+  private async ensureContainer(): Promise<void> {
     if (this.containerReady) return;
     try {
+      const containerEnv = buildContainerEnv(this.containerEnvSource());
       await this.ctx.container!.start({
-        env: envVars,
+        env: containerEnv,
         enableInternet: true, // R2 S3 API needs outbound
       });
       this.containerReady = true;
     } catch (e) {
       console.error("Batch container start failed:", e);
-      throw e;
+      throw new Error(BATCH_ERROR_CODES.CONTAINER_START_FAILED);
     }
   }
 
   /**
-   * RPC: Execute a batch job in the container.
-   * The entrypoint reads checkpoints from R2 on startup, so re-exec()ing
-   * after a crash resumes without duplicating work.
+   * P0-2: RPC — start a batch job and return IMMEDIATELY (RUNNING).
+   *
+   * The container process is launched and monitored in the background.
+   * output() is NEVER awaited on the request path. Completion is observed
+   * through durable R2 status / manifests.
    */
-  async runJob(spec: BatchJobSpec): Promise<BatchJobResult> {
+  async startJob(spec: BatchJobSpec): Promise<BatchJobResult> {
     const start = Date.now();
     this.currentJob = spec;
 
@@ -109,15 +141,18 @@ export class BatchContainer extends DurableObject<BatchEnv> {
       exit_code: -1,
     };
 
-    try {
-      await this.ensureContainer(spec.env_vars);
+    // Persist RUNNING durable status BEFORE launching — a trigger response
+    // is only meaningful if the logical job state already exists in R2.
+    await this.persistDurableStatus(result);
 
-      // Pass the job spec as a JSON env var. The entrypoint parses it.
+    try {
+      await this.ensureContainer();
+
+      // FI_BATCH_JOB carries ONLY the sanitized logical spec (P0-3).
+      // Secrets live in the container env (built from this.env), not here.
       const jobEnv = {
-        ...spec.env_vars,
+        ...buildContainerEnv(this.containerEnvSource()),
         FI_BATCH_JOB: JSON.stringify(spec),
-        FI_SCRATCH_DIR: "/tmp/festival-bloomberg",
-        PYTHONUNBUFFERED: "1",
       };
 
       const execResult = await this.ctx.container!.exec(
@@ -129,61 +164,79 @@ export class BatchContainer extends DurableObject<BatchEnv> {
         }
       );
 
-      // P8: Buffer output for internal logging only.
-      // Jobs produce a final JSON summary on the last line.
-      // stdout/stderr are NEVER returned in /batch/status responses.
-      const output = await execResult.output();
+      // Launch background monitoring. Do NOT await output() — the trigger
+      // must return 202 before the job completes.
+      void this.monitorJob(spec, execResult, start, result);
+    } catch (e: unknown) {
+      result.status = "FAILED";
+      result.last_safe_error_code = mapErrorToCode(e, BATCH_ERROR_CODES.CONTAINER_START_FAILED);
+      result.completed_at = new Date().toISOString();
+      result.duration_ms = Date.now() - start;
+      await this.persistDurableStatus(result).catch(() => {});
+      this.lastResult = result;
+      this.currentJob = null;
+    }
+
+    return result;
+  }
+
+  /**
+   * P0-2: Background monitor — awaits container output, updates durable
+   * status. If the DO is evicted mid-job, the container process continues
+   * and /batch/status reconstructs truth from R2.
+   */
+  private async monitorJob(
+    spec: BatchJobSpec,
+    execResult: unknown,
+    start: number,
+    result: BatchJobResult,
+  ): Promise<void> {
+    try {
+      const output = await (execResult as {
+        output(): Promise<{ stdout: Uint8Array; stderr: Uint8Array; exitCode: number }>;
+      }).output();
       const decoder = new TextDecoder();
       const stdout = decoder.decode(output.stdout);
       const stderr = decoder.decode(output.stderr);
 
-      result._stdout = stdout; // internal only, not exposed via API
-      result._stderr = stderr; // internal only, not exposed via API
+      result._stdout = stdout; // internal only, never exposed via API
+      result._stderr = stderr; // internal only, never exposed via API
       result.exit_code = output.exitCode;
       result.completed_at = new Date().toISOString();
       result.duration_ms = Date.now() - start;
 
       // The entrypoint prints a JSON summary on the last stdout line.
-      // We only extract safe structured fields, never raw text.
+      // Extract only safe structured fields, never raw text.
       const lines = stdout.trim().split("\n").filter((l) => l.startsWith("{"));
       if (lines.length > 0) {
         try {
           const summary = JSON.parse(lines[lines.length - 1]);
           result.manifest_key = summary.manifest_key;
           result.status = summary.status || (output.exitCode === 0 ? "COMPLETED" : "FAILED");
-          // P8: Only safe error code, no raw stack traces or full error text.
-          if (summary.error) {
-            result.last_safe_error_code =
-              typeof summary.error === "string"
-                ? summary.error.slice(0, 120)
-                : "JOB_ERROR";
-          }
+          // P1: Fixed safe error code only — no raw stack traces or error text.
+          result.last_safe_error_code = mapErrorToCode(summary.error_code ?? summary.error);
         } catch {
           result.status = output.exitCode === 0 ? "COMPLETED" : "FAILED";
         }
       } else {
         result.status = output.exitCode === 0 ? "COMPLETED" : "FAILED";
         if (output.exitCode !== 0) {
-          result.last_safe_error_code = `EXIT_${output.exitCode}`;
+          result.last_safe_error_code = BATCH_ERROR_CODES.JOB_EXEC_FAILED;
         }
       }
 
-      // P9: Persist durable status to R2 (survives DO/Worker/container restart).
+      // P9: Persist durable status — survives DO/Worker/container restart.
       await this.persistDurableStatus(result);
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
       result.status = "FAILED";
-      result.last_safe_error_code = msg.slice(0, 120);
+      result.last_safe_error_code = mapErrorToCode(e, BATCH_ERROR_CODES.JOB_EXEC_FAILED);
       result.completed_at = new Date().toISOString();
       result.duration_ms = Date.now() - start;
-      // P9: Even failure state is persisted durably.
       await this.persistDurableStatus(result).catch(() => {});
     } finally {
-      this.currentJob = null;
       this.lastResult = result;
+      this.currentJob = null;
     }
-
-    return result;
   }
 
   /**
@@ -194,7 +247,6 @@ export class BatchContainer extends DurableObject<BatchEnv> {
    * must not erase logical job state.
    */
   private async persistDurableStatus(result: BatchJobResult): Promise<void> {
-    const env = this.env as BatchEnv;
     const statusKey = `control/jobs/_durable_status/${result.job_id}.json`;
     const safeStatus: BatchStatusResponse = {
       job_id: result.job_id,
@@ -211,7 +263,7 @@ export class BatchContainer extends DurableObject<BatchEnv> {
       last_safe_error_code: result.last_safe_error_code,
     };
     try {
-      await env.PRIVATE_BUCKET.put(
+      await this.env.PRIVATE_BUCKET.put(
         statusKey,
         JSON.stringify(safeStatus, null, 2),
         { httpMetadata: { contentType: "application/json" } },
@@ -224,15 +276,11 @@ export class BatchContainer extends DurableObject<BatchEnv> {
 
   /**
    * P9: Reconstruct durable status from R2 when DO memory is empty.
-   *
-   * Called when getStatus() finds no in-memory lastResult (e.g. after
-   * DO restart).
    */
   private async reconstructDurableStatus(jobId: string): Promise<BatchStatusResponse | null> {
-    const env = this.env as BatchEnv;
     const statusKey = `control/jobs/_durable_status/${jobId}.json`;
     try {
-      const obj = await env.PRIVATE_BUCKET.get(statusKey);
+      const obj = await this.env.PRIVATE_BUCKET.get(statusKey);
       if (!obj) return null;
       return await obj.json() as BatchStatusResponse;
     } catch {

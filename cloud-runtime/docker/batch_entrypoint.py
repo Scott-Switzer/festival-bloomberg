@@ -42,6 +42,14 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# V1B P1: Fixed machine-readable error codes. Raw exception text is never
+# placed in the status API / manifest summary — only these codes plus
+# bounded safe metadata.
+ERR_JOB_VALIDATION_FAILED = "JOB_VALIDATION_FAILED"
+ERR_JOB_EXEC_FAILED = "JOB_EXEC_FAILED"
+ERR_NO_JOB_SPEC = "NO_JOB_SPEC"
+
+
 # P7: Explicit job-type allowlist. A request cannot supply an arbitrary
 # command/shell/entrypoint — only these job types are dispatchable.
 ALLOWED_JOB_TYPES = frozenset({
@@ -159,9 +167,19 @@ def validate_spec(spec: dict) -> dict:
                 f"Spec contains forbidden key '{forbidden_key}' — "
                 "arbitrary command execution is not allowed."
             )
-    if "env_vars" in spec and not isinstance(spec["env_vars"], dict):
-        raise ValueError("env_vars must be a dict")
 
+    # V1B P0-3: FI_BATCH_JOB must contain ONLY the sanitized logical job
+    # spec. Secrets/R2 credentials are provided by the DO container env,
+    # never through the job spec. A spec carrying env_vars is rejected.
+    if "env_vars" in spec:
+        raise ValueError(
+            "Spec contains 'env_vars' — secrets must never travel inside "
+            "FI_BATCH_JOB; the container controller supplies them via its "
+            "own environment bindings."
+        )
+
+    # Sanitized spec: only safe logical control fields. Everything else
+    # (env_vars, secrets, unknown keys) is dropped.
     return {
         "job_type": job_type,
         "job_id": job_id,
@@ -171,36 +189,46 @@ def validate_spec(spec: dict) -> dict:
     }
 
 
+def sanitize_job_spec(raw_spec: dict) -> dict:
+    """V1B P0-3: Return ONLY the sanitized logical job spec.
+
+    Drops env_vars, secrets, and any unknown key. Never spreads raw_spec.
+    Raises ValueError if the raw spec carries forbidden content.
+    """
+    return validate_spec(raw_spec)
+
+
 def main() -> int:
     job_json = os.environ.get("FI_BATCH_JOB")
     if not job_json:
-        print(json.dumps({"status": "FAILED", "error": "No FI_BATCH_JOB provided"}))
+        print(json.dumps({
+            "status": "FAILED", "error_code": ERR_NO_JOB_SPEC,
+            "error": "No FI_BATCH_JOB provided",
+        }))
         return 1
 
     try:
         raw_spec = json.loads(job_json)
     except json.JSONDecodeError as e:
-        print(json.dumps({"status": "FAILED", "error": f"Invalid job JSON: {e}"}))
+        print(json.dumps({
+            "status": "FAILED", "error_code": ERR_JOB_VALIDATION_FAILED,
+            "error": f"Invalid job JSON: {e}",
+        }))
         return 1
 
-    # P7: Validate the spec before dispatch.
+    # P7 + V1B P0-3: Validate AND sanitize the spec before dispatch. The
+    # sanitized spec is the ONLY thing used downstream — never raw_spec.
     try:
-        validated = validate_spec(raw_spec)
+        spec = sanitize_job_spec(raw_spec)
     except (ValueError, TypeError) as e:
-        print(json.dumps({"status": "FAILED", "error": f"Spec validation failed: {e}"}))
+        print(json.dumps({
+            "status": "FAILED", "error_code": ERR_JOB_VALIDATION_FAILED,
+            "error": f"Spec validation failed: {e}",
+        }))
         return 1
 
-    job_type = validated["job_type"]
-    job_id = validated["job_id"]
-    # Reconstruct the spec with validated fields.
-    spec = {
-        **raw_spec,
-        "job_type": job_type,
-        "job_id": job_id,
-        "source_generation": validated["source_generation"],
-        "params": validated["params"],
-        "max_batches": validated["max_batches"],
-    }
+    job_type = spec["job_type"]
+    job_id = spec["job_id"]
     scratch_dir = Path(os.environ.get("FI_SCRATCH_DIR", "/tmp/festival-bloomberg"))
     scratch_dir.mkdir(parents=True, exist_ok=True)
 
@@ -244,7 +272,8 @@ def main() -> int:
 
     except Exception as e:
         result["status"] = "FAILED"
-        result["error"] = str(e)
+        result["error_code"] = ERR_JOB_EXEC_FAILED
+        result["error"] = str(e)[:300]
         result["traceback"] = traceback.format_exc()
 
     finally:
