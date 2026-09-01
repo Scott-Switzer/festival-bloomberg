@@ -1,17 +1,20 @@
-name: Build and Deploy Container
+name: Build Container Image
 
 on:
   workflow_dispatch:
   push:
     branches: [feat/artist-security-25000-database-v1]
     paths:
-      - 'cloud-runtime/docker/**'
-      - 'cloud-runtime/src/**'
+      - 'cloud-runtime/docker/Dockerfile.batch'
+      - 'cloud-runtime/docker/batch_entrypoint.py'
+      - 'cloud-runtime/src/batch-container-do.ts'
+      - 'cloud-runtime/src/batch-spec.ts'
+      - 'cloud-runtime/src/batch-auth.ts'
       - 'python/festival_bloomberg/cloud/**'
       - 'requirements.txt'
 
 jobs:
-  build-and-deploy:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,9 +34,21 @@ jobs:
         working-directory: cloud-runtime
         run: npx tsc --noEmit
 
-      - name: Deploy worker + container
+      - name: Build batch container image
         working-directory: cloud-runtime
-        run: npx wrangler deploy --containers-rollout=default
+        run: |
+          npx wrangler containers build docker/Dockerfile.batch \
+            -t festival-bloomberg-batch:${{ github.sha }} \
+            -t festival-bloomberg-batch:latest
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Push to Cloudflare registry
+        working-directory: cloud-runtime
+        run: |
+          npx wrangler containers push festival-bloomberg-batch:${{ github.sha }}
+          npx wrangler containers push festival-bloomberg-batch:latest
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
