@@ -156,8 +156,9 @@ export class BatchContainer extends DurableObject<BatchEnv> {
       };
 
       const execResult = await this.ctx.container!.exec(
-        ["python", "batch_entrypoint.py"],
+        ["python", "/app/batch_entrypoint.py"],
         {
+          cwd: "/app",
           env: jobEnv,
           stdout: "pipe",
           stderr: "pipe",
