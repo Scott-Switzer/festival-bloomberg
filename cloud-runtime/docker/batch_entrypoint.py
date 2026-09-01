@@ -33,7 +33,7 @@ import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent  # /app in the batch container
 sys.path.insert(0, str(PROJECT_ROOT / "python"))
 sys.path.insert(0, str(PROJECT_ROOT))
 
