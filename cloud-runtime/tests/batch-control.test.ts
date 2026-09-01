@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import {
   sanitizeJobSpec,
   buildContainerEnv,
@@ -9,6 +11,14 @@ import {
 import { requireBatchAuth } from "../src/batch-auth";
 
 const FAKE_SECRET = "THIS_SECRET_MUST_NEVER_APPEAR";
+
+describe("container execution contract", () => {
+  it("uses the absolute /app entrypoint and explicit cwd", async () => {
+    const source = await readFile(resolve(process.cwd(), "src/batch-container-do.ts"), "utf8");
+    expect(source).toContain('["python", "/app/batch_entrypoint.py"]');
+    expect(source).toContain('cwd: "/app"');
+  });
+});
 
 describe("sanitizeJobSpec (V1B P0-3)", () => {
   it("accepts a valid safe spec and returns only safe fields", () => {
