@@ -9,6 +9,7 @@
   // Custom harness (acquisition runtime, not Think/Flue/AI SDK).
   // Metadata only — no payload content stored.
   "observability": {
+    "enabled": true,
     "traces": {
       "enabled": true
     }
