@@ -5,6 +5,15 @@
   "compatibility_date": "2026-08-26",
   "compatibility_flags": ["nodejs_compat"],
 
+  // --- Observability (Cloudflare Agent Tracing) ---
+  // Custom harness (acquisition runtime, not Think/Flue/AI SDK).
+  // Metadata only — no payload content stored.
+  "observability": {
+    "traces": {
+      "enabled": true
+    }
+  },
+
   // --- Browser Run (Browser Automation API) ---
   // For JS-rendered pages and structured quick actions (/content, /scrape).
   "browser": {
@@ -157,6 +166,8 @@
   "vars": {
     "POLICY_VERSION": "1.0.0",
     "SOFTWARE_VERSION": "cloud-forward-data-plane-v2",
+    // R2 endpoint for S3-compatible API (derived from account ID, not sensitive).
+    "FI_R2_ENDPOINT": "https://51b88c6a6ef833b3c2ff46e98d5d9356.r2.cloudflarestorage.com",
     // Budget policy — AUTOMATED caps
     // Monid balance ≈ $10.90. Reserve for failures/mapping/manual research.
     "DAILY_BUDGET_USD": "0.25",
