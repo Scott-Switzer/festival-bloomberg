@@ -36,19 +36,14 @@ jobs:
 
       - name: Build batch container image
         working-directory: cloud-runtime
-        run: |
-          npx wrangler containers build docker/Dockerfile.batch \
-            -t festival-bloomberg-batch:${{ github.sha }} \
-            -t festival-bloomberg-batch:latest
+        run: npx wrangler containers build docker/Dockerfile.batch -t festival-bloomberg-batch:latest
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: Push to Cloudflare registry
         working-directory: cloud-runtime
-        run: |
-          npx wrangler containers push festival-bloomberg-batch:${{ github.sha }}
-          npx wrangler containers push festival-bloomberg-batch:latest
+        run: npx wrangler containers push festival-bloomberg-batch:latest
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
