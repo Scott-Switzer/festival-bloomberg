@@ -1,0 +1,54 @@
+# Festival Bloomberg Batch Data Container
+# For heavy data-processing jobs (Identity Graph V2, ListenBrainz map/reduce).
+# Runs on Cloudflare Containers standard-4: 4 vCPU / 12 GiB RAM / 20 GB disk.
+#
+# Ephemeral disk — NOT persistent. All canonical state is in R2.
+# The DO exec()s batch_entrypoint.py per job step.
+
+FROM python:3.12-slim AS base
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install Python dependencies first (layer caching)
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the Python package
+COPY python/ python/
+ENV PYTHONPATH=/app/python
+
+# Copy batch scripts
+COPY scripts/ scripts/
+
+# Copy batch entrypoint
+COPY cloud-runtime/docker/batch_entrypoint.py .
+
+# Copy schema migrations (needed by some jobs)
+COPY schema/ schema/
+
+# Non-root user
+RUN useradd -m -r batch && chown -R batch:batch /app
+USER batch
+
+# Health check — verify DuckDB + boto3 are importable
+HEALTHCHECK --interval=60s --timeout=15s --retries=3 \
+    CMD python -c "import duckdb, boto3, pyarrow; print('batch container healthy')" || exit 1
+
+# Environment (secrets injected at runtime via DO exec env)
+ENV FI_OBJECT_STORE=R2
+ENV FI_R2_RAW_BUCKET=festival-intelligence-raw
+ENV FI_R2_LAKE_BUCKET=festival-intelligence-lake
+ENV FI_R2_PRIVATE_BUCKET=festival-intelligence-private
+ENV FI_R2_BACKUP_BUCKET=festival-intelligence-backups
+ENV PYTHONUNBUFFERED=1
+ENV FI_SCRATCH_DIR=/tmp/festival-bloomberg
+
+# Long-running idle entrypoint — DO calls exec() per job.
+# Keeps the container ready for exec() calls.
+CMD ["python", "-c", "import time; print('Batch container ready'); time.sleep(86400)"]
