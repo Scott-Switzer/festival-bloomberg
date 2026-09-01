@@ -1,0 +1,51 @@
+name: Build and Push Container Image
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/artist-security-25000-database-v1]
+    paths:
+      - 'cloud-runtime/docker/**'
+      - 'python/**'
+      - 'scripts/**'
+      - 'requirements.txt'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Wrangler
+        run: npm install -g wrangler
+
+      - name: Authenticate to Cloudflare
+        run: |
+          echo "${{ secrets.CLOUDFLARE_API_TOKEN }}" | wrangler login
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+      - name: Build container image
+        working-directory: cloud-runtime
+        run: |
+          wrangler containers build docker/ \
+            -t festival-bloomberg-batch:${{ github.sha }} \
+            -t festival-bloomberg-batch:latest
+
+      - name: Push to Cloudflare registry
+        working-directory: cloud-runtime
+        run: |
+          wrangler containers push festival-bloomberg-batch:${{ github.sha }}
+          wrangler containers push festival-bloomberg-batch:latest
+
+      - name: Deploy worker with container
+        working-directory: cloud-runtime
+        run: |
+          wrangler deploy --containers-rollout=default
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
