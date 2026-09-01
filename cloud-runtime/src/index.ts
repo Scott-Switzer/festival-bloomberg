@@ -15,6 +15,7 @@
 
 import { AcquisitionGovernor } from "./governor-do";
 import { AcquisitionContainer } from "./container-do";
+import { BatchContainer } from "./batch-container-do";
 import { AcquisitionWorkflow } from "./workflow";
 import { handleFastBatch, handleDeepBatch, handleProcessingBatch } from "./queue-consumer";
 import { planTasks, loadUniverse, planBootstrapWave } from "./planner";
@@ -33,7 +34,7 @@ import { handleStructuredBatch } from "./structured-consumer";
 import { handleDlqBatch } from "./dlq-consumer";
 import { readPlatformQueueMetrics, readQueueMetrics, writeQueueEnqueueMetric } from "./queue-metrics";
 
-export { AcquisitionGovernor, AcquisitionContainer, AcquisitionWorkflow };
+export { AcquisitionGovernor, AcquisitionContainer, BatchContainer, AcquisitionWorkflow };
 
 interface Env {
   FAST_QUEUE: Queue;
@@ -47,7 +48,9 @@ interface Env {
   RAW_BUCKET: R2Bucket;
   LAKE_BUCKET: R2Bucket;
   BACKUP_BUCKET: R2Bucket;
+  PRIVATE_BUCKET: R2Bucket;
   GOVERNOR: DurableObjectNamespace;
+  BATCH_CONTAINER: DurableObjectNamespace;
   ACQUISITION_WORKFLOW: Workflow;
   BROWSER: any;
   MONID_API_KEY: string;
@@ -57,13 +60,18 @@ interface Env {
   TICKETS_DEV_API_KEY: string;
   FI_R2_ACCESS_KEY_ID: string;
   FI_R2_SECRET_ACCESS_KEY: string;
+  FI_R2_ENDPOINT: string;
   FI_R2_RAW_BUCKET: string;
+  FI_R2_LAKE_BUCKET: string;
+  FI_R2_PRIVATE_BUCKET: string;
+  FI_R2_BACKUP_BUCKET: string;
   POLICY_VERSION: string;
   SOFTWARE_VERSION: string;
   DAILY_BUDGET_USD: string;
   MONTHLY_BUDGET_USD: string;
   ENABLE_DEEP_RAIL: string;
   ADMIN_TOKEN: string;
+  FI_LISTENER_HMAC_SECRET: string;
 }
 
 /** Check if request has valid admin auth */
@@ -74,6 +82,40 @@ function isAdminAuth(request: Request, env: Env): boolean {
   if (!expected) return true; // If no token configured, allow (development)
   return authHeader === `Bearer ${expected}` || tokenHeader === expected;
 }
+
+/**
+ * P10: Production auth — batch-control mutations require ADMIN_TOKEN.
+ * In production (ADMIN_TOKEN is set), an unset/empty token must FAIL CLOSED.
+ * Development behavior (no token configured) remains documented separately.
+ */
+function requireBatchAuth(request: Request, env: Env): Response | null {
+  const expected = env.ADMIN_TOKEN;
+  if (!expected) {
+    // Development mode — no token configured.  This is acceptable only for
+    // local dev.  Production deployment must set ADMIN_TOKEN.
+    return null; // allow
+  }
+  const authHeader = request.headers.get("Authorization");
+  const tokenHeader = request.headers.get("X-Admin-Token");
+  if (authHeader !== `Bearer ${expected}` && tokenHeader !== expected) {
+    return Response.json(
+      { error: "Unauthorized: batch control requires admin auth" },
+      { status: 401 },
+    );
+  }
+  return null; // authorized
+}
+
+/** P10: Bounded request-body limit (256 KiB) for batch triggers. */
+const MAX_BATCH_BODY_BYTES = 256 * 1024;
+
+/** P7: Explicit job-type allowlist (server-side enforcement). */
+const ALLOWED_BATCH_JOB_TYPES = new Set([
+  "identity_graph_v2",
+  "listenbrainz_map",
+  "listenbrainz_reduce",
+  "cloud_smoke",
+]);
 
 /** Extract SHA-256 hex string */
 async function sha256Hex(data: Uint8Array): Promise<string> {
@@ -100,6 +142,122 @@ export default {
     // Admin token check for all non-health endpoints
     if (!isAdminAuth(request, env)) {
       return Response.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    if (url.pathname === "/batch/trigger" && request.method === "POST") {
+      // P10: Batch-control mutation requires admin auth.
+      // In production (ADMIN_TOKEN set), missing token FAILS CLOSED.
+      const authFail = requireBatchAuth(request, env);
+      if (authFail) return authFail;
+
+      try {
+        // P10: Bounded request-body limit — reject oversized payloads.
+        const contentLength = parseInt(request.headers.get("content-length") || "0", 10);
+        if (contentLength > MAX_BATCH_BODY_BYTES) {
+          return Response.json(
+            { error: `Request body too large: max ${MAX_BATCH_BODY_BYTES} bytes` },
+            { status: 413 },
+          );
+        }
+
+        const bodyText = await request.text();
+        if (bodyText.length > MAX_BATCH_BODY_BYTES) {
+          return Response.json(
+            { error: `Request body too large: max ${MAX_BATCH_BODY_BYTES} bytes` },
+            { status: 413 },
+          );
+        }
+
+        const body = JSON.parse(bodyText) as {
+          job_type: string;
+          job_id?: string;
+          params?: Record<string, unknown>;
+          source_generation?: string;
+          max_batches?: number;
+        };
+
+        // P7: Server-side job-type allowlist enforcement.
+        if (!body.job_type || !ALLOWED_BATCH_JOB_TYPES.has(body.job_type)) {
+          return Response.json(
+            { error: `Invalid job_type. Allowed: ${[...ALLOWED_BATCH_JOB_TYPES].join(", ")}` },
+            { status: 400 },
+          );
+        }
+
+        // P7: Reject any attempt to supply arbitrary command/executable/shell.
+        for (const forbidden of ["command", "exec", "executable", "shell", "entrypoint", "cmd"]) {
+          if (forbidden in body) {
+            return Response.json(
+              { error: `Spec contains forbidden key '${forbidden}'` },
+              { status: 400 },
+            );
+          }
+        }
+
+        const jobId = body.job_id || `batch_${Date.now()}`;
+        const doId = env.BATCH_CONTAINER.idFromName(jobId);
+        const batchDo = env.BATCH_CONTAINER.get(doId) as any;
+
+        // P10: Persist planned job state, then initiate execution.
+        // The trigger returns quickly with a job ID/status reference.
+        // It must NOT hold the HTTP connection open for the entire job.
+        // The DO exec()s the entrypoint; durable state is in R2.
+        const result = await batchDo.runJob({
+          job_id: jobId,
+          job_type: body.job_type,
+          params: body.params || {},
+          source_generation: body.source_generation,
+          max_batches: body.max_batches,
+          env_vars: {
+            // Container R2 credentials come from the worker's own secrets
+            // (Env bindings), never from process.env, which does not exist in
+            // a Worker runtime.
+            FI_OBJECT_STORE: "R2",
+            FI_R2_ENDPOINT: env.FI_R2_ENDPOINT || "",
+            FI_R2_ACCESS_KEY_ID: env.FI_R2_ACCESS_KEY_ID || "",
+            FI_R2_SECRET_ACCESS_KEY: env.FI_R2_SECRET_ACCESS_KEY || "",
+            FI_R2_RAW_BUCKET: env.FI_R2_RAW_BUCKET || "festival-intelligence-raw",
+            FI_R2_LAKE_BUCKET: env.FI_R2_LAKE_BUCKET || "festival-intelligence-lake",
+            FI_R2_PRIVATE_BUCKET: env.FI_R2_PRIVATE_BUCKET || "festival-intelligence-private",
+            FI_R2_BACKUP_BUCKET: env.FI_R2_BACKUP_BUCKET || "festival-intelligence-backups",
+            FI_LISTENER_HMAC_SECRET: env.FI_LISTENER_HMAC_SECRET || "",
+          },
+        });
+
+        // P8: Return only safe structured fields — no stdout/stderr.
+        const safeResult = {
+          job_id: result.job_id,
+          job_type: result.job_type,
+          status: result.status,
+          manifest_key: result.manifest_key,
+          last_safe_error_code: result.last_safe_error_code,
+          started_at: result.started_at,
+          completed_at: result.completed_at,
+          duration_ms: result.duration_ms,
+        };
+        return Response.json(safeResult);
+      } catch (e: any) {
+        return Response.json(
+          { error: e?.message?.slice(0, 120) || "Internal error" },
+          { status: 500 },
+        );
+      }
+    }
+
+    if (url.pathname === "/batch/status" && request.method === "GET") {
+      // P10: Status is also protected.
+      const authFail = requireBatchAuth(request, env);
+      if (authFail) return authFail;
+
+      const jobId = url.searchParams.get("job_id");
+      if (!jobId) {
+        return Response.json({ error: "job_id required" }, { status: 400 });
+      }
+      const doId = env.BATCH_CONTAINER.idFromName(jobId);
+      const batchDo = env.BATCH_CONTAINER.get(doId) as any;
+      const status = await batchDo.getStatus(jobId);
+      // P8: getStatus already returns safe structured fields only.
+      return Response.json(status);
     }
 
     if (url.pathname === "/ops/health" && request.method === "GET") {

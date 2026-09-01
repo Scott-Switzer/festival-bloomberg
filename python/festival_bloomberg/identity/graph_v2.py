@@ -168,6 +168,62 @@ def _parse_utc(value: Any) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+_DUCKDB_TIMESTAMP = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?$"
+)
+
+
+def _as_rfc3339_utc(value: Any) -> str | None:
+    """Normalize a knowledge time to RFC3339 UTC text.
+
+    Accepts datetime objects (DuckDB TIMESTAMP columns return naive
+    ``datetime.datetime`` values whose ``str()`` is ``YYYY-MM-DD HH:MM:SS``
+    rather than RFC3339), DuckDB-style timestamp strings, and RFC3339 UTC
+    strings.  Timezone-naive values are interpreted as UTC, matching the
+    pipeline-wide ingestion convention.  Any other value returns None so the
+    fail-closed knowledge-time gate can reject it.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        value = value.astimezone(timezone.utc)
+        return value.isoformat().replace("+00:00", "Z")
+    text = _text(value)
+    if not text:
+        return None
+    if _RFC3339_UTC.fullmatch(text):
+        return text
+    if _DUCKDB_TIMESTAMP.fullmatch(text):
+        return text.replace(" ", "T", 1) + "Z"
+    return None
+
+
+def _timestamp_text(value: Any) -> str | None:
+    """Best-effort RFC3339 text for audit fields; never drops a non-empty value."""
+    normalized = _as_rfc3339_utc(value)
+    if normalized is not None:
+        return normalized
+    return _text(value)
+
+
+def _knowledge_time_text(value: Any) -> str | None:
+    """Knowledge-time text that preserves invalid values for fail-closed review.
+
+    Absent knowledge (None) returns None and is admitted without a PIT cutoff.
+    A value that cannot be normalized to RFC3339 UTC returns its raw text so
+    the caller's knowledge-time gate rejects it as INVALID_KNOWLEDGE_TIME rather
+    than silently treating a malformed timestamp as "no knowledge time".
+    """
+    if value is None:
+        return None
+    normalized = _as_rfc3339_utc(value)
+    if normalized is not None:
+        return normalized
+    return _text(value)
+
+
 def _conservative(values: Iterable[str | None], *, rights: bool) -> str:
     default = DEFAULT_RIGHTS if rights else DEFAULT_COMMERCIAL
     order = _RIGHTS_ORDER if rights else _COMMERCIAL_ORDER
@@ -253,7 +309,9 @@ def _evidence_from_row(
     crowd_curated = source_lower in {
         "crowd", "crowd-curated", "crowdsourced", "community", "community-curated",
     } or "crowd" in source_lower
-    knowledge_time = _text(row.get("knowledge_time") or row.get("last_verified_at") or row.get("ingested_at"))
+    knowledge_time = _knowledge_time_text(
+        row.get("knowledge_time") or row.get("last_verified_at") or row.get("ingested_at")
+    )
     trusted = (native_mbid or (knowledge_time is not None and claimed_upper in {
         "API_VERIFIED", "VERIFIED", "VERIFIED_EXACT", "EXACT", "TRUSTED", "CANONICAL"
     })) and not crowd_curated and not candidate
@@ -285,7 +343,7 @@ def _evidence_from_row(
         source_system=source_system,
         source_version=_text(row.get("source_version")),
         source_checksum=_text(row.get("source_checksum") or row.get("checksum") or row.get("sha256")),
-        retrieved_at=_text(row.get("retrieved_at") or row.get("source_retrieved_at")),
+        retrieved_at=_timestamp_text(row.get("retrieved_at") or row.get("source_retrieved_at")),
         rights_status=_text(row.get("rights_status")) or DEFAULT_RIGHTS,
         commercial_use_status=_text(row.get("commercial_use_status")) or DEFAULT_COMMERCIAL,
         knowledge_time=knowledge_time,
@@ -303,15 +361,18 @@ def _invalid_record(
     return {
         "artist_key": artist_key, "provider": provider, "provider_id": raw,
         "source_table": source_table,
+        "claimed_status": _text(row.get("resolution_status")),
         "source_ref": _row_ref(row, f"{source_table}:{artist_key}:{raw}"),
         "source_url": _text(row.get("url") or row.get("provider_url") or row.get("evidence_url")),
         "source_system": _text(row.get("source_system") or row.get("source")),
         "source_version": _text(row.get("source_version")),
         "source_checksum": _text(row.get("source_checksum") or row.get("checksum") or row.get("sha256")),
-        "retrieved_at": _text(row.get("retrieved_at") or row.get("source_retrieved_at")),
+        "retrieved_at": _timestamp_text(row.get("retrieved_at") or row.get("source_retrieved_at")),
         "rights_status": _text(row.get("rights_status")) or DEFAULT_RIGHTS,
         "commercial_use_status": _text(row.get("commercial_use_status")) or DEFAULT_COMMERCIAL,
-        "knowledge_time": _text(row.get("knowledge_time") or row.get("last_verified_at") or row.get("ingested_at")),
+        "knowledge_time": _knowledge_time_text(
+            row.get("knowledge_time") or row.get("last_verified_at") or row.get("ingested_at")
+        ),
         "payload_json": _minimal_payload(row),
     }
 
@@ -329,10 +390,12 @@ def _discarded_record(
         "source_system": _text(row.get("source_system") or row.get("source")),
         "source_version": _text(row.get("source_version")),
         "source_checksum": _text(row.get("source_checksum") or row.get("checksum") or row.get("sha256")),
-        "retrieved_at": _text(row.get("retrieved_at") or row.get("source_retrieved_at")),
+        "retrieved_at": _timestamp_text(row.get("retrieved_at") or row.get("source_retrieved_at")),
         "rights_status": _text(row.get("rights_status")) or DEFAULT_RIGHTS,
         "commercial_use_status": _text(row.get("commercial_use_status")) or DEFAULT_COMMERCIAL,
-        "knowledge_time": _text(row.get("knowledge_time") or row.get("last_verified_at") or row.get("ingested_at")),
+        "knowledge_time": _knowledge_time_text(
+            row.get("knowledge_time") or row.get("last_verified_at") or row.get("ingested_at")
+        ),
         "payload_json": _minimal_payload(row),
     }
 
@@ -404,7 +467,9 @@ def _collect_evidence(
             qid_to_mbids[qid].add(joined_mbid)
             qid_mbid_has_pit_time[(qid, joined_mbid)] = (
                 qid_mbid_has_pit_time[(qid, joined_mbid)]
-                or _text(row.get("knowledge_time") or row.get("last_verified_at") or row.get("ingested_at")) is not None
+                or _as_rfc3339_utc(
+                    row.get("knowledge_time") or row.get("last_verified_at") or row.get("ingested_at")
+                ) is not None
             )
     qid_to_mbid = {qid: next(iter(mbids)) for qid, mbids in qid_to_mbids.items() if len(mbids) == 1}
     qid_join_has_pit_time = {
@@ -477,21 +542,33 @@ def _collect_evidence(
             discarded.append(_discarded_record(row, source_table="wikidata_generation_parquet", artist_key=artist_key, provider="WIKIDATA", provider_id=qid, reason="NO_UNIQUE_P434_MBID_JOIN"))
             continue
         join_is_candidate = not qid_join_has_pit_time.get(qid, False)
-        wikidata_item, raw = _evidence_from_row(row, source_table="wikidata_generation_parquet", artist_key=artist_key, provider="WIKIDATA", provider_id=qid, evidence_kind="WIKIDATA_P434_MBID_JOIN", candidate=join_is_candidate)
-        if wikidata_item:
-            evidence.append(wikidata_item)
-        else:
-            invalid.append(_invalid_record(row, source_table="wikidata_generation_parquet", artist_key=artist_key, provider="WIKIDATA", provider_id=raw))
+        # Deterministic per-claim reference.  The parquet rows carry no source
+        # reference column, and the fallback (artist+provider_id) collides when
+        # several Wikidata items claim the same provider value; including the
+        # qid/property keeps each claim distinct evidence.
+        claim_row = dict(row)
+        claim_row["source_ref"] = (
+            f"wikidata_generation_parquet:{qid}:{property_name}:{_text(property_value) or 'P434'}"
+        )
+        # The qid-to-artist link is established by the P434 property row and is
+        # emitted exactly once per qid; the typed property rows below are
+        # independent claims, not repetitions of the same qid evidence.
+        if property_name == "P434" or not property_name:
+            wikidata_item, raw = _evidence_from_row(claim_row, source_table="wikidata_generation_parquet", artist_key=artist_key, provider="WIKIDATA", provider_id=qid, evidence_kind="WIKIDATA_P434_MBID_JOIN", candidate=join_is_candidate)
+            if wikidata_item:
+                evidence.append(wikidata_item)
+            else:
+                invalid.append(_invalid_record(claim_row, source_table="wikidata_generation_parquet", artist_key=artist_key, provider="WIKIDATA", provider_id=raw))
         # The generation's artist_external_ids product carries one row per
         # Wikidata property.  Join through P434 first, then retain the typed
         # external ID as independent evidence for the canonical artist.
         provider = WIKIDATA_PROPERTY_TO_PROVIDER.get(property_name or "")
         if provider and property_value is not None:
-            item, raw = _evidence_from_row(row, source_table="wikidata_generation_parquet", artist_key=artist_key, provider=provider, provider_id=property_value, evidence_kind=f"WIKIDATA_{property_name}_MBID_JOIN", candidate=join_is_candidate)
+            item, raw = _evidence_from_row(claim_row, source_table="wikidata_generation_parquet", artist_key=artist_key, provider=provider, provider_id=property_value, evidence_kind=f"WIKIDATA_{property_name}_MBID_JOIN", candidate=join_is_candidate)
             if item:
                 evidence.append(item)
             else:
-                invalid.append(_invalid_record(row, source_table="wikidata_generation_parquet", artist_key=artist_key, provider=provider, provider_id=raw))
+                invalid.append(_invalid_record(claim_row, source_table="wikidata_generation_parquet", artist_key=artist_key, provider=provider, provider_id=raw))
     evidence.sort(key=lambda item: item.key())
     invalid.sort(key=lambda item: json.dumps(item, sort_keys=True, default=str))
     discarded.sort(key=lambda item: json.dumps(item, sort_keys=True, default=str))
@@ -580,7 +657,7 @@ def build_graph(
     admissible_wikidata: list[dict[str, Any]] = []
     wikidata_discarded: list[dict[str, Any]] = []
     for row in wikidata_rows:
-        knowledge_time = _text(
+        knowledge_time = _knowledge_time_text(
             row.get("knowledge_time") or row.get("last_verified_at") or row.get("ingested_at")
         )
         if knowledge_time:
@@ -746,7 +823,7 @@ def build_graph(
             "provider": provider, "provider_id": bad["provider_id"],
             "source_table": bad["source_table"], "source_ref": bad["source_ref"],
             "source_url": bad["source_url"], "evidence_kind": "INVALID_PROVIDER_ID",
-            "evidence_status": "MISSING", "rights_status": bad["rights_status"],
+            "evidence_status": "MISSING", "claimed_status": bad.get("claimed_status"), "rights_status": bad["rights_status"],
             "commercial_use_status": bad["commercial_use_status"],
             "source_system": bad["source_system"], "source_version": bad["source_version"],
             "source_checksum": bad["source_checksum"], "retrieved_at": bad["retrieved_at"],
@@ -1067,15 +1144,29 @@ def write_graph_tables(conn, result: Mapping[str, Any]) -> dict[str, int]:
                         f"extra={sorted(set(row) - set(columns))}"
                     )
                 prepared.append([
-                    json.dumps(row[column], sort_keys=True) if column in json_columns and row[column] is not None else row[column]
+                    # default=str renders DuckDB datetime objects as RFC3339
+                    # strings inside payload JSON; the DB columns are TEXT.
+                    json.dumps(row[column], sort_keys=True, default=str) if column in json_columns and row[column] is not None else row[column]
                     for column in columns
                 ])
             if prepared:
-                placeholders = ",".join("?" for _ in columns)
-                conn.executemany(
-                    f"INSERT INTO identity.{table} ({','.join(columns)}) VALUES ({placeholders})",
-                    prepared,
-                )
+                # Bulk load through an Arrow table: duckdb-python executemany
+                # inserts row-by-row (~1k rows/s), which takes minutes for the
+                # ~570k-row graph; the Arrow path is ~100x faster while keeping
+                # the same deterministic prepared values.
+                import pyarrow as pa
+                registered = f"t_ins_{name}"
+                arrow = pa.Table.from_pylist([
+                    dict(zip(columns, row)) for row in prepared
+                ])
+                conn.register(registered, arrow)
+                try:
+                    conn.execute(
+                        f"INSERT INTO identity.{table} ({','.join(columns)}) "
+                        f"SELECT * FROM {registered}"
+                    )
+                finally:
+                    conn.unregister(registered)
             counts[name] = len(rows)
         conn.execute("COMMIT")
         begun = False

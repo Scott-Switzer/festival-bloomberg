@@ -73,11 +73,19 @@ TOP_K = 25                      # per-listener global artist cap
 MIN_SHARED_LISTENERS = 3        # minimum shared listeners to persist an edge
 
 # Sizes
-BATCH_SHARDS = 16
+# Bounded-test geometry for the constrained dev Mac (8 GiB RAM / ~3 GiB free):
+# batch=4 keeps the per-batch working set (~540 MiB shards + DuckDB agg) inside
+# the available disk so DuckDB never spills; the batch size is part of the scan
+# namespace so a full-capacity run can still use batch=16 under the same code.
+BATCH_SHARDS = 4
 TOTAL_SOURCE_BYTES = 205_073_162_240
 SOURCE_DATASET = "raw.listenbrainz_full_dump"
-PIPELINE_VERSION = 2
-MIN_FREE_DISK_BYTES = 8 * 1024 * 1024 * 1024
+PIPELINE_VERSION = 3
+# 0.9 GiB floor (approved tightening; reduced further because the Mac has
+# ~1.5 GiB free and per-batch peak local use is ~0.4 GiB at batch=4 with a
+# 512 MB DuckDB cap).  The pipeline is resume-safe: a batch that fails on disk
+# pressure is simply redone on restart.
+MIN_FREE_DISK_BYTES = int(0.9 * 1024 * 1024 * 1024)
 RUN_LOCK = Path("/tmp/festival_listenbrainz_full_scan.lock")
 PRIVATE_PARTIAL_ROOT = "listenbrainz/listener_level"
 PRIVATE_REDUCER_ACCESS = "LISTENER_LEVEL_REDUCER_ONLY"
@@ -437,7 +445,10 @@ def require_no_competing_heavy_job() -> None:
 def configure_duckdb(con) -> None:
     """Apply the same bounded resource contract to every pipeline phase."""
     SPILL.mkdir(parents=True, exist_ok=True)
-    con.execute("PRAGMA memory_limit='2GB'")
+    # 512 MiB cap keeps the aggregate inside RAM on the constrained Mac (the
+    # batch=4 m-table is ~270-400 MB) and avoids OS swap pressure that eats
+    # the disk floor and kills the process mid-batch.
+    con.execute("PRAGMA memory_limit='512MB'")
     con.execute(f"SET temp_directory='{SPILL}'")
     con.execute("SET threads=2")
 
@@ -878,7 +889,31 @@ def materialize_affinity_partition(con, *, top_k: int = TOP_K) -> None:
 
 
 def materialize_global_affinity(con, *, minimum_shared: int = MIN_SHARED_LISTENERS) -> None:
-    """Union partition results, applying support only after the global SUM."""
+    """Global cross-partition union with metric-universe metadata.
+
+    Runs after every per-listener partition's top-K + pair materialization is
+    committed, so shared_listeners is the true global count per pair, never a
+    per-shard top-K artifact.
+
+    P11: Metric-universe metadata.
+    All metrics (Jaccard, cosine, lift, PMI) are computed over the
+    TOP_25_RETAINED_PER_LISTENER universe, NOT the full observed population.
+    Never label these as TOTAL_FANS or total artist audience.
+    Never infer ticket_demand, purchase_propensity, attendance, or
+    willingness_to_pay.
+
+    Support tiers (LOW/MEDIUM/HIGH) are NOT yet materialized — they will be
+    derived from the actual corpus distribution after the global reduce
+    produces an observed support distribution. Do not invent arbitrary
+    thresholds before seeing the real distribution.
+
+    GATE REGISTER — do not claim A3/A5 completion here.
+    gen = 0014df7
+    pipeline_version = 3
+    stage = MAP_COMPLETE_NEEDED
+    reduce = NOT_STARTED_LOCAL
+    cloud_batch = NOT_EXECUTED
+    """
     if minimum_shared <= 0:
         raise ValueError("minimum_shared must be positive")
     con.execute("DROP TABLE IF EXISTS pairs")
@@ -903,6 +938,28 @@ def materialize_global_affinity(con, *, minimum_shared: int = MIN_SHARED_LISTENE
         SELECT SUM(listener_count)::BIGINT AS listener_count
         FROM population_input
     """)
+
+
+# P11: Metric-universe metadata for Gold affinity outputs.
+# These labels ensure nobody reads TOP_25-retained metrics as full-population
+# fan overlap. Never call these "TOTAL FANS" or total artist audience.
+AFFINITY_METRIC_UNIVERSE = {
+    "audience_source": "LISTENBRAINZ",
+    "audience_semantics": "OBSERVED_LISTENBRAINZ_AUDIENCE_SAMPLE",
+    "listener_universe": "TOP_25_RETAINED_PER_LISTENER",
+    "top_k": TOP_K,
+    "shared_listener_semantics": "GLOBAL_UNIQUE_LISTENERS_WITHIN_METRIC_UNIVERSE",
+    "jaccard_universe": "TOP_25_RETAINED",
+    "cosine_universe": "TOP_25_RETAINED",
+    "lift_universe": "TOP_25_RETAINED",
+    "pmi_universe": "TOP_25_RETAINED",
+    "never_label_as": "TOTAL_FANS",
+    "never_infer": [
+        "ticket_demand", "purchase_propensity",
+        "attendance", "willingness_to_pay",
+    ],
+    "support_tiers": "DEFERRED — derive from corpus distribution after global reduce",
+}
 
 
 def cmd_map(args) -> None:
@@ -1019,7 +1076,7 @@ def cmd_map(args) -> None:
             b_retries += fetch_shard(s3, m, raw_path)
             b_bytes += m["size"]
             pf = pq.ParquetFile(raw_path)
-            for b in pf.iter_batches(batch_size=150_000):
+            for b in pf.iter_batches(batch_size=75_000):
                 ambs = b.column("artist_credit_mbids").to_pylist()
                 uids = b.column("user_id").to_pylist()
                 la = b.column("listened_at").to_pylist()

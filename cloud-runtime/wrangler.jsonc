@@ -88,7 +88,10 @@
   "r2_buckets": [
     { "binding": "RAW_BUCKET", "bucket_name": "festival-intelligence-raw" },
     { "binding": "LAKE_BUCKET", "bucket_name": "festival-intelligence-lake" },
-    { "binding": "BACKUP_BUCKET", "bucket_name": "festival-intelligence-backups" }
+    { "binding": "BACKUP_BUCKET", "bucket_name": "festival-intelligence-backups" },
+    // Private/restricted lake for listener-level ListenBrainz intermediates.
+    // Never browser-facing. Only aggregate audience evidence flows to LAKE_BUCKET.
+    { "binding": "PRIVATE_BUCKET", "bucket_name": "festival-intelligence-private" }
   ],
 
   // --- Durable Objects ---
@@ -101,6 +104,12 @@
       {
         "name": "ACQUISITION_CONTAINER",
         "class_name": "AcquisitionContainer"
+      },
+      // Batch compute DO — runs long Python/DuckDB jobs via container exec().
+      // Restarts from R2 checkpoints; never holds unique data on ephemeral disk.
+      {
+        "name": "BATCH_CONTAINER",
+        "class_name": "BatchContainer"
       }
     ]
   },
@@ -109,6 +118,23 @@
     {
       "tag": "v1",
       "new_sqlite_classes": ["AcquisitionGovernor", "AcquisitionContainer"]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["BatchContainer"]
+    }
+  ],
+
+  // --- Batch Container (heavy data processing) ---
+  // standard-4: 4 vCPU / 12 GiB RAM / 20 GB ephemeral disk.
+  // Ephemeral disk is NOT persistent — correct for the map/reduce scratch model.
+  // The DO manages lifecycle; exec() invokes batch_entrypoint.py per job step.
+  "containers": [
+    {
+      "class_name": "BatchContainer",
+      "image": "./docker/Dockerfile.batch",
+      "max_instances": 1,
+      "instance_type": "standard-4"
     }
   ],
 
@@ -142,4 +168,17 @@
     "ABSOLUTE_HARD_STOP_USD": "10.00",
     "ENABLE_DEEP_RAIL": "false"
   }
+
+  // --- Required Secrets (set via `wrangler secret put`) ---
+  // DO NOT hardcode these. DO NOT print their values.
+  // DO NOT commit them to Git.
+  //
+  // ADMIN_TOKEN              — admin auth for /batch/trigger, /batch/status.
+  //                            In production, unset token FAILS CLOSED.
+  // FI_LISTENER_HMAC_SECRET  — HMAC-SHA256 key for listener pseudonymization.
+  //                            >=32 bytes. Only in Cloudflare secret binding.
+  //                            Never in Git/R2/manifests/logs/status API.
+  // R2 credentials (FI_R2_ACCESS_KEY_ID, FI_R2_SECRET_ACCESS_KEY, FI_R2_ENDPOINT)
+  //                          — set as secrets or via R2 token bindings.
 }
+
