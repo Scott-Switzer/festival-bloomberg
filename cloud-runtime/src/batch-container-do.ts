@@ -107,8 +107,6 @@ export class BatchContainer extends DurableObject<BatchEnv> {
       completed_at: "",
       duration_ms: 0,
       exit_code: -1,
-      stdout: "",
-      stderr: "",
     };
 
     try {
