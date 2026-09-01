@@ -33,7 +33,7 @@ jobs:
 
       - name: Deploy worker + build container
         working-directory: cloud-runtime
-        run: npx wrangler deploy --containers-rollout=default
+        run: npx wrangler deploy --containers-rollout=immediate
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
