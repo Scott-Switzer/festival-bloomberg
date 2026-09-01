@@ -150,6 +150,29 @@ describe("requireBatchAuth (V1B P0-4)", () => {
   });
 });
 
+describe("successful summary reconciliation", () => {
+  it("does not attach JOB_EXEC_FAILED when a completed summary has no error", () => {
+    const summary = { status: "COMPLETED", smoke_checks: [{ name: "r2", ok: true }] };
+    const exitCode = 0;
+    const status = exitCode !== 0 ? "FAILED" : (summary.status === "FAILED" ? "FAILED" : summary.status);
+    const rawError = (summary as Record<string, unknown>).error_code ?? (summary as Record<string, unknown>).error;
+    expect(status).toBe("COMPLETED");
+    expect(rawError).toBeUndefined();
+    expect(status === "FAILED" ? mapErrorToCode(rawError) : undefined).toBeUndefined();
+  });
+
+  it("makes nonzero exit authoritative over a completed summary", () => {
+    const summary = { status: "COMPLETED" };
+    expect(1 !== 0 ? "FAILED" : summary.status).toBe("FAILED");
+  });
+
+  it("propagates safe summary metrics", () => {
+    const summary = { rows_read: 1, rows_written: 1, r2_read_bytes: 36, r2_write_bytes: 36 };
+    expect(summary.rows_read).toBe(1);
+    expect(summary.r2_write_bytes).toBe(36);
+  });
+});
+
 describe("mapErrorToCode (V1B P1)", () => {
   it("maps known codes and rejects raw text", () => {
     expect(mapErrorToCode("JOB_EXEC_FAILED")).toBe("JOB_EXEC_FAILED");

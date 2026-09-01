@@ -38,6 +38,16 @@ export interface BatchJobResult {
   exit_code: number;
   manifest_key?: string;
   last_safe_error_code?: string;
+  source_generation?: string;
+  code_commit?: string;
+  completed_batches?: number;
+  total_batches?: number;
+  bytes_read?: number;
+  bytes_written?: number;
+  rows_read?: number;
+  rows_written?: number;
+  smoke_checks?: unknown;
+  publication_state?: string;
   // P8: stdout/stderr are NOT exposed in /batch/status.
   // They are kept here for internal logging only and never returned to clients.
   _stdout?: string;
@@ -213,9 +223,24 @@ export class BatchContainer extends DurableObject<BatchEnv> {
         try {
           const summary = JSON.parse(lines[lines.length - 1]);
           result.manifest_key = summary.manifest_key;
-          result.status = summary.status || (output.exitCode === 0 ? "COMPLETED" : "FAILED");
-          // P1: Fixed safe error code only — no raw stack traces or error text.
-          result.last_safe_error_code = mapErrorToCode(summary.error_code ?? summary.error);
+          result.source_generation = summary.source_generation;
+          result.code_commit = summary.code_commit;
+          result.completed_batches = summary.completed_batches;
+          result.total_batches = summary.total_batches;
+          result.bytes_read = summary.bytes_read ?? summary.r2_read_bytes;
+          result.bytes_written = summary.bytes_written ?? summary.r2_write_bytes;
+          result.rows_read = summary.rows_read;
+          result.rows_written = summary.rows_written;
+          result.smoke_checks = summary.smoke_checks;
+          result.publication_state = summary.publication_state;
+          const summaryStatus = summary.status;
+          result.status = output.exitCode !== 0 ? "FAILED" : (summaryStatus === "FAILED" ? "FAILED" : (summaryStatus || "COMPLETED"));
+          const rawError = summary.error_code ?? summary.error;
+          if (result.status === "FAILED") {
+            result.last_safe_error_code = mapErrorToCode(rawError);
+          } else {
+            delete result.last_safe_error_code;
+          }
         } catch {
           result.status = output.exitCode === 0 ? "COMPLETED" : "FAILED";
         }
@@ -255,13 +280,13 @@ export class BatchContainer extends DurableObject<BatchEnv> {
       status: result.status,
       started_at: result.started_at,
       updated_at: result.completed_at || new Date().toISOString(),
-      completed_batches: 0,
-      total_batches: 0,
-      bytes_read: 0,
-      bytes_written: 0,
+      completed_batches: result.completed_batches ?? 0,
+      total_batches: result.total_batches ?? 0,
+      bytes_read: result.bytes_read ?? 0,
+      bytes_written: result.bytes_written ?? 0,
       runtime_seconds: result.duration_ms / 1000,
       manifest_key: result.manifest_key,
-      last_safe_error_code: result.last_safe_error_code,
+      last_safe_error_code: result.status === "FAILED" ? result.last_safe_error_code : undefined,
     };
     try {
       await this.env.PRIVATE_BUCKET.put(
@@ -312,13 +337,13 @@ export class BatchContainer extends DurableObject<BatchEnv> {
           status: r.status,
           started_at: r.started_at,
           updated_at: r.completed_at || "",
-          completed_batches: 0,
-          total_batches: 0,
-          bytes_read: 0,
-          bytes_written: 0,
+          completed_batches: r.completed_batches ?? 0,
+          total_batches: r.total_batches ?? 0,
+          bytes_read: r.bytes_read ?? 0,
+          bytes_written: r.bytes_written ?? 0,
           runtime_seconds: r.duration_ms / 1000,
           manifest_key: r.manifest_key,
-          last_safe_error_code: r.last_safe_error_code,
+          last_safe_error_code: r.status === "FAILED" ? r.last_safe_error_code : undefined,
         },
         durable_source: "memory",
       };
