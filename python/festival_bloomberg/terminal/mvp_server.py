@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import duckdb
 
@@ -183,7 +183,7 @@ class MvpTerminalApp:
         if path == "/api/markets":
             return self._ok(self._markets(params.get("q", ""), int(params.get("limit", 200))))
         if path.startswith("/api/market/"):
-            market_key = path[len("/api/market/"):]
+            market_key = unquote(path[len("/api/market/"):])
             return self._ok(self._market_detail(market_key))
 
         if path == "/api/shortlist" and method == "GET":
@@ -195,7 +195,7 @@ class MvpTerminalApp:
             return self._ok(self._delete_shortlist(item_id))
 
         if path.startswith("/api/artist-security/"):
-            artist_key = path[len("/api/artist-security/"):]
+            artist_key = unquote(path[len("/api/artist-security/"):])
             payload = artist_security.get_artist_security(self.conn, artist_key)
             return self._ok(payload) if payload is not None else self._not_found()
 

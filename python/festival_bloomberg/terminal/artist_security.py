@@ -566,6 +566,7 @@ def _compare_summary(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "artist_key": artist["artist_key"],
         "artist_name": artist["name"],
+        "market_count": facts.get("markets"),
         "identity": {
             "type": artist.get("artist_type") or artist.get("type"),
             "area": artist.get("area"),
