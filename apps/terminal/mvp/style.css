@@ -117,6 +117,10 @@ button.danger { color: var(--red); }
 .market-row { display: flex; justify-content: space-between; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 6px; background: var(--panel); cursor: pointer; }
 .market-row:hover { border-color: var(--accent); }
 
+.now-row { padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 6px; background: var(--panel); cursor: pointer; font-size: 13px; }
+.now-row:hover { border-color: var(--accent); }
+.hero { background: linear-gradient(180deg, rgba(46,160,67,.06), rgba(46,160,67,0) 60%), var(--panel); }
+
 input[type="text"], input[type="search"], input[type="date"], textarea {
   background: var(--bg); color: var(--text); border: 1px solid var(--border);
   border-radius: 8px; padding: 8px 10px; font-size: 13px;

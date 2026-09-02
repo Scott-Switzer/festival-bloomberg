@@ -69,6 +69,11 @@ def _rows(conn, sql: str, params: list[Any] | None = None) -> list[dict[str, Any
     return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
+def _one(conn, sql: str, params: list[Any] | None = None) -> dict[str, Any] | None:
+    rows = _rows(conn, sql, params)
+    return rows[0] if rows else None
+
+
 def _market_pretty(market_key: str) -> str:
     """'chicago-il' -> 'Chicago, IL'; 'london-gb' -> 'London, GB'."""
     parts = [p for p in str(market_key or "").split("-") if p]
@@ -180,6 +185,8 @@ class MvpTerminalApp:
 
         if path == "/api/demo":
             return self._ok(self._demo())
+        if path == "/api/now":
+            return self._ok(self._now())
         if path == "/api/markets":
             return self._ok(self._markets(params.get("q", ""), int(params.get("limit", 200))))
         if path.startswith("/api/market/"):
@@ -202,6 +209,31 @@ class MvpTerminalApp:
         return self._not_found()
 
     # ── product read models ──────────────────────────────────────
+
+    def _now(self) -> dict[str, Any]:
+        """Home-screen 'what is happening now' strip: upcoming forward shows
+        and the most recently observed live events, with artist identity."""
+        upcoming = _rows(
+            self.conn,
+            """SELECT f.artist_key, a.name AS artist_name, a.tier,
+                      f.event_date, f.venue_name, f.city AS venue_city,
+                      f.event_status, f.ticket_price_min, f.ticket_price_max,
+                      f.ticket_price_currency
+               FROM future_events f JOIN artists a USING (artist_key)
+               WHERE f.event_date >= CURRENT_DATE
+               ORDER BY f.event_date ASC, a.name
+               LIMIT 8""",
+        )
+        recent = _rows(
+            self.conn,
+            """SELECT h.artist_key, a.name AS artist_name, a.tier,
+                      h.event_date, h.event_name, h.venue_name, h.city AS venue_city
+               FROM event_history h JOIN artists a USING (artist_key)
+               WHERE h.event_date IS NOT NULL
+               ORDER BY h.event_date DESC NULLS LAST
+               LIMIT 8""",
+        )
+        return {"upcoming": upcoming, "recent": recent}
 
     def _coverage(self) -> dict[str, Any]:
         meta = self._serving_meta()
@@ -307,6 +339,17 @@ class MvpTerminalApp:
         if not name:
             return self._bad_request("name is required")
         item_id = str(item.get("id") or uuid.uuid4().hex)
+        artist_key = str(item.get("artist_key") or "") or None
+        # Keep the workspace clean: adding the same artist twice returns the
+        # existing row instead of creating a duplicate candidate.
+        if artist_key:
+            existing = _one(
+                self.workspace_conn,
+                "SELECT id FROM shortlist_items WHERE artist_key = ? LIMIT 1",
+                [artist_key],
+            )
+            if existing:
+                return {"added": True, "id": existing["id"], "duplicate": True}
         self.workspace_conn.execute(
             """
             INSERT INTO shortlist_items (id, name, artist_key, market, event_date,
@@ -314,7 +357,7 @@ class MvpTerminalApp:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             """,
             [item_id, name,
-             str(item.get("artist_key") or "") or None,
+             artist_key,
              str(item.get("market") or "") or None,
              str(item.get("date") or item.get("event_date") or "") or None,
              str(item.get("venue") or "") or None,
