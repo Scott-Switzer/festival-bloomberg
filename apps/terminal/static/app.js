@@ -34,8 +34,82 @@
     });
   }
 
-  function linkTo(type, id, label) {
-    return '<button class="link" data-nav="' + type + '" data-id="' + esc(id) + '">' + esc(label) + "</button>";
+  function linkTo(type, id, label, ctx) {
+    return '<button class="link" data-nav="' + type + '" data-id="' + esc(id) + '"' +
+      (ctx ? ' data-ctx="' + esc(JSON.stringify(ctx)).replace(/"/g, "&quot;") + '"' : "") +
+      ">" + esc(label) + "</button>";
+  }
+
+  /* ---- terminal workflow memory (local only, no backend account) -------- */
+  var RECENTS_KEY = "fi.recents.v1";
+  function pushRecent(type, id, name) {
+    try {
+      var recents = JSON.parse(localStorage.getItem(RECENTS_KEY) || "[]");
+      recents = recents.filter(function (r) { return !(r.type === type && r.id === id); });
+      recents.unshift({ type: type, id: id, name: name || id, at: new Date().toISOString() });
+      localStorage.setItem(RECENTS_KEY, JSON.stringify(recents.slice(0, 24)));
+    } catch (e) { /* storage unavailable — recents degrade to empty */ }
+  }
+  function getRecents(types) {
+    try {
+      var recents = JSON.parse(localStorage.getItem(RECENTS_KEY) || "[]");
+      if (types && types.length) recents = recents.filter(function (r) { return types.indexOf(r.type) >= 0; });
+      return recents;
+    } catch (e) { return []; }
+  }
+
+  function deltaChip(change, changePct) {
+    if (change == null) return '<span class="unknown">UNKNOWN</span>';
+    var cls = change > 0 ? "up" : change < 0 ? "down" : "flat";
+    var arrow = change > 0 ? "▲" : change < 0 ? "▼" : "＝";
+    var pct = changePct != null ? " (" + (changePct > 0 ? "+" : "") + changePct + "%)" : "";
+    return '<span class="delta ' + cls + '">' + arrow + " " + esc(String(Math.round(change))) + (pct ? '<span class="muted">' + esc(pct) + "</span>" : "") + "</span>";
+  }
+
+  /* Compact one-line state for sections with no evidence — no empty grids. */
+  function compactEmpty(title, note, lastChecked, extra) {
+    return '<div class="compact-none"><span class="none-label">' + esc(title) + '</span>' +
+      '<span class="muted">' + esc(note || "No observations in this serving generation.") + '</span>' +
+      (lastChecked ? '<span class="muted">last checked ' + esc(String(lastChecked).slice(0, 19)) + '</span>' : "") +
+      (extra || "") + '</div>';
+  }
+
+  /* Source-separated SVG line chart. Points must share one metric + window. */
+  function attentionChart(series, windowDays) {
+    if (!series || !series.points || series.points.length < 2) {
+      return '<div class="compact-none"><span class="none-label">CHART</span><span class="muted">Insufficient observations — chart appears when at least two comparable observations of the same window land.</span></div>';
+    }
+    var pts = series.points;
+    if (windowDays) {
+      var cutoff = new Date(Date.now() - windowDays * 86400000).toISOString().slice(0, 10);
+      var filtered = pts.filter(function (p) { return p.t >= cutoff; });
+      if (filtered.length >= 2) pts = filtered;
+    }
+    var W = 640, H = 160, PAD = 8;
+    var xs = pts.map(function (p) { return p.t; });
+    var vs = pts.map(function (p) { return p.v; });
+    var t0 = new Date(xs[0]).getTime(), t1 = new Date(xs[xs.length - 1]).getTime();
+    var span = Math.max(t1 - t0, 1);
+    var v0 = Math.min.apply(null, vs), v1 = Math.max.apply(null, vs);
+    var vspan = Math.max(v1 - v0, 1);
+    var path = pts.map(function (p, i) {
+      var x = PAD + ((new Date(p.t).getTime() - t0) / span) * (W - 2 * PAD);
+      var y = H - PAD - ((p.v - v0) / vspan) * (H - 2 * PAD);
+      return (i ? "L" : "M") + x.toFixed(1) + "," + y.toFixed(1);
+    }).join(" ");
+    var dots = pts.map(function (p) {
+      var x = PAD + ((new Date(p.t).getTime() - t0) / span) * (W - 2 * PAD);
+      var y = H - PAD - ((p.v - v0) / vspan) * (H - 2 * PAD);
+      return '<circle cx="' + x.toFixed(1) + '" cy="' + y.toFixed(1) + '" r="3"><title>' + esc(p.t + " · " + p.kind + " · " + Math.round(p.v)) + "</title></circle>";
+    }).join("");
+    var first = pts[0], last = pts[pts.length - 1];
+    var chg = last.v - first.v;
+    var cls = chg > 0 ? "up" : chg < 0 ? "down" : "flat";
+    return '<div class="chart-wrap"><svg viewBox="0 0 ' + W + " " + H + '" class="attention-svg" role="img" aria-label="' + esc(series.label) + ' history">' +
+      '<path d="' + path + '" fill="none" stroke="currentColor" stroke-width="1.6" />' + dots + '</svg>' +
+      '<div class="chart-meta"><span>' + esc(first.t + " → " + last.t) + '</span>' +
+      '<span class="delta ' + cls + '">' + esc((chg > 0 ? "+" : "") + Math.round(chg)) + ' over window</span>' +
+      '<span class="muted">' + esc(String(pts.length) + " observations") + '</span></div></div>';
   }
 
   function row(cells) {
@@ -159,6 +233,445 @@
     });
   }
 
+  /* ---- TALENT BUYER: ARTIST SECURITY ---------------------------------- */
+
+  function securityItems(section) {
+    if (Array.isArray(section)) return section;
+    return section && Array.isArray(section.items) ? section.items : [];
+  }
+
+  function securityCell(value) {
+    return value == null || value === ""
+      ? '<span class="unknown">UNKNOWN</span>' : esc(value);
+  }
+
+  function securityStatus(section) {
+    return section && section.status ? section.status : (securityItems(section).length ? "OBSERVED" : "UNKNOWN");
+  }
+
+  function securityReasons(value) {
+    if (Array.isArray(value)) return value.join(", ");
+    return value || "UNKNOWN";
+  }
+
+  function securityUrl(url, label) {
+    if (!url) return securityCell(label);
+    return '<a href="' + esc(url) + '" target="_blank" rel="noopener">' + esc(label || url) + '</a>';
+  }
+
+  function securitySourceLine(source) {
+    if (!source) return '<span class="unknown">UNKNOWN</span>';
+    var sourceName = source.source || source.provider || source.source_system || "UNKNOWN";
+    var observed = source.observed_at || source.latest_observation || source.retrieved_at;
+    var knowledge = source.knowledge_time || source.known_at;
+    var freshness = source.freshness || source.freshness_status;
+    return '<span class="security-source">' + esc(sourceName) + '</span>' +
+      ' <span class="muted">obs ' + securityCell(observed ? String(observed).slice(0, 19) : null) +
+      ' · knowledge ' + securityCell(knowledge ? String(knowledge).slice(0, 19) : null) +
+      (freshness ? ' · ' + esc(freshness) : '') + '</span>';
+  }
+
+  function attentionPanel(title, source, opts) {
+    var rows = securityItems(source);
+    var observations = source && (source.observations || source.items) || rows;
+    if (!Array.isArray(observations)) observations = [];
+    var status = securityStatus(source);
+    var o = opts || {};
+    var chart = o.chart && source && source.series && source.series[0] ? attentionChart(source.series[0], o.windowDays) : null;
+    var html = '<div class="security-card" id="attention-' + String(title).toLowerCase() + '"><div class="security-card-head"><h3>' + esc(title) +
+      '</h3><span class="pill ' + (status === "OBSERVED" ? "ok" : "off") + '">' + esc(status) + '</span></div>';
+    if (source && source.note) html += '<p class="muted">' + esc(source.note) + '</p>';
+    if (chart) html += chart;
+    if (!observations.length) {
+      return html + compactEmpty("NO OBSERVATIONS", source && source.note ? "" : undefined, source && source.latest_knowledge_time) + '</div>';
+    }
+    html += '<table><thead><tr><th>Window</th><th>Latest observation</th><th>Value</th><th>Change</th><th>Evidence</th></tr></thead><tbody>';
+    observations.slice(0, 24).forEach(function (obs) {
+      var window = obs.observation_window || obs.window || ((obs.period_start || "") + (obs.period_end ? " → " + obs.period_end : ""));
+      var latest = obs.latest_observation || obs.observed_at || obs.period_end || obs.retrieved_at;
+      var value = obs.value != null ? obs.value : (obs.value_sum != null ? obs.value_sum : obs.listeners);
+      html += row([securityCell(window), securityCell(latest ? String(latest).slice(0, 19) : null),
+        securityCell(value == null ? null : String(value) + (obs.unit ? " " + obs.unit : "")),
+        deltaChip(obs.change, obs.change_pct),
+        securityUrl(obs.source_url || obs.url, obs.source_provider || obs.provider || obs.source_system || "source")]);
+    });
+    return html + '</tbody></table>' + (source && source.source ? '<p class="muted">' + securitySourceLine(source) + '</p>' : '') + '</div>';
+  }
+
+  function renderSecurityHistory(items, filter) {
+    var selected = filter || "ALL";
+    var filtered = items.filter(function (item) {
+      var type = String(item.event_type || item.type || "").toUpperCase();
+      if (selected === "ALL") return true;
+      if (selected === "YEAR:") return true;
+      if (selected.indexOf("YEAR:") === 0) return String(item.date || item.event_date || item.start_date || "").slice(0, 4) === selected.slice(5);
+      if (selected === "MARKET") return !!(item.market || item.city);
+      return type === selected || (selected === "FESTIVAL" && (item.festival || /festival/i.test(String(item.series || ""))));
+    });
+    if (!filtered.length) return '<div class="none">UNKNOWN — no matching live-history evidence.</div>';
+    return '<table><thead><tr><th>Date</th><th>Event</th><th>Venue</th><th>Market</th><th>Type</th><th>Series / festival</th><th>Source</th></tr></thead><tbody>' +
+      filtered.map(function (item) {
+        var eid = item.event_id || item.event_key || item.id;
+        var eventLabel = item.event || item.event_name || eid;
+        var event = item.source_url || item.url
+          ? securityUrl(item.source_url || item.url, eventLabel)
+          : (eid ? linkTo("events", eid, eventLabel) : securityCell(eventLabel));
+        return row([securityCell(item.date || item.event_date || item.start_date), event,
+          securityCell(item.venue || item.venue_name), securityCell(item.market || item.city),
+          securityCell(item.event_type || item.type), securityCell(item.series || item.festival || item.series_name),
+          securityUrl(item.source_url || item.url, item.source || item.provider || item.source_system || "source")]);
+      }).join("") + '</tbody></table>';
+  }
+
+  function viewArtistSecurity(id) {
+    setNav("artists");
+    content.innerHTML = '<div class="security-loading">Loading Artist Security…</div>';
+    api("/api/artist-security/" + encodeURIComponent(id)).then(function (payload) {
+      if (!payload || !payload.artist) {
+        content.innerHTML = '<h1>ARTIST SECURITY</h1><div class="none">Artist security record not found.</div>';
+        return;
+      }
+      var artist = payload.artist || {};
+      var name = artist.name || artist.artist_name || artist.display_name || id;
+      var artistKey = artist.artist_key || artist.key || id;
+      var facts = payload.quick_facts || {};
+      var identity = artist.primary_identity || artist.identity || {};
+      var attention = payload.attention || {};
+      var peers = payload.peers || {};
+      var markets = payload.markets || {};
+      var history = payload.history || {};
+      var festivals = payload.festivals || {};
+      var future = payload.future || {};
+      var alternatives = payload.alternatives || {};
+      var evidence = payload.evidence || {};
+      var html = '<div class="security-kicker">' + esc(payload.release_label || "TALENT BUYER TERMINAL") +
+        ' · ' + esc(payload.contract_version || "artist-security") + '</div>' +
+        '<div class="security-header"><div><h1>' + esc(name) + '</h1><p class="sub">ARTIST SECURITY · evidence for underwriting research · no booking recommendation</p>' +
+        '<p class="muted">Identity: ' + securityCell(identity.name || artistKey) +
+        ' · ' + securityCell(identity.type || artist.type) + ' · ' + securityCell(identity.area || artist.area) + '</p></div>' +
+        '<div class="security-header-meta"><span class="pill ok">READ ONLY</span><span class="pill">' + esc(artist.tier || "UNIVERSE") + '</span>' +
+        '<div class="muted">freshness ' + securityCell(artist.freshness || payload.freshness) + '</div><div class="muted">coverage ' + securityCell(artist.evidence_coverage || payload.evidence_coverage) + '</div></div></div>';
+
+      html += '<div class="security-actions panel"><label>Project <select id="security-project"><option value="">Choose existing project…</option></select></label> ' +
+        '<button id="security-add-project" data-key="' + esc(artistKey) + '" data-name="' + esc(name) + '">ADD TO PROJECT</button> ' +
+        '<button id="security-add-shortlist" data-key="' + esc(artistKey) + '" data-name="' + esc(name) + '">ADD TO SHORTLIST</button> ' +
+        '<button id="security-underwrite">UNDERWRITE</button> ' +
+        '<button id="security-compare" data-key="' + esc(artistKey) + '">COMPARE</button><span id="security-action-message" class="muted"></span></div>';
+
+      var factKeys = [
+        ["future_events", "Future events"], ["historical_live_events", "Historical live events"],
+        ["festival_appearances", "Festival appearances"], ["markets_played", "Markets played"],
+        ["venues_played", "Venues played"], ["active_ticket_evidence", "Active ticket evidence"],
+        ["audience_affinity_available", "Audience affinity"]
+      ];
+      html += '<div class="security-facts">' + factKeys.map(function (pair) {
+        return '<div class="security-fact"><div class="security-fact-label">' + esc(pair[1]) + '</div><div class="security-fact-value">' + securityCell(facts[pair[0]]) + '</div></div>';
+      }).join("") + '</div>';
+
+      /* ---- function sub-navigation (sticky, keyboard-adjacent) ------------ */
+      var funcs = ["OVERVIEW", "ATTENTION", "MARKETS", "LIVE", "FESTIVALS", "AUDIENCE", "TICKETS", "EVIDENCE"];
+      var funcTargets = { OVERVIEW: "sec-overview", ATTENTION: "sec-attention", MARKETS: "sec-markets", LIVE: "sec-live", FESTIVALS: "sec-festivals", AUDIENCE: "sec-peers", TICKETS: "sec-tickets", EVIDENCE: "sec-evidence" };
+      html += '<nav class="subnav" id="artist-subnav">' + funcs.map(function (f) {
+        return '<button data-anchor="' + funcTargets[f] + '">' + esc(f) + '</button>';
+      }).join("") + '</nav>';
+
+      /* ---- decision band: WHAT IS HAPPENING / WHAT IS NEXT / WHERE -------- */
+      function latestOf(src) { var items = securityItems(src); return items && items.length ? items[0] : null; }
+      var peerItemsAll = securityItems(peers);
+      var marketItemsAll = securityItems(markets);
+      var futureItemsAll = securityItems(future);
+      var nextFuture = futureItemsAll.filter(function (f) { return f.event_date; }).sort(function (a, b) { return String(a.event_date).localeCompare(String(b.event_date)); })[0];
+      var nextPrice = nextFuture && (nextFuture.price_min != null || nextFuture.price_max != null) ? String(nextFuture.price_min == null ? "?" : nextFuture.price_min) + "–" + String(nextFuture.price_max == null ? "?" : nextFuture.price_max) + " " + (nextFuture.currency || "") : null;
+      function attentionCell(label, src) {
+        var latest = latestOf(src);
+        var status = securityStatus(src);
+        if (!latest) return '<div class="dec-row"><span class="dec-k">' + esc(label) + '</span><span class="unknown">UNKNOWN</span></div>';
+        var value = latest.value != null ? latest.value : (latest.value_sum != null ? latest.value_sum : latest.listeners);
+        var unit = latest.unit ? " " + latest.unit : "";
+        return '<div class="dec-row"><span class="dec-k">' + esc(label) + '</span><span class="dec-v">' + esc(String(value) + unit) + '</span>' + deltaChip(latest.change, latest.change_pct) + '</div>';
+      }
+      html += '<div class="dec-band" id="sec-overview">' +
+        '<div class="dec-cell"><h4>ATTENTION NOW</h4>' +
+          attentionCell("ListenBrainz", attention.listenbrainz) + attentionCell("Wikimedia", attention.wikimedia) + attentionCell("YouTube", attention.youtube) +
+          '<p class="muted">attention is not demand</p></div>' +
+        '<div class="dec-cell"><h4>WHAT IS NEXT</h4>' +
+          (nextFuture
+            ? '<div class="dec-row"><span class="dec-k">Next event</span><span class="dec-v">' + esc(String(nextFuture.event_date)) + '</span></div>' +
+              '<div class="dec-row"><span class="dec-k">Venue</span>' + (nextFuture.venue_name || nextFuture.venue ? linkTo("venues", String(nextFuture.venue_name || nextFuture.venue).toLowerCase(), nextFuture.venue_name || nextFuture.venue) : '<span class="unknown">UNKNOWN</span>') + '</div>' +
+              '<div class="dec-row"><span class="dec-k">Market</span>' + (nextFuture.market_name || nextFuture.market || nextFuture.city ? linkTo("markets", nextFuture.market_name || nextFuture.market || nextFuture.city, nextFuture.market_name || nextFuture.market || nextFuture.city) : '<span class="unknown">UNKNOWN</span>') + '</div>' +
+              (nextPrice ? '<div class="dec-row"><span class="dec-k">Advertised</span><span class="dec-v">' + esc(nextPrice) + '</span></div>' : '<div class="dec-row"><span class="dec-k">Ticket evidence</span><span class="unknown">NONE</span></div>')
+            : '<div class="dec-row"><span class="dec-k">Next event</span><span class="unknown">UNKNOWN</span></div>' +
+              '<p class="muted">No retained forward observation in this serving generation.</p>') + '</div>' +
+        '<div class="dec-cell"><h4>TOP MARKETS</h4>' +
+          (marketItemsAll.length
+            ? marketItemsAll.slice(0, 5).map(function (m) {
+                var mkey = m.market_key || m.market || m.market_name;
+                return '<div class="dec-row"><span class="dec-k">' +
+                  linkTo("markets", mkey, m.market || m.market_name || mkey, { from: "artist", fromKey: artistKey, fromName: name }) + '</span>' +
+                  '<span class="dec-v">' + esc(String(m.observed_shows || m.historical_shows || "?") + " shows") + '</span>' +
+                  (m.future_events ? '<span class="pill ok">' + esc(String(m.future_events) + " upcoming") + '</span>' : "") + '</div>';
+              }).join("")
+            : '<span class="unknown">UNKNOWN</span>') + '</div>' +
+        '</div>';
+
+      /* ---- second band: peers + festival exposure ------------------------- */
+      var topSeriesNames = [];
+      securityItems(festivals).slice(0, 40).forEach(function (f) {
+        var n = f.festival || f.series || f.festival_name || f.series_name;
+        if (n && topSeriesNames.indexOf(n) < 0) topSeriesNames.push(n);
+      });
+      html += '<div class="dec-band dec-band-2">' +
+        '<div class="dec-cell wide"><h4>TOP AUDIENCE PEERS</h4>' +
+          (peerItemsAll.length
+            ? peerItemsAll.slice(0, 5).map(function (p) {
+                var pk = p.artist_key || p.key || p.id;
+                var pn = p.artist_name || p.name || pk;
+                return '<div class="dec-row"><span class="dec-k">' + (pk ? linkTo("artists", pk, pn) : esc(pn)) + '</span>' +
+                  '<span class="dec-reason">' + esc(p.why_related || "") + '</span>' +
+                  '<button class="mini" data-compare-with="' + esc(pk || "") + '">COMPARE</button></div>';
+              }).join("")
+            : compactEmpty("NO PEER EVIDENCE", "No ListenBrainz pilot edges for this artist.")) + '</div>' +
+        '<div class="dec-cell"><h4>FESTIVAL EXPOSURE</h4>' +
+          '<div class="dec-row"><span class="dec-k">Appearances</span><span class="dec-v">' + securityCell(facts.festival_appearances) + '</span></div>' +
+          (topSeriesNames.length
+            ? topSeriesNames.slice(0, 4).map(function (n) { return '<div class="dec-row"><span class="dec-reason">' + esc(n) + '</span></div>'; }).join("")
+            : '<span class="unknown">UNKNOWN</span>') + '</div>' +
+        '</div>';
+
+      html += '<div class="security-grid" id="sec-attention"><section><h2>ATTENTION / MOMENTUM</h2><p class="sub">Source-separated attention evidence. Attention is not demand or ticket intent.</p><div class="panel attention-windows"><label>Window <select id="attention-window"><option value="">MAX</option><option value="365">1Y</option><option value="90">90D</option><option value="30">30D</option></select></label></div>' +
+        '<div id="attention-panels">' + attentionPanel("Wikimedia", attention.wikimedia, { chart: true }) + attentionPanel("ListenBrainz", attention.listenbrainz, { chart: true }) + attentionPanel("YouTube", attention.youtube, { chart: true }) + '</div></section>';
+      html += '<section id="sec-peers"><h2>AUDIENCE PEERS</h2><div class="security-card"><div class="security-card-head"><h3>' + esc(peers.label || "PILOT AUDIENCE DATA") + '</h3><span class="pill ' + (securityStatus(peers) === "OBSERVED" ? "ok" : "off") + '">' + esc(securityStatus(peers)) + '</span></div>';
+      html += '<p class="muted">Shared listeners and Jaccard are descriptive affinity evidence. Pilot coverage remains labeled until a full-corpus replacement is published.</p>';
+      var peerItems = peerItemsAll;
+      if (!peerItems.length) html += compactEmpty("NO PEER EDGES", "No audience-affinity edges in this serving generation.", peers && peers.note);
+      else html += '<table><thead><tr><th>Artist</th><th>Shared listeners</th><th>Jaccard</th><th>Why related</th><th>Differences</th><th></th></tr></thead><tbody>' + peerItems.slice(0, 25).map(function (p) {
+        var peerKey = p.artist_key || p.key || p.id;
+        var peerName = p.artist_name || p.name || peerKey;
+        var reason = p.why_related || p.reason || securityReasons(p.reasons) || "shared audience";
+        var difference = p.differences || p.difference || "UNKNOWN";
+        return row([peerKey ? linkTo("artists", peerKey, peerName) : securityCell(peerName), securityCell(p.shared_listener_count != null ? p.shared_listener_count : p.shared_listeners), securityCell(p.jaccard), securityCell(reason), securityCell(difference),
+          peerKey ? '<button class="mini" data-compare-with="' + esc(peerKey) + '">COMPARE</button>' : ""]);
+      }).join("") + '</tbody></table>';
+      html += '</div></section></div>';
+
+      html += '<section id="sec-markets"><h2>MARKET PROFILE</h2><div class="panel"><label>Sort <select id="security-market-sort"><option value="activity">Observable activity</option><option value="last_played">Last played</option><option value="future">Future events</option><option value="market">Market</option></select></label></div><div id="security-market-table"></div></section>';
+      html += '<section id="sec-live"><h2>LIVE HISTORY</h2><div class="panel security-filters"><label>Filter <select id="security-history-filter"><option>ALL</option><option>FESTIVAL</option><option>CONCERT</option><option>MARKET</option><option>YEAR</option></select></label> <label>Year <select id="security-history-year"><option value="ALL">All years</option></select></label></div><div id="security-history-table"></div></section>';
+      html += '<section id="sec-festivals"><h2>FESTIVAL HISTORY</h2><div class="security-card"><p class="sub">Observed festival/series appearances and co-billing; repeat count remains descriptive.</p>' + (securityItems(festivals).length ? tableOrNone(securityItems(festivals), ["Festival / series", "Year", "Event", "Market", "Venue / site", "Co-billed artists", "Repeat"], function (f) {
+        return row([securityCell(f.festival || f.series || f.festival_name || f.series_name), securityCell(f.year || f.edition_year), securityCell(f.event || f.event_name), securityCell(f.market || f.market_name || f.city), securityCell(f.venue || f.site || f.venue_name), securityCell(Array.isArray(f.co_billed_artists) ? f.co_billed_artists.join(", ") : (f.co_billed_artists || f.cobilled || f.co_billed_artist_names)), securityCell(f.repeat_appearances || f.repeat_count || f.repeat_appearance_count)]);
+      }) : compactEmpty("NO FESTIVAL APPEARANCES", "No festival/series evidence for this artist.", festivals && festivals.note)) + '</div></section>';
+      html += '<section id="sec-tickets"><h2>FORWARD EVENTS / TICKET EVIDENCE</h2><div class="security-card"><p class="strict-note"><strong>Ticketmaster priceRange = advertised structured price evidence.</strong> It is not transaction price, resale execution, attendance, or ticket sales.</p>' +
+        (securityItems(future).length ? tableOrNone(securityItems(future), ["Date", "Venue", "Market", "Provider", "Advertised price range", "Latest observation"], function (f) {
+          var price = f.price_range || ((f.price_min != null || f.price_max != null) ? String(f.price_min == null ? "UNKNOWN" : f.price_min) + "–" + String(f.price_max == null ? "UNKNOWN" : f.price_max) + " " + (f.currency || "") : null);
+          return row([securityCell(f.date || f.event_date), securityCell(f.venue || f.venue_name), securityCell(f.market || f.market_name || f.city), securityCell(f.provider || f.source || f.source_system), securityCell(price), securityCell(f.latest_observation || f.observed_at || f.retrieved_at)]);
+        }) : compactEmpty("NO CURRENT TICKET EVIDENCE", "No advertised structured price evidence in this serving generation.", future && future.ticket_evidence_status)) + '</div></section>';
+
+      html += '<div class="security-grid"><section><h2>EXPLAINABLE ALTERNATIVES</h2><div class="security-card"><p class="sub">Related artists are shown with reasons and observable differences, never fixed model weights.</p>' + (securityItems(alternatives).length ? tableOrNone(securityItems(alternatives), ["Artist", "Why related", "Differences", "Evidence"], function (alt) {
+        var altKey = alt.artist_key || alt.key || alt.id;
+        return row([altKey ? linkTo("artists", altKey, alt.artist_name || alt.name || altKey) : securityCell(alt.artist_name || alt.name), securityCell(alt.why_related || alt.reason || securityReasons(alt.reasons)), securityCell(alt.differences || alt.difference), securityCell(alt.evidence || alt.source || alt.source_system)]);
+      }) : compactEmpty("NO ALTERNATIVE EVIDENCE", "No explainable alternative evidence for this artist.")) + '</div></section>';
+      html += '<section id="sec-evidence"><h2>EVIDENCE / FRESHNESS</h2><div class="security-card">' + (securityItems(evidence).length ? tableOrNone(securityItems(evidence), ["Panel", "Source", "Observed", "Knowledge", "Freshness", "Status"], function (e) {
+        return row([securityCell(e.panel || e.scope), securityUrl(e.source_url || e.url, e.source || e.provider || e.source_system || "source"), securityCell(e.observed_at || e.observation_time), securityCell(e.knowledge_time || e.known_at), securityCell(e.freshness || e.freshness_status), securityCell(e.status)]);
+      }) : compactEmpty("NO EVIDENCE LEDGER", "No evidence ledger rows in this serving generation.")) + '<p class="muted">UNKNOWN remains distinct from zero. Source conflicts are retained as separate evidence.</p></div></section></div>';
+
+      content.innerHTML = html;
+
+      pushRecent("artist", artistKey, name);
+
+      /* ---- artist-page wiring ----------------------------------------- */
+      document.querySelectorAll("#artist-subnav [data-anchor]").forEach(function (b) {
+        b.onclick = function () {
+          var el = document.getElementById(b.getAttribute("data-anchor"));
+          if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+        };
+      });
+      document.querySelectorAll("[data-compare-with]").forEach(function (b) {
+        b.onclick = function () {
+          var other = b.getAttribute("data-compare-with");
+          if (other) location.hash = "#/compare-security/" + encodeURIComponent(artistKey) + "/" + encodeURIComponent(other);
+        };
+      });
+      var winSel = document.getElementById("attention-window");
+      if (winSel) winSel.onchange = function () {
+        var days = winSel.value ? Number(winSel.value) : null;
+        document.getElementById("attention-panels").innerHTML =
+          attentionPanel("Wikimedia", attention.wikimedia, { chart: true, windowDays: days }) +
+          attentionPanel("ListenBrainz", attention.listenbrainz, { chart: true, windowDays: days }) +
+          attentionPanel("YouTube", attention.youtube, { chart: true, windowDays: days });
+      };
+
+      var projectSelect = document.getElementById("security-project");
+      api("/api/planning/projects").then(function (projects) {
+        (projects || []).forEach(function (project) {
+          var option = document.createElement("option"); option.value = project.project_key; option.textContent = project.name; projectSelect.appendChild(option);
+        });
+      });
+      var message = document.getElementById("security-action-message");
+      function selectedProject() { return projectSelect && projectSelect.value; }
+      function actionMessage(text) { if (message) message.textContent = text; }
+      document.getElementById("security-add-project").onclick = function () {
+        var project = selectedProject(); if (!project) { actionMessage("Choose a project first."); return; }
+        api("/api/planning/projects/" + encodeURIComponent(project) + "/candidates", { method: "POST", body: JSON.stringify({ artist_key: artistKey, artist_name: name }) }).then(function () { actionMessage("Added to project."); });
+      };
+      document.getElementById("security-add-shortlist").onclick = function () {
+        var project = selectedProject(); if (!project) { actionMessage("Choose a project first."); return; }
+        api("/api/planning/projects/" + encodeURIComponent(project) + "/shortlist", { method: "POST", body: JSON.stringify({ artist_key: artistKey, artist_name: name, status: "SHORTLIST" }) }).then(function () { actionMessage("Added to shortlist."); });
+      };
+      document.getElementById("security-underwrite").onclick = function () {
+        var project = selectedProject(); if (!project) { actionMessage("Choose a project first."); return; }
+        location.hash = "#/build/" + encodeURIComponent(project) + "/economics/" + encodeURIComponent(artistKey);
+      };
+      document.getElementById("security-compare").onclick = function () {
+        var peerInput = document.getElementById("security-compare-artist");
+        if (peerInput && peerInput.value.trim()) {
+          api("/api/search?q=" + encodeURIComponent(peerInput.value.trim()) + "&limit=5").then(function (hits) {
+            var hit = (hits || []).filter(function (h) { return h.entity_type === "ARTIST"; })[0];
+            if (hit) location.hash = "#/compare-security/" + encodeURIComponent(artistKey) + "/" + encodeURIComponent(hit.entity_id);
+            else actionMessage("No artist match found.");
+          });
+        } else actionMessage("Enter an artist below to compare.");
+      };
+      var compareButton = document.getElementById("security-compare");
+      compareButton.insertAdjacentHTML("afterend", '<input id="security-compare-artist" placeholder="artist to compare…" aria-label="Artist to compare" />');
+
+      var marketItems = securityItems(markets);
+      function renderMarkets() {
+        var sort = document.getElementById("security-market-sort").value;
+        var rows = marketItems.slice().sort(function (left, right) {
+          if (sort === "market") return String(left.market || left.market_name || "").localeCompare(String(right.market || right.market_name || ""));
+          if (sort === "last_played") return String(right.last_played || right.last_played_date || "").localeCompare(String(left.last_played || left.last_played_date || ""));
+          if (sort === "future") return (Number(right.future_events) || 0) - (Number(left.future_events) || 0);
+          return ((Number(right.historical_shows) || 0) + (Number(right.festival_appearances) || 0) + (Number(right.venues_played) || 0)) - ((Number(left.historical_shows) || 0) + (Number(left.festival_appearances) || 0) + (Number(left.venues_played) || 0));
+        });
+        document.getElementById("security-market-table").innerHTML = tableOrNone(rows, ["Market", "Historical shows", "Venues", "Last played", "Future events", "Next event", "Ticket evidence"], function (m) {
+          var mkey = m.market_key || m.market || m.market_name;
+          var next = m.next_event ? (m.next_event.date || "") + (m.next_event.venue ? " · " + m.next_event.venue : "") : null;
+          return row([linkTo("markets", mkey, m.market || m.market_name || mkey, { from: "artist", fromKey: artistKey, fromName: name }), securityCell(m.historical_shows), securityCell(m.venues_played), securityCell(m.last_played || m.last_played_date), securityCell(m.future_events), securityCell(next), securityCell(m.ticket_evidence_available != null ? m.ticket_evidence_available : m.ticket_evidence)]);
+        });
+      }
+      document.getElementById("security-market-sort").onchange = renderMarkets; renderMarkets();
+      var historyItems = securityItems(history);
+      var yearSelect = document.getElementById("security-history-year");
+      Array.from(new Set(historyItems.map(function (item) { return String(item.date || item.event_date || item.start_date || "").slice(0, 4); }).filter(function (year) { return /^\d{4}$/.test(year); }))).sort().reverse().forEach(function (year) { yearSelect.insertAdjacentHTML("beforeend", '<option value="' + esc(year) + '">' + esc(year) + '</option>'); });
+      function renderHistory() { var year = yearSelect.value; var kind = document.getElementById("security-history-filter").value; var selected = kind === "YEAR" && year !== "ALL" ? "YEAR:" + year : (kind === "YEAR" ? "ALL" : (year === "ALL" ? kind : "YEAR:" + year)); document.getElementById("security-history-table").innerHTML = renderSecurityHistory(historyItems, selected); }
+      document.getElementById("security-history-filter").onchange = renderHistory; yearSelect.onchange = renderHistory; renderHistory();
+    });
+  }
+
+  function securityCompareValue(value) {
+    if (value == null) return null;
+    if (Array.isArray(value)) {
+      if (!value.length) return "UNKNOWN";
+      return value.map(function (item) {
+        if (item && typeof item === "object") {
+          var market = item.market_key || item.market || item.name || "evidence";
+          var count = item.historical_shows != null ? " · " + item.historical_shows + " observed shows" : "";
+          var last = item.last_play ? " · last " + item.last_play : "";
+          return market + count + last;
+        }
+        return String(item);
+      }).join("; ");
+    }
+    if (typeof value === "object") {
+      return Object.keys(value).map(function (key) {
+        var item = value[key];
+        return key.replace(/_/g, " ") + ": " + (item == null || item === "" ? "UNKNOWN" : String(item));
+      }).join("; ");
+    }
+    return value;
+  }
+
+  function viewSecurityCompare(a, b) {
+    setNav("compare");
+    pushRecent("compare", a + "|" + b, "compare");
+    content.innerHTML = '<h1>COMPARE</h1><p class="sub">Side-by-side artist evidence. No winner, no opaque score, no automated booking advice.</p><div class="security-loading">Loading comparison…</div>';
+    api("/api/artist-security/compare?a=" + encodeURIComponent(a) + "&b=" + encodeURIComponent(b)).then(function (comparison) {
+      if (!comparison) { content.innerHTML += '<div class="none">Comparison unavailable.</div>'; return; }
+      var left = comparison.left || {}, right = comparison.right || {};
+      var dims = Array.isArray(comparison.dimensions) ? comparison.dimensions : Object.keys(comparison.dimensions || {}).map(function (key) {
+        var value = comparison.dimensions[key];
+        return typeof value === "object" && value !== null ? Object.assign({ label: key }, value) : { label: key, left: value };
+      });
+      var byLabel = {};
+      dims.forEach(function (d) { byLabel[d.label || d.dimension || d.name] = d; });
+      var nameL = left.name || left.artist_name || a;
+      var nameR = right.name || right.artist_name || b;
+
+      function dimCell(label, fmt) {
+        var d = byLabel[label];
+        if (!d) return '<div class="dec-row"><span class="dec-k">' + esc(label) + '</span><span class="unknown">UNKNOWN</span></div>';
+        var lv = d.left != null ? d.left : (d.a != null ? d.a : (d.values || [])[0]);
+        var rv = d.right != null ? d.right : (d.b != null ? d.b : (d.values || [])[1]);
+        var lvS = fmt ? fmt(lv) : securityCompareValue(lv);
+        var rvS = fmt ? fmt(rv) : securityCompareValue(rv);
+        var differs = lvS != null && rvS != null && String(lvS) !== String(rvS);
+        return '<div class="dec-row' + (differs ? ' differs' : '') + '"><span class="dec-k">' + esc(label) + '</span>' +
+          '<span class="dec-v">' + (lvS == null ? '<span class="unknown">UNKNOWN</span>' : esc(lvS)) + '</span>' +
+          '<span class="dec-v">' + (rvS == null ? '<span class="unknown">UNKNOWN</span>' : esc(rvS)) + '</span></div>';
+      }
+      function marketOverlapSection() {
+        var lm = (left.strongest_markets || []).map(function (m) { return m.market_key; });
+        var rm = (right.strongest_markets || []).map(function (m) { return m.market_key; });
+        var shared = lm.filter(function (k) { return rm.indexOf(k) >= 0; });
+        var lOnly = lm.filter(function (k) { return rm.indexOf(k) < 0; });
+        var rOnly = rm.filter(function (k) { return lm.indexOf(k) < 0; });
+        return '<div class="dec-row' + (lOnly.length || rOnly.length ? ' differs' : '') + '"><span class="dec-k">Market overlap</span>' +
+          '<span class="dec-v">' + shared.length + " shared · " + lOnly.length + " only-" + esc(nameL) + '</span>' +
+          '<span class="dec-v">' + shared.length + " shared · " + rOnly.length + " only-" + esc(nameR) + '</span></div>' +
+          (lOnly.length ? '<div class="dec-row"><span class="dec-k">Only ' + esc(nameL) + '</span><span class="dec-reason">' + esc(lOnly.slice(0, 6).join(" · ")) + '</span></div>' : "") +
+          (rOnly.length ? '<div class="dec-row"><span class="dec-k">Only ' + esc(nameR) + '</span><span class="dec-reason">' + esc(rOnly.slice(0, 6).join(" · ")) + '</span></div>' : "");
+      }
+      var sections = [
+        { id: "cmp-audience", title: "AUDIENCE", rows: [dimCell("Audience peers"), '<div class="dec-row"><span class="dec-k">Shared-audience evidence</span><span class="dec-reason">ListenBrainz 1% pilot peer edges; shared listeners, not ticket intent.</span></div>'] },
+        { id: "cmp-attention", title: "ATTENTION", rows: [dimCell("Attention sources"), dimCell("Identity"), dimCell("Evidence coverage")] },
+        { id: "cmp-live", title: "LIVE", rows: [dimCell("Live history")] },
+        { id: "cmp-markets", title: "MARKETS", rows: [marketOverlapSection(), dimCell("Strongest observed markets")] },
+        { id: "cmp-festivals", title: "FESTIVALS", rows: [dimCell("Festival history")] },
+        { id: "cmp-forward", title: "FORWARD", rows: [dimCell("Future events")] },
+        { id: "cmp-tickets", title: "TICKETS", rows: [dimCell("Current ticket ranges")] }
+      ];
+      var html = '<h1>COMPARE</h1><p class="sub">A/B evidence review · ' + esc(comparison.no_winner === false ? "review only" : "no winner") + '</p>';
+      html += '<div class="security-compare-head"><div><strong>' + esc(nameL) + '</strong></div><div><strong>' + esc(nameR) + '</strong></div></div>';
+      html += '<div class="compare-actions panel">' +
+        '<button id="cmp-swap">SWAP</button>' +
+        '<input id="cmp-new" placeholder="change comparator…" aria-label="Change comparator" />' +
+        '<button id="cmp-go">CHANGE</button>' +
+        '<button data-shortlist="a" data-key="' + esc(a) + '" data-name="' + esc(nameL) + '">ADD ' + esc(nameL.toUpperCase()) + ' TO SHORTLIST</button>' +
+        '<button data-shortlist="b" data-key="' + esc(b) + '" data-name="' + esc(nameR) + '">ADD ' + esc(nameR.toUpperCase()) + ' TO SHORTLIST</button>' +
+        '<select id="cmp-project"><option value="">Project…</option></select></div>';
+      sections.forEach(function (sec) {
+        html += '<section class="cmp-section" id="' + sec.id + '"><h3>' + esc(sec.title) + '</h3><div class="cmp-cols"><span class="cmp-col-l">' + esc(nameL) + '</span><span class="cmp-col-r">' + esc(nameR) + '</span></div>' + sec.rows.filter(Boolean).join("") + '</section>';
+      });
+      content.innerHTML = html + '<p><a href="#/artists/' + encodeURIComponent(a) + '">Open ' + esc(nameL) + ' Security</a> · <a href="#/artists/' + encodeURIComponent(b) + '">Open ' + esc(nameR) + ' Security</a></p>';
+
+      document.getElementById("cmp-swap").onclick = function () {
+        location.hash = "#/compare-security/" + encodeURIComponent(b) + "/" + encodeURIComponent(a);
+      };
+      document.getElementById("cmp-go").onclick = function () {
+        var q = document.getElementById("cmp-new").value.trim();
+        if (!q) return;
+        api("/api/search?q=" + encodeURIComponent(q) + "&limit=5").then(function (hits) {
+          var hit = (hits || []).filter(function (h) { return h.entity_type === "ARTIST"; })[0];
+          if (hit) location.hash = "#/compare-security/" + encodeURIComponent(a) + "/" + encodeURIComponent(hit.entity_id);
+        });
+      };
+      api("/api/planning/projects").then(function (projects) {
+        var sel = document.getElementById("cmp-project");
+        (projects || []).forEach(function (p) {
+          var opt = document.createElement("option"); opt.value = p.project_key; opt.textContent = p.name; sel.appendChild(opt);
+        });
+      });
+      document.querySelectorAll("[data-shortlist]").forEach(function (btn) {
+        btn.onclick = function () {
+          var project = document.getElementById("cmp-project").value;
+          if (!project) { btn.textContent = "Choose a project first"; return; }
+          api("/api/planning/projects/" + encodeURIComponent(project) + "/shortlist", {
+            method: "POST", body: JSON.stringify({ artist_key: btn.getAttribute("data-key"), artist_name: btn.getAttribute("data-name"), status: "SHORTLIST" })
+          }).then(function () { btn.textContent = "Added ✓"; });
+        };
+      });
+    });
+  }
+
   function viewArtist(id) {
     setNav("artists");
     api("/api/artists/" + encodeURIComponent(id)).then(function (a) {
@@ -242,6 +755,7 @@
 
   function viewEvent(id) {
     setNav("events");
+    pushRecent("event", id, id);
     api("/api/events/" + encodeURIComponent(id)).then(function (e) {
       if (!e) { content.innerHTML = "<h1>Event</h1><div class='none'>Not found.</div>"; return; }
       var html = "<h1>" + esc(e.artist_name || e.artist || id) + "</h1>" +
@@ -274,6 +788,7 @@
 
   function viewVenue(id) {
     setNav("venues");
+    pushRecent("venue", id, id);
     api("/api/venues/" + encodeURIComponent(id)).then(function (v) {
       if (!v) { content.innerHTML = "<h1>Venue</h1><div class='none'>Not found.</div>"; return; }
       var html = "<h1>" + esc(v.name) + "</h1><p class='sub'>VENUE · " +
@@ -293,12 +808,21 @@
 
   function viewMarket(id) {
     setNav("markets");
+    pushRecent("market", id, id);
+    var context = null;
+    try { context = JSON.parse(sessionStorage.getItem("fi.context") || "null"); } catch (e) { /* none */ }
     api("/api/markets/" + encodeURIComponent(id)).then(function (m) {
       if (!m) { content.innerHTML = "<h1>Market</h1><div class='none'>Not found.</div>"; return; }
       var html = "<h1>" + esc(m.name) + "</h1><p class='sub'>MARKET · " +
         m.upcoming_count + " upcoming · " + m.history_count + " historical</p>";
+      if (context && context.from === "artist" && context.fromKey) {
+        html += "<div class='context-bar'><span class='muted'>Viewing in context of</span> <strong>" + esc(context.fromName || context.fromKey) + "</strong> " +
+          "<button class='mini' data-nav='artists' data-id='" + esc(context.fromKey) + "'>BACK TO " + esc(String(context.fromName || context.fromKey).toUpperCase()) + "</button> " +
+          "<button class='mini' data-compare-with='" + esc(context.fromKey) + "' data-market='" + esc(id) + "'>COMPARE</button></div>";
+      }
       html += "<h2>Upcoming events</h2>" + tableOrNone(m.upcoming, ["Date", "Artist", "Venue", "Status"], function (e) {
-        return row([fmt(e.event_date), esc(e.artist_name), esc(e.venue_name), esc(e.event_status)]);
+        var artistId = e.artist_key || e.artist_id || e.artist_mbid;
+        return row([fmt(e.event_date), artistId ? linkTo("artists", artistId, e.artist_name) : esc(e.artist_name), e.venue_name ? linkTo("venues", String(e.venue_name).toLowerCase(), e.venue_name) : esc(e.venue_name), esc(e.event_status)]);
       });
       html += "<h2>Major venues</h2>" + (m.venues && m.venues.length
         ? "<ul>" + m.venues.map(function (v) { return "<li>" + linkTo("venues", v.toLowerCase(), v) + "</li>"; }).join("") + "</ul>"
@@ -333,6 +857,7 @@
 
   function viewFestival(id) {
     setNav("festivals");
+    pushRecent("festival", id, id);
     api("/api/festivals/" + encodeURIComponent(id)).then(function (f) {
       if (!f) { content.innerHTML = "<h1>Festival</h1><div class='none'>Not found.</div>"; return; }
       var html = "<h1>" + esc(f.name) + "</h1><p class='sub'>FESTIVAL · " +
@@ -367,50 +892,65 @@
 
   function viewToday() {
     setNav("today");
-    api("/api/today").then(function (t) {
-      var html = "<h1>Today</h1><p class='sub'>What changed in your music universe since you last checked.</p>";
-      if (!t || !t.sections) { content.innerHTML = html + '<div class="none">No data.</div>'; return; }
-      var s = t.sections;
-      if (s.watchlist) {
-        html += "<h2>Watchlist (" + esc(s.watchlist.watched_entities) + " watched)</h2>" +
-          tableOrNone(s.watchlist.new_events, ["Name", "Type", "First seen"], function (x) {
-            var kind = String(x.entity_type || "").toLowerCase();
-            return row([linkTo(kind + "s", x.entity_key, x.entity_name || x.entity_key), esc(x.entity_type), fmt(x.first_seen_at)]);
-          });
-      }
-      if (s.ticketing) {
-        html += "<h2>Ticketing</h2>" + tableOrNone(s.ticketing.new_onsales, ["Event", "Onsale", "Source"], function (x) {
-          return row([esc(x.event_name), fmt(x.onsale_start), esc(x.provider || "")]);
-        });
-        html += tableOrNone(s.ticketing.new_presales, ["Event", "Presale", "Source"], function (x) {
-          return row([esc(x.event_name), fmt(x.presale_start), esc(x.provider || "")]);
-        });
-        html += tableOrNone(s.ticketing.status_changes, ["Event", "Status", "Observed"], function (x) {
-          return row([esc(x.event_name), esc(x.status), fmt(x.observed_at)]);
-        });
-      }
-      if (s.attention) {
-        html += "<h2>Attention</h2>" + tableOrNone(s.attention.movers, ["Artist", "Metric", "Value", "Provider", "Period"], function (x) {
-          var val = (x.value_sum != null ? x.value_sum : x.value);
-          var unit = x.value_unit ? " " + x.value_unit : "";
-          return row([linkTo("artists", x.artist_key, x.artist_name || x.artist_key), esc(x.metric_kind), fmt(val) + unit, esc(x.source_system), fmt(x.period_start || x.retrieved_at)]);
-        });
-      }
-      if (s.live_market) {
-        html += "<h2>Live market</h2>" + tableOrNone(s.live_market.busy_markets, ["Market", "Events"], function (x) {
-          return row([esc(x.market), fmt(x.event_count)]);
-        });
-      }
+    content.innerHTML = '<div class="security-loading">Loading monitor…</div>';
+    Promise.all([api("/api/monitor"), api("/api/today"), api("/api/planning/projects")]).then(function (all) {
+      var mon = all[0] || {}, t = all[1] || {}, projects = all[2] || [];
+      var recents = getRecents();
+      var html = "<h1>TODAY</h1><p class='sub'>Buyer monitor · what changed, what is next, what you were working on.</p>";
+
+      /* ---- WATCHLIST / SHORTLIST -------------------------------------- */
+      var watched = mon.watched || [], shortlisted = mon.shortlisted || [];
+      html += '<div class="dec-band"><div class="dec-cell"><h4>WATCHLIST (' + watched.length + ')</h4>' +
+        (watched.length ? watched.slice(0, 8).map(function (w) {
+          return '<div class="dec-row"><span class="dec-k">' + (w.artist_key ? linkTo("artists", w.artist_key, w.artist_name || w.artist_key) : esc(w.artist_name)) + '</span><span class="dec-reason">' + esc(w.watchlist || "") + '</span></div>';
+        }).join("") : compactEmpty("NO WATCHLIST ITEMS", "Add artists to a watchlist to track them here.")) + '</div>';
+      html += '<div class="dec-cell"><h4>SHORTLIST (' + shortlisted.length + ')</h4>' +
+        (shortlisted.length ? shortlisted.slice(0, 8).map(function (s) {
+          return '<div class="dec-row"><span class="dec-k">' + (s.artist_key ? linkTo("artists", s.artist_key, s.artist_name || s.artist_key) : esc(s.artist_name)) + '</span><span class="dec-reason">' + esc(s.project || "") + '</span></div>';
+        }).join("") : compactEmpty("NO SHORTLIST ITEMS", "Shortlist artists from any Artist Security page.")) + '</div>';
+      html += '<div class="dec-cell"><h4>PROJECTS (' + projects.length + ')</h4>' +
+        (projects.length ? projects.slice(0, 6).map(function (p) {
+          return '<div class="dec-row"><span class="dec-k">' + linkTo("build", p.project_key, p.name) + '</span></div>';
+        }).join("") : compactEmpty("NO PROJECTS", "Create a project in BUILD.")) + '</div></div>';
+
+      /* ---- WHAT CHANGED ------------------------------------------------ */
+      var movers = mon.attention_movers || [];
+      html += '<section id="today-changed"><h2>WHAT CHANGED</h2><div class="dec-band dec-band-2">' +
+        '<div class="dec-cell wide"><h4>ATTENTION MOVEMENT (observed deltas only)</h4>' +
+        (movers.length ? tableOrNone(movers, ["Artist", "As of", "Value", "Prior", "Change"], function (mv) {
+          return row([linkTo("artists", mv.artist_key, mv.artist_name), fmt(mv.as_of), fmt(mv.value), fmt(mv.prior), deltaChip(mv.change, mv.value ? Math.round(10000 * mv.change / mv.value) / 100 : null)]);
+        }) : compactEmpty("NO OBSERVED MOVEMENT", "Movement rows appear when a source reports two comparable observations with different values.")) + '</div>';
+      var s = t.sections || {};
+      var tk = s.ticketing || {};
+      html += '<div class="dec-cell"><h4>TICKETING</h4>' +
+        ((tk.new_onsales || []).length ? tableOrNone(tk.new_onsales.slice(0, 8), ["Event", "Onsale"], function (x) { return row([esc(x.event_name), fmt(x.onsale_start)]); })
+          : compactEmpty("NO ONSALE CHANGES", "No new onsales since the last observation.")) + '</div></div></section>';
+
+      /* ---- UPCOMING ---------------------------------------------------- */
+      var upcoming = mon.upcoming || [];
+      html += '<section id="today-upcoming"><h2>UPCOMING — WATCHED & SHORTLISTED</h2>' +
+        (upcoming.length ? tableOrNone(upcoming, ["Date", "Artist", "Venue", "Market"], function (u) {
+          return row([fmt(u.date), esc(u.artist_name), esc(u.venue || "UNKNOWN"), esc(u.market || "UNKNOWN")]);
+        }) : compactEmpty("NO UPCOMING EVENTS", "No retained forward events for watched or shortlisted artists.")) + '</section>';
+
+      /* ---- RECENT (local workflow memory) -------------------------------- */
+      html += '<section id="today-recent"><h2>RECENT</h2>' +
+        (recents.length ? tableOrNone(recents.slice(0, 10), ["When", "Entity", "Type"], function (r) {
+          var kind = r.type === "artist" ? "artists" : r.type + "s";
+          var label = r.type === "compare" ? "Compare " + r.id.split("|")[0].slice(0, 18) : r.name;
+          return row([fmt(r.at), r.type === "compare" ? esc(label) : linkTo(kind, r.id, label), esc(r.type.toUpperCase())]);
+        }) : compactEmpty("NO RECENT ENTITIES", "Entities you open are remembered here (local only).")) + '</section>';
+
+      /* ---- data health (below the fold, compact) ------------------------- */
       if (s.data_health) {
-        html += "<h2>Data health</h2>" + tableOrNone(s.data_health.providers, ["Provider", "Status", "Failures", "Rate-limited", "Last success"], function (x) {
-          var cls = x.operational_status === "OPERATIONAL" ? "ok" : x.operational_status === "NOT_CONFIGURED" ? "off" : "warn";
-          return row([esc(x.provider), '<span class="pill ' + cls + '">' + esc(x.operational_status || "") + "</span>", fmt(x.failure_count), fmt(x.rate_limit_count), fmt(x.last_seen)]);
-        });
-        html += tableOrNone(s.data_health.identity_conflicts, ["Artist", "Issue"], function (x) {
-          return row([esc(x.artist_key), esc(x.issue || "")]);
-        });
+        var providers = s.data_health.providers || [];
+        var failing = providers.filter(function (p) { return p.operational_status !== "OPERATIONAL"; });
+        html += '<section id="today-health"><h2>DATA HEALTH</h2>' +
+          (providers.length ? '<div class="dec-row"><span class="dec-k">Providers</span><span class="dec-v">' + (providers.length - failing.length) + '/' + providers.length + ' operational</span></div>' +
+            (failing.length ? '<div class="dec-row"><span class="dec-k">Not operational</span><span class="dec-reason">' + esc(failing.map(function (f) { return f.provider; }).join(" · ")) + '</span></div>' : "")
+            : compactEmpty("NO PROVIDER STATE", "No acquisition provider health recorded.")) + '</section>';
       }
-      content.innerHTML = html || ("<div class='none'>Nothing to show yet.</div>");
+      content.innerHTML = html;
     });
   }
 
@@ -1201,8 +1741,8 @@
 
   function viewCompare() {
     setNav("compare");
-    var html = "<h1>COMPARE</h1><p class='sub'>Side-by-side artist investigation — evidence, not a recommendation. No winner badge.</p>";
-    html += "<div class='panel'><input id='cp-add' placeholder='Search artist to add…' style='width:40%' /> <button id='cp-add-btn'>Add</button></div>";
+    var html = "<h1>COMPARE</h1><p class='sub'>Two-artist evidence review — no score, winner, fixed weights, or booking recommendation.</p>";
+    html += "<div class='panel'><input id='cp-add' placeholder='Search artist to add…' style='width:40%' /> <button id='cp-add-btn'>Add artist</button></div>";
     html += "<div id='cp-set'></div><div id='cp-out'></div>";
     content.innerHTML = html;
     var btn = document.getElementById("cp-add-btn");
@@ -1213,7 +1753,7 @@
         if (!hits || !hits.length) return;
         var hit = hits[0];
         var key = hit.entity_id;
-        if (compareSet.length >= 10) { compareSet.shift(); }
+        if (compareSet.length >= 2) { compareSet.shift(); }
         if (compareSet.indexOf(key) === -1) compareSet.push(key);
         renderCompare();
       });
@@ -1226,7 +1766,7 @@
     var outEl = document.getElementById("cp-out");
     if (!setEl || !outEl) return;
     if (!compareSet.length) {
-      setEl.innerHTML = '<div class="none">Add 2–10 artists to compare.</div>';
+      setEl.innerHTML = '<div class="none">Add exactly two artists to compare their evidence.</div>';
       outEl.innerHTML = "";
       return;
     }
@@ -1239,52 +1779,14 @@
         renderCompare();
       });
     });
-    outEl.innerHTML = '<div class="muted">Loading scorecards…</div>';
-    Promise.all(compareSet.map(function (key) {
-      return api("/api/planning/scorecard?artist_key=" + encodeURIComponent(key)).then(function (sc) {
-        if (sc && !sc.artist_name) return api("/api/planning/scorecard?artist_name=" + encodeURIComponent(key));
-        return sc;
-      });
-    })).then(function (cards) {
-      renderCompareTable(cards);
-    });
-  }
-
-  function compCell(card, pick) {
-    var v = pick(card);
-    if (v == null || v === "" || (typeof v === "number" && isNaN(v))) return '<span class="muted">—</span>';
-    return esc(typeof v === "number" ? String(Math.round(v * 100) / 100) : String(v));
-  }
-
-  function renderCompareTable(cards) {
-    var outEl = document.getElementById("cp-out");
-    if (!outEl) return;
-    var rows = [
-      ["Artist", function (c) { return c.artist_name; }],
-      ["Identity", function (c) { var i = c.identity || {}; return i.type ? i.type + (i.area ? " · " + i.area : "") : "UNKNOWN"; }],
-      ["External IDs", function (c) { var ids = Object.keys((c.identity || {}).external_ids || {}); return ids.length ? ids.join(", ") : "—"; }],
-      ["Upcoming shows", function (c) { var l = c.live || {}; return l.upcoming_count; }],
-      ["Historical shows", function (c) { var l = c.live || {}; return l.historical_count; }],
-      ["Festival editions", function (c) { var f = c.festival || {}; return f.edition_count; }],
-      ["Festival billing tiers", function (c) { var f = c.festival || {}; var t = Object.keys(f.billing_tiers || {}); return t.length ? t.join(", ") : "—"; }],
-      ["Attention", function (c) { var a = c.attention || {}; return a.wikimedia ? "wikimedia " + a.wikimedia.value_sum : a.latest && a.latest.length ? a.latest[0].source_system : "—"; }],
-      ["Gross comp median", function (c) { var g = (c.comparables || {}).gross || {}; return g.status === "OBSERVED" || g.status === "DERIVED" ? g.weighted_median : "UNKNOWN"; }],
-      ["Gross comp range", function (c) { var g = (c.comparables || {}).gross || {}; return (g.status === "OBSERVED" || g.status === "DERIVED") && g.p10 != null ? g.p10 + "–" + g.p90 : "—"; }],
-      ["Attendance comp median", function (c) { var a = (c.comparables || {}).attendance || {}; return a.status === "OBSERVED" || a.status === "DERIVED" ? a.weighted_median : "UNKNOWN"; }],
-      ["Market shows", function (c) { var m = c.market_history || {}; return m.shows_in_market; }],
-      ["Data coverage", function (c) { return (c.coverage || {}).coverage_score; }],
-      ["Sources known", function (c) { return (c.coverage || {}).known_source_count; }],
-    ];
-    var html = "<table><thead><tr><th>Attribute</th>" + cards.map(function (c) {
-      return "<th>" + esc(c.artist_name || c.artist_key || "?") + "</th>";
-    }).join("") + "</tr></thead><tbody>";
-    rows.forEach(function (r) {
-      html += "<tr><th>" + esc(r[0]) + "</th>" + cards.map(function (c) { return "<td>" + compCell(c, r[1]) + "</td>"; }).join("") + "</tr>";
-    });
-    html += "</tbody></table>";
-    html += "<p class='muted'>Evidence is per-scorecard; UNKNOWN cells are shown explicitly, never as zero. Comparable medians are RESEARCH-ONLY ranges." +
-      " <a href='#/artists/" + esc(cards[0].artist_key || "") + "'>Open full scorecard</a></p>";
-    outEl.innerHTML = html;
+    if (compareSet.length < 2) {
+      outEl.innerHTML = '<div class="none">Add one more artist. Comparison starts only when two governed Artist Security records are selected.</div>';
+      return;
+    }
+    outEl.innerHTML = '<button id="cp-run">COMPARE EVIDENCE</button><p class="muted">The result shows source-separated facts and explicit UNKNOWN states; it never chooses a winner.</p>';
+    document.getElementById("cp-run").onclick = function () {
+      viewSecurityCompare(compareSet[0], compareSet[1]);
+    };
   }
 
   function viewMonitors() {
@@ -1592,7 +2094,8 @@
     var parts = hash.split("/").filter(Boolean);
     var view = parts[0] || "tape";
     var id = parts[1];
-    if (view === "artists" && id) return viewArtist(decodeURIComponent(id));
+    if (view === "artists" && id) return viewArtistSecurity(decodeURIComponent(id));
+    if (view === "compare-security" && id && parts[2]) return viewSecurityCompare(decodeURIComponent(id), decodeURIComponent(parts[2]));
     if (view === "events" && id) return viewEvent(decodeURIComponent(id));
     if (view === "venues" && id) return viewVenue(decodeURIComponent(id));
     if (view === "markets" && id) return viewMarket(decodeURIComponent(id));
@@ -1625,12 +2128,18 @@
     if (el) {
       var type = el.getAttribute("data-nav");
       var id = el.getAttribute("data-id");
+      var ctx = el.getAttribute("data-ctx");
+      if (ctx) {
+        try { sessionStorage.setItem("fi.context", ctx); } catch (e) { /* degrade */ }
+      }
       location.hash = id ? "#/" + type + "/" + encodeURIComponent(id) : "#/" + type;
       searchResults.classList.add("hidden");
+      searchInput.value = "";
     }
   });
 
   searchInput.addEventListener("input", function () {
+    srSelected = -1;
     var q = searchInput.value.trim();
     if (q.length < 2) { searchResults.classList.add("hidden"); return; }
     api("/api/search?q=" + encodeURIComponent(q) + "&limit=10").then(function (items) {
@@ -1642,16 +2151,55 @@
       searchResults.classList.remove("hidden");
     });
   });
+  var srSelected = -1;
+  function srSelect(idx) {
+    var items = searchResults.querySelectorAll(".sr-item");
+    if (!items.length) return;
+    srSelected = Math.max(0, Math.min(idx, items.length - 1));
+    items.forEach(function (el, i) { el.classList.toggle("selected", i === srSelected); });
+    items[srSelected].scrollIntoView({ block: "nearest" });
+  }
   searchInput.addEventListener("keydown", function (e) {
+    var items = searchResults.querySelectorAll(".sr-item");
+    if (e.key === "ArrowDown" && items.length) { e.preventDefault(); srSelect(srSelected < 0 ? 0 : srSelected + 1); return; }
+    if (e.key === "ArrowUp" && items.length) { e.preventDefault(); srSelect(srSelected < 0 ? items.length - 1 : srSelected - 1); return; }
     if (e.key === "Enter") {
       searchResults.classList.add("hidden");
-      viewSearch(searchInput.value);
+      if (srSelected >= 0 && items[srSelected]) {
+        var el = items[srSelected];
+        location.hash = "#/" + el.getAttribute("data-nav") + "/" + encodeURIComponent(el.getAttribute("data-id"));
+        searchInput.value = "";
+        srSelected = -1;
+        return;
+      }
+      var q = searchInput.value.trim();
+      if (!q) return;
+      api("/api/search?q=" + encodeURIComponent(q) + "&limit=10").then(function (hits) {
+        var artist = (hits || []).filter(function (item) { return item.entity_type === "ARTIST"; })[0];
+        if (artist) location.hash = "#/artists/" + encodeURIComponent(artist.entity_id);
+        else viewSearch(q);
+      });
     }
   });
   searchResults.addEventListener("click", function (ev) {
     var el = ev.target.closest("[data-nav]");
     if (el) {
       location.hash = "#/" + el.getAttribute("data-nav") + "/" + encodeURIComponent(el.getAttribute("data-id"));
+      searchResults.classList.add("hidden");
+      searchInput.value = "";
+      srSelected = -1;
+    }
+  });
+
+  document.addEventListener("keydown", function (e) {
+    var tag = (document.activeElement && document.activeElement.tagName) || "";
+    var typing = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+    if ((e.key === "/" || (e.key.toLowerCase() === "k" && (e.metaKey || e.ctrlKey))) && !typing) {
+      e.preventDefault();
+      searchInput.focus();
+      searchInput.select();
+    } else if (e.key === "Escape" && !searchResults.classList.contains("hidden")) {
+      searchInput.value = "";
       searchResults.classList.add("hidden");
     }
   });

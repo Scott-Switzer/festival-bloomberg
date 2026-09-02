@@ -1,0 +1,59 @@
+{
+  "artifact": "TERMINAL_BROWSER_BUG_BASH_V1",
+  "generated_at": "2026-08-30",
+  "method": "Live browser automation against the running terminal (http://127.0.0.1:8931), clicking real UI only. No API/source-code shortcuts for the tested flows.",
+  "environment": {
+    "server": "launchd KeepAlive com.festival.terminal8931, port 8931",
+    "serving_snapshot": "terminal_recovered_20260830T000000Z.duckdb",
+    "constraint": "Machine under Wikidata full-corpus scan + unrelated compute-edge load; NOT a latency benchmark pass. Functional UX only."
+  },
+  "severities": {"P0": "product unusable/corrupt", "P1": "core buyer workflow blocked", "P2": "confusing/poor hierarchy, workaround exists", "P3": "cosmetic"},
+  "bugs_found": [
+    {"id": "B1", "severity": "P1", "route": "#/artists/<key>", "action": "Click a market row in MARKET PROFILE", "expected": "Opens Market Security with artist context", "actual": "Nothing — market cells were plain text, zero interactive elements in the section", "fixed": true, "fix": "Market cells now linkTo('markets', key) buttons"},
+    {"id": "B2", "severity": "P1", "route": "#/markets/chicago-il", "action": "Arrive from artist market click", "expected": "Market Security page with events/venues", "actual": "'Not found.' — read model matched slug keys against display-form values ('Chicago, IL' in forward_watch_events.market, 'Chicago' in canonical_boxoffice_engagements.city); every slug resolved to None", "fixed": true, "fix": "get_market() now matches slug and derivable display forms (evidence-based, no fabricated mapping)"},
+    {"id": "B3", "severity": "P1", "route": "#/markets/<slug>", "action": "First fix landed on #/market/<slug> (singular)", "expected": "Market page", "actual": "Route expects plural 'markets'; fell through to Activity Tape (where-am-I bug)", "fixed": true, "fix": "linkTo('markets', ...)"},
+    {"id": "B4", "severity": "P1", "route": "#/markets/<slug>", "action": "Click upcoming artist in Upcoming events", "expected": "Artist Security for that artist", "actual": "Static text; read model did not resolve artist keys", "fixed": true, "fix": "Server resolves upcoming artist names to 25K artist keys via artist_security.search_artists"},
+    {"id": "B5", "severity": "P2", "route": "global", "action": "Reload after asset update", "expected": "Fresh app.js", "actual": "Server sent no Cache-Control; browser served stale app.js; fixes appeared missing until forced reload", "fixed": true, "fix": "Cache-Control: no-store on static files"},
+    {"id": "B6", "severity": "P2", "route": "global", "action": "Navigate to another artist after searching", "expected": "Search box cleared", "actual": "Stale query retained (search box still said 'metallica' on Linkin Park page) — confusing context", "fixed": true, "fix": "Search input cleared on data-nav navigation"},
+    {"id": "B7", "severity": "P2", "route": "global", "action": "Press / or Cmd+K", "expected": "Global search focuses (terminal-grade keyboard)", "actual": "No handler; search reachable only by mouse", "fixed": true, "fix": "document keydown: '/' and Cmd/Ctrl+K focus search; Escape clears dropdown"},
+    {"id": "B8", "severity": "P2", "route": "#/markets/<slug>", "action": "Read market page title", "expected": "'Chicago'", "actual": "'Chicago-Il' (slug title-cased)", "fixed": true, "fix": "Display name derived from city prefix"},
+    {"id": "B9", "severity": "P2", "route": "#/compare-security/a/b", "action": "Scan for differences", "expected": "Differences visible in <30s", "actual": "Flat 4-column table; identical boilerplate in every cell; differences indistinguishable at a glance", "fixed": "partial", "fix": "Diff cells now amber-highlighted (12 diff cells on LP vs Metallica); full regrouping into AUDIENCE/LIVE/MARKETS/FORWARD still pending"},
+    {"id": "B10", "severity": "P2", "route": "#/artists/<key>", "action": "Read attention tables", "expected": "Change/trend vs prior observation", "actual": "CHANGE column UNKNOWN on every row; no prior-observation delta computed anywhere", "fixed": false},
+    {"id": "B11", "severity": "P2", "route": "#/artists/<key>", "action": "Read AUDIENCE PEERS 'WHY RELATED'", "expected": "Per-peer explanation", "actual": "Identical boilerplate sentence for every peer row", "fixed": false},
+    {"id": "B12", "severity": "P2", "route": "#/today", "action": "Open product cold", "expected": "Living monitor: watchlist/recent/alerts", "actual": "Static Activity Tape; no personal state surfaced on home", "fixed": false},
+    {"id": "B13", "severity": "P2", "route": "#/artists/<key>", "action": "LIVE HISTORY venue cells", "expected": "Venue names/linkable", "actual": "UNKNOWN for all rows in this serving generation (venue materialization pending)", "fixed": false, "note": "data-side, not UI"},
+    {"id": "B14", "severity": "P2", "route": "#/artists/<key>", "action": "Market profile columns", "expected": "future_events/ticket_evidence per market", "actual": "All UNKNOWN per-market even though the market read model has upcoming data for chicago-il — artist×market forward join not surfaced in the artist page", "fixed": false}
+  ],
+  "scenarios": {
+    "A_market_underwriting": {"steps": "search Metallica → click artist → click chicago-il market → market page (2 upcoming Olivia Rodrigo @ United Center, 12 historical, 7 venues) → click Olivia Rodrigo", "clicks": 3, "result": "PASS after fixes", "before_fixes": "BLOCKED at market click (B1) and market page empty (B2)"},
+    "B_replacement_artist": {"steps": "artist → peer Linkin Park → COMPARE + type Metallica → compare page", "clicks": 4, "result": "PASS; differences now highlighted, but compare remains a flat table (P2 pending)"},
+    "C_what_is_happening_now": {"steps": "artist page top strip: freshness, future events 60, live history 342, festivals 7, markets 47, attention OBSERVED", "result": "PASS; attention CHANGE column UNKNOWN (B10)"}
+  },
+  "screenshots": [
+    "compare_security_before (flat table, no highlighting)",
+    "market_security_after_fix (Chicago: upcoming+venues linked, honest empty context series)"
+  ],
+  "verified_working": [
+    "Global search with entity-type badges; dropdown result click-through",
+    "Artist Security full render (Metallica HOT_1000: 60 future, 342 live, 47 markets, 237 venues, 21 peers)",
+    "Peer → Artist Security navigation with context",
+    "Compare A/B via artist page button",
+    "Market → Artist and Market → Venue cross-links",
+    "Hash deep links; back/forward; '/' and Cmd+K search focus; Escape clears",
+    "Honest UNKNOWN empty states (no fake zeros)"
+  ],
+  "top10_product_problems_by_buyer_impact": [
+    "1. Compare is still a flat table, not decision-useful grouping (P2, partially fixed)",
+    "2. Market profile per-market forward/ticket columns all UNKNOWN while the data exists (B14)",
+    "3. No attention CHANGE/delta anywhere (B10)",
+    "4. TODAY is a static tape, not a monitor (B12)",
+    "5. Peer WHY RELATED is boilerplate (B11)",
+    "6. Venue cells UNKNOWN in live history — blocked on venue materialization wave (B13)",
+    "7. No charts (attention history is tables only)",
+    "8. Sparse-artist pages stack 6+ UNKNOWN panels vertically",
+    "9. Market Security lacks artist-context header when arriving from an artist page",
+    "10. No per-page keyboard function shortcuts beyond search"
+  ],
+  "latency_note": "NOT authoritative — machine under heavy background load. Functional responsiveness acceptable; no P95 claims made.",
+  "conclusion": "BLOOMBERG_TERMINAL_PRODUCT_HARDENING_V1 is NOT complete. Core buyer workflow (Artist→Market→Venue→Artist, Compare, Search) now WORKS end to end after 4 P1 fixes. Remaining gap is information architecture: compare grouping, per-market forward data, deltas, TODAY-as-monitor, charts."
+}

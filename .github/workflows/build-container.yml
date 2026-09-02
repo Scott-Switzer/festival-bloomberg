@@ -31,6 +31,16 @@ jobs:
         working-directory: cloud-runtime
         run: npx tsc --noEmit
 
+      - name: Assemble container build context
+        # Wrangler uses the Dockerfile's directory as the build context,
+        # so the repo-root inputs the batch image needs are copied in here.
+        working-directory: cloud-runtime
+        run: |
+          cp -r ../python docker/python
+          cp -r ../scripts docker/scripts
+          cp -r ../schema docker/schema
+          cp ../requirements.txt docker/requirements.txt
+
       - name: Deploy worker + build container
         working-directory: cloud-runtime
         run: npx wrangler deploy --containers-rollout=immediate

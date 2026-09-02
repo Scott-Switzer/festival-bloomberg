@@ -15,6 +15,9 @@
 
 import { AcquisitionGovernor } from "./governor-do";
 import { AcquisitionContainer } from "./container-do";
+import { BatchContainer } from "./batch-container-do";
+import { requireBatchAuth } from "./batch-auth";
+import { sanitizeJobSpec, BATCH_ERROR_CODES } from "./batch-spec";
 import { AcquisitionWorkflow } from "./workflow";
 import { handleFastBatch, handleDeepBatch, handleProcessingBatch } from "./queue-consumer";
 import { planTasks, loadUniverse, planBootstrapWave } from "./planner";
@@ -30,8 +33,10 @@ import { runMappingFactory } from "./mapping-factory-v2";
 import { planForwardFamilies, loadV2Universe } from "./forward-planner";
 import { handleYouTubeBatch } from "./youtube-consumer";
 import { handleStructuredBatch } from "./structured-consumer";
+import { handleDlqBatch } from "./dlq-consumer";
+import { readPlatformQueueMetrics, readQueueMetrics, writeQueueEnqueueMetric } from "./queue-metrics";
 
-export { AcquisitionGovernor, AcquisitionContainer, AcquisitionWorkflow };
+export { AcquisitionGovernor, AcquisitionContainer, BatchContainer, AcquisitionWorkflow };
 
 interface Env {
   FAST_QUEUE: Queue;
@@ -45,7 +50,9 @@ interface Env {
   RAW_BUCKET: R2Bucket;
   LAKE_BUCKET: R2Bucket;
   BACKUP_BUCKET: R2Bucket;
+  PRIVATE_BUCKET: R2Bucket;
   GOVERNOR: DurableObjectNamespace;
+  BATCH_CONTAINER: DurableObjectNamespace;
   ACQUISITION_WORKFLOW: Workflow;
   BROWSER: any;
   MONID_API_KEY: string;
@@ -55,13 +62,19 @@ interface Env {
   TICKETS_DEV_API_KEY: string;
   FI_R2_ACCESS_KEY_ID: string;
   FI_R2_SECRET_ACCESS_KEY: string;
+  FI_R2_ENDPOINT: string;
   FI_R2_RAW_BUCKET: string;
+  FI_R2_LAKE_BUCKET: string;
+  FI_R2_PRIVATE_BUCKET: string;
+  FI_R2_BACKUP_BUCKET: string;
   POLICY_VERSION: string;
   SOFTWARE_VERSION: string;
   DAILY_BUDGET_USD: string;
   MONTHLY_BUDGET_USD: string;
   ENABLE_DEEP_RAIL: string;
   ADMIN_TOKEN: string;
+  FI_LISTENER_HMAC_SECRET: string;
+  FI_LISTENER_HMAC_SECRET_VERSION: string;
 }
 
 /** Check if request has valid admin auth */
@@ -72,6 +85,9 @@ function isAdminAuth(request: Request, env: Env): boolean {
   if (!expected) return true; // If no token configured, allow (development)
   return authHeader === `Bearer ${expected}` || tokenHeader === expected;
 }
+
+/** P10: Bounded request-body limit (256 KiB) for batch triggers. */
+const MAX_BATCH_BODY_BYTES = 256 * 1024;
 
 /** Extract SHA-256 hex string */
 async function sha256Hex(data: Uint8Array): Promise<string> {
@@ -100,6 +116,192 @@ export default {
       return Response.json({ error: "Unauthorized" }, { status: 401 });
     }
 
+    if (url.pathname === "/batch/trigger" && request.method === "POST") {
+      // V1B P0-4: Batch control FAILS CLOSED — no admin token configured
+      // means 503 BATCH_AUTH_NOT_CONFIGURED, never development-open.
+      const authFail = requireBatchAuth(request, env.ADMIN_TOKEN || "");
+      if (authFail) return authFail;
+
+      try {
+        // P10: Bounded request-body limit — reject oversized payloads.
+        const contentLength = parseInt(request.headers.get("content-length") || "0", 10);
+        if (contentLength > MAX_BATCH_BODY_BYTES) {
+          return Response.json(
+            { error: "Request body too large", code: "REQUEST_TOO_LARGE" },
+            { status: 413 },
+          );
+        }
+
+        const bodyText = await request.text();
+        if (bodyText.length > MAX_BATCH_BODY_BYTES) {
+          return Response.json(
+            { error: "Request body too large", code: "REQUEST_TOO_LARGE" },
+            { status: 413 },
+          );
+        }
+
+        // P7 + V1B P0-3: Sanitize the spec — rejects unknown job types,
+        // forbidden keys, and any env_vars/secrets in the body.
+        let spec;
+        try {
+          spec = sanitizeJobSpec(JSON.parse(bodyText));
+        } catch (e: any) {
+          return Response.json(
+            { error: "Invalid job spec", code: BATCH_ERROR_CODES.JOB_VALIDATION_FAILED },
+            { status: 400 },
+          );
+        }
+
+        const doId = env.BATCH_CONTAINER.idFromName(spec.job_id);
+        const batchDo = env.BATCH_CONTAINER.get(doId) as any;
+
+        // V1B P0-2: startJob returns immediately (RUNNING) — the trigger does
+        // NOT wait for job completion. output() is never called here.
+        const result = await batchDo.startJob(spec);
+
+        // P8: Return only safe structured fields — no stdout/stderr, no secrets.
+        const safeResult = {
+          job_id: result.job_id,
+          job_type: result.job_type,
+          status: result.status,
+          manifest_key: result.manifest_key,
+          last_safe_error_code: result.last_safe_error_code,
+          started_at: result.started_at,
+          completed_at: result.completed_at,
+        };
+        // 202 Accepted: the job was accepted and is running; the client must
+        // poll /batch/status for completion.
+        return Response.json(safeResult, { status: 202 });
+      } catch (e: any) {
+        // P1: fixed safe error code — never raw exception text.
+        return Response.json(
+          { error: "Job trigger failed", code: BATCH_ERROR_CODES.JOB_EXEC_FAILED },
+          { status: 500 },
+        );
+      }
+    }
+
+    if (url.pathname === "/batch/status" && request.method === "GET") {
+      // V1B P0-4: Status is also fail-closed protected.
+      const authFail = requireBatchAuth(request, env.ADMIN_TOKEN || "");
+      if (authFail) return authFail;
+
+      const jobId = url.searchParams.get("job_id");
+      if (!jobId) {
+        return Response.json({ error: "job_id required" }, { status: 400 });
+      }
+      const doId = env.BATCH_CONTAINER.idFromName(jobId);
+      const batchDo = env.BATCH_CONTAINER.get(doId) as any;
+      const status = await batchDo.getStatus(jobId);
+      // P8: getStatus already returns safe structured fields only.
+      return Response.json(status);
+    }
+
+    if (url.pathname === "/ops/container/restart" && request.method === "POST") {
+      // Admin-only: destroy the DO's container instance so the next job
+      // starts with the CURRENT deployed image (old long-lived instances
+      // keep their original image across deploys).
+      const authFail = requireBatchAuth(request, env.ADMIN_TOKEN || "");
+      if (authFail) return authFail;
+      const jobId = url.searchParams.get("job_id") || "terminal_serving_build_v1";
+      const doId = env.BATCH_CONTAINER.idFromName(jobId);
+      const batchDo = env.BATCH_CONTAINER.get(doId) as any;
+      const result = await batchDo.restartContainer("admin");
+      return Response.json(result);
+    }
+
+    if (url.pathname === "/terminal/bootstrap/current" && request.method === "GET") {
+      // Narrow, admin-protected bootstrap path for the compact serving
+      // artifact ONLY (Phase 7B): CURRENT.json metadata or the current
+      // terminal.duckdb, streamed from the LAKE R2 binding. No arbitrary R2
+      // key access, no public bucket, no file browser.
+      const artifact = url.searchParams.get("artifact") || "metadata";
+      const currentKey = "serving/artist_security_terminal_v1/CURRENT.json";
+      const currentObj = await env.LAKE_BUCKET.get(currentKey);
+      if (!currentObj) {
+        return Response.json(
+          { error: "TERMINAL_CURRENT_NOT_FOUND", key: currentKey },
+          { status: 404 },
+        );
+      }
+      const current = (await currentObj.json()) as {
+        generation?: string;
+        object_key?: string;
+        sha256?: string;
+        [k: string]: unknown;
+      };
+      if (artifact === "metadata") {
+        return Response.json(current);
+      }
+      if (artifact === "db") {
+        const objectKey = current.object_key;
+        if (!objectKey) {
+          return Response.json({ error: "TERMINAL_OBJECT_KEY_MISSING" }, { status: 500 });
+        }
+        const db = await env.LAKE_BUCKET.get(objectKey);
+        if (!db) {
+          return Response.json(
+            { error: "TERMINAL_ARTIFACT_NOT_FOUND", key: objectKey },
+            { status: 404 },
+          );
+        }
+        return new Response(db.body, {
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "Content-Length": String(db.size),
+            "X-Serving-Generation": current.generation || "",
+            "X-Serving-SHA256": current.sha256 || "",
+            "Cache-Control": "no-store",
+          },
+        });
+      }
+      return Response.json({ error: "unknown artifact type" }, { status: 400 });
+    }
+
+    if (url.pathname === "/ops/r2cat" && request.method === "GET") {
+      // Bounded, admin-protected R2 inventory listing (debug only) — returns
+      // keys+sizes under a prefix from the LAKE/RAW/BACKUPS/PRIVATE buckets.
+      // Never returns object bodies.
+      const bucketName = url.searchParams.get("bucket") || "lake";
+      const prefix = url.searchParams.get("prefix") || "";
+      const limit = Math.min(parseInt(url.searchParams.get("limit") || "500", 10), 2000);
+      const buckets: Record<string, R2Bucket | undefined> = {
+        lake: env.LAKE_BUCKET, raw: env.RAW_BUCKET,
+        backups: env.BACKUP_BUCKET, private: env.PRIVATE_BUCKET,
+      };
+      const bucket = buckets[bucketName];
+      if (!bucket) {
+        return Response.json({ error: `unknown bucket '${bucketName}'` }, { status: 400 });
+      }
+      const listing = await bucket.list({ prefix, limit });
+      return Response.json({
+        prefix, truncated: listing.truncated,
+        objects: listing.objects.map((o) => ({ key: o.key, size: o.size, uploaded: o.uploaded })),
+      });
+    }
+
+    if (url.pathname === "/ops/r2get" && request.method === "GET") {
+      // Bounded, admin-protected read of SMALL text objects (debug only) —
+      // manifests, CURRENT pointers, reports. Hard cap at 2 MiB.
+      const key = url.searchParams.get("key") || "";
+      const bucketName = url.searchParams.get("bucket") || "lake";
+      const buckets: Record<string, R2Bucket | undefined> = {
+        lake: env.LAKE_BUCKET, raw: env.RAW_BUCKET,
+        backups: env.BACKUP_BUCKET, private: env.PRIVATE_BUCKET,
+      };
+      const bucket = buckets[bucketName];
+      if (!bucket) return Response.json({ error: `unknown bucket '${bucketName}'` }, { status: 400 });
+      const obj = await bucket.get(key);
+      if (!obj) return Response.json({ error: "not found", key }, { status: 404 });
+      if (obj.size > 2 * 1024 * 1024) {
+        return Response.json({ error: "object too large for /ops/r2get", size: obj.size }, { status: 413 });
+      }
+      const text = await obj.text();
+      return new Response(text, {
+        headers: { "Content-Type": obj.httpMetadata?.contentType || "text/plain" },
+      });
+    }
+
     if (url.pathname === "/ops/health" && request.method === "GET") {
       const universe = await loadV2Universe(env);
       const governorId = env.GOVERNOR.idFromName("acquisition-governor");
@@ -120,6 +322,40 @@ export default {
       const recentHour = recent.filter((x) => nowMs - new Date(x.started_at).getTime() <= 3600 * 1000);
       const youtubeAudit = (xs: any[]) => xs.reduce((n, x) => n + (x.queues?.youtube || 0), 0);
       const youtubeTicks = objects[1].objects.filter((x) => x.key.includes("staging/youtube/")).length;
+      const queueMetrics = await readQueueMetrics(env, new Date(), 15);
+      const platformQueueMetrics = await readPlatformQueueMetrics({
+        "fi-youtube": env.YOUTUBE_QUEUE,
+        "fi-structured-api": env.STRUCTURED_API_QUEUE,
+        "fi-browser": env.BROWSER_QUEUE,
+        "fi-monid": env.MONID_QUEUE,
+        "fi-processing": env.PROCESSING_QUEUE,
+        "fi-dlq": env.DLQ_QUEUE,
+      });
+      const zeroTelemetry = { enqueued: 0, received: 0, acked: 0, retried: 0, explicit_dlq: 0, telemetry_batches: 0 };
+      const queueNames = new Set([...Object.keys(platformQueueMetrics), ...Object.keys(queueMetrics.totals)]);
+      const queueHealth = Object.fromEntries([...queueNames].map((queue) => {
+        const metric = queueMetrics.totals[queue] || zeroTelemetry;
+        const platform = platformQueueMetrics[queue];
+        return [queue, {
+          // Internal lifecycle telemetry is a bounded-window reconciliation;
+          // platform_* fields are the authoritative point-in-time snapshot.
+          backlog_estimate: Math.max(0, metric.enqueued - metric.acked - metric.explicit_dlq),
+          enqueued: metric.enqueued,
+          received: metric.received,
+          acked: metric.acked,
+          retried: metric.retried,
+          explicit_dlq: metric.explicit_dlq,
+          telemetry_batches: metric.telemetry_batches,
+          platform_backlog_count: platform?.backlog_count ?? null,
+          platform_backlog_bytes: platform?.backlog_bytes ?? null,
+          platform_oldest_message_timestamp: platform?.oldest_message_timestamp ?? null,
+          platform_metrics_available: platform?.available ?? false,
+          platform_metrics_error: platform?.error,
+        }];
+      }));
+      const platformBacklogValues = Object.entries(platformQueueMetrics).filter(([queue, metric]) => queue !== "fi-dlq" && metric.available && metric.backlog_count !== null).map(([, metric]) => metric.backlog_count as number);
+      const platformBacklogComplete = Object.entries(platformQueueMetrics).filter(([queue]) => queue !== "fi-dlq").every(([, metric]) => metric.available && metric.backlog_count !== null);
+      const platformDlq = platformQueueMetrics["fi-dlq"];
       return Response.json({
         deployed_version: env.SOFTWARE_VERSION,
         last_cron_at: audits.length ? audits[audits.length - 1].completed_at || audits[audits.length - 1].started_at : null,
@@ -128,7 +364,19 @@ export default {
         watch_universe_size: universe.events.length,
         youtube: { candidate: universe.youtube_channels?.length || 0, due: youtubeAudit(recent), selected: youtubeAudit(recent), checks_1h: youtubeTicks, checks_24h: youtubeTicks, changes_1h: youtubeTicks, changes_24h: youtubeTicks, heartbeats_1h: 0, quota_used_today: youtubeAudit(recent), quota_projected_today: youtubeAudit(recent), quota_blocked: 0 },
         tickets: { candidate: universe.events.length, due: null, selected: null, checks_24h: null, useful_24h: null, changes_24h: null, structured_queue_checks_24h: null },
-        queues: { backlog: null, dlq: null },
+        queues: {
+          // Aggregate fields are authoritative when every operational queue
+          // returned a realtime metric; use by_queue for per-queue bytes and
+          // oldest-message timestamps.
+          backlog: platformBacklogComplete ? platformBacklogValues.reduce((sum, count) => sum + count, 0) : null,
+          dlq: platformDlq?.available ? platformDlq.backlog_count : null,
+          window_utc: { start: queueMetrics.window_start, end: queueMetrics.window_end },
+          telemetry_complete: queueMetrics.complete,
+          telemetry_minutes_covered: queueMetrics.minutes_covered,
+          platform_metrics_complete: Object.values(platformQueueMetrics).every((metric) => metric.available),
+          source: "Cloudflare Queue.metrics() realtime depth plus R2 batch lifecycle telemetry",
+          by_queue: queueHealth,
+        },
         r2: { youtube_raw_objects: objects[0].objects.length, youtube_lake_objects: objects[1].objects.length, scheduler_audits: audits.length },
         governor: gov,
       });
@@ -644,6 +892,9 @@ export default {
       case "fi-acquisition-processing":
         await handleProcessingBatch(batch as MessageBatch<any>, env);
         break;
+      case "fi-dlq":
+        await handleDlqBatch(batch as MessageBatch<unknown>, env);
+        break;
       default:
         console.error(`Unknown queue: ${queueName}`);
         for (const msg of batch.messages) {
@@ -690,6 +941,11 @@ export default {
       };
       await env.BACKUP_BUCKET.put(`control/scheduler/${runId}.json`, JSON.stringify(audit), { httpMetadata: { contentType: "application/json" } });
       await env.BACKUP_BUCKET.put(`control/runs/${runId}.json`, JSON.stringify(audit), { httpMetadata: { contentType: "application/json" } });
+      await Promise.all([
+        writeQueueEnqueueMetric(env, "fi-youtube", youtubeQueued, runId),
+        writeQueueEnqueueMetric(env, "fi-structured-api", structuredQueued, runId),
+        writeQueueEnqueueMetric(env, "fi-monid", webQueued, runId),
+      ]).catch((metricError) => console.error(JSON.stringify({ event: "QUEUE_METRIC_WRITE_ERROR", run_id: runId, error: metricError instanceof Error ? metricError.message : String(metricError) })));
       console.log(JSON.stringify({ event: "CRON_RUN_COMPLETED", ...audit }));
     } catch (e: unknown) {
       const error = e instanceof Error ? e.message : String(e);

@@ -34,15 +34,25 @@ data/musicbrainz_dumps/
 data/bakeoff/
 # Serving/workspace runtime data
 data/serving/
+serving/
 data/workspace/
 *.db
 *.sqlite
 *.sqlite3
 
 # Generated reports and artifacts
-reports/
+reports/*
+!reports/data_moat_swarm_review_v1.json
+!reports/TALENT_BUYER_TERMINAL_ACCEPTANCE.json
+!reports/TALENT_BUYER_TERMINAL_V1_REPORT.md
+!reports/talent_buyer_terminal_v1/
+reports/talent_buyer_terminal_v1/*
+!reports/talent_buyer_terminal_v1/browser_acceptance.json
+!reports/talent_buyer_terminal_v1/*.png
 *.report
 generated/
+# Wrangler-generated runtime declarations (regenerate from wrangler.jsonc).
+cloud-runtime/worker-configuration.d.ts
 
 # Freebuff desktop tool state (not project data)
 .freebuff/

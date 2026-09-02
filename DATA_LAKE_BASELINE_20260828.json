@@ -1,0 +1,67 @@
+{
+  "version": "1",
+  "created_at": "2026-08-28T09:26:11.932450+00:00",
+  "title": "DATA_LAKE_BASELINE_20260828.json",
+  "r2_buckets": {
+    "festival-intelligence-raw": {
+      "purpose": "Raw source artifacts and bulk corpus",
+      "current_objects_bytes": 186000000,
+      "target_bytes": 250000000000
+    },
+    "festival-intelligence-lake": {
+      "purpose": "Normalized Parquet/analytics",
+      "current_objects_bytes": 607000000,
+      "target_bytes": 50000000000
+    },
+    "festival-intelligence-backups": {
+      "purpose": "Estate artifacts, forward data, control",
+      "current_objects_bytes": 5560000000,
+      "target_bytes": 10000000000
+    }
+  },
+  "total_current_r2_bytes": 6353000000,
+  "total_current_r2_gb": 6.35,
+  "bulk_transfers": {
+    "checkpoint_a_musicbrainz_core": {
+      "source": "MusicBrainz mbdump.tar.bz2",
+      "license": "CC0",
+      "source_size_gb": 7.0,
+      "r2_size_gb": 6.96,
+      "r2_key": "bulk/musicbrainz/relational/dump=20260826-002522/mbdump.tar.bz2",
+      "verification_status": "VERIFIED",
+      "sha256": "a401af0e482dbe99509e6219c5428c9c90263301b8dbd60ec61f1e2bbd6421c8",
+      "completed_at": "2026-08-28T04:55:59.767097+00:00"
+    },
+    "checkpoint_b_wikidata_truthy": {
+      "source": "Wikidata latest-truthy.nt.bz2",
+      "license": "CC0",
+      "source_size_gb": 40.35,
+      "status": "IN_PROGRESS",
+      "r2_key": "bulk/wikidata/dump=latest-truthy/latest-truthy.nt.bz2",
+      "estimated_completion_hours": 4.7
+    },
+    "checkpoint_c_listenbrainz_full": {
+      "source": "ListenBrainz spark dump 2593-20260712",
+      "license": "CC0",
+      "source_size_gb": 190.99,
+      "status": "IN_PROGRESS",
+      "r2_key": "bulk/listenbrainz/dump=2593-20260712-000004/listenbrainz-spark-dump-2593-20260712-000004-full.tar",
+      "sha256": "17cf9ec7e528265d84d536bf89a8e58aa01dda2b8834a3a515e54130be8ba52a",
+      "estimated_completion_hours": 16.9
+    }
+  },
+  "after_all_transfers": {
+    "raw_gb": 245.3,
+    "normalized_gb": 0.6,
+    "control_gb": 5.6,
+    "total_gb": 251.5,
+    "storage_cost_monthly_usd": 3.69
+  },
+  "acquired_bulk_mb_json": {
+    "area.tar.xz": "33 MB",
+    "event.tar.xz": "46 MB",
+    "place.tar.xz": "142 MB",
+    "series.tar.xz": "31 MB",
+    "recording.tar.xz": "33 MB"
+  }
+}

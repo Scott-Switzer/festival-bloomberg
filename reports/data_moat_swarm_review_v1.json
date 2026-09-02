@@ -1,0 +1,380 @@
+{
+  "milestone": "DATA_MOAT_COMPOUNDING_V1",
+  "report_version": "v1",
+  "generated_at": "2026-08-30T21:29:44Z",
+  "branch": "feat/artist-security-25000-database-v1",
+  "head": "25ae60bb1df61af16b97c90654104040b1964daa",
+  "decision": "PROCEED_WITH_CORRECTNESS_AND_GOVERNANCE_GATES",
+  "scoring": {
+    "range": "1-5",
+    "value_dimensions": "5 is highest value, uniqueness, confidence, or fastest time to value",
+    "cost_dimensions": "5 is highest implementation or ongoing burden",
+    "ranking_policy": "Judgmental ordering by release severity and the seven dimensions; no arithmetic composite score"
+  },
+  "verified_state": {
+    "canonical_schema_version": 36,
+    "repository_latest_migration": 47,
+    "canonical_tables": 156,
+    "warehouse_bytes_approx": 5383401472,
+    "r2_catalog_bytes": 255873908522,
+    "r2_catalog_dataset_counts": {
+      "RAW": 8,
+      "BRONZE": 0,
+      "SILVER": 16,
+      "GOLD": 4,
+      "SERVING": 0
+    },
+    "terminal_counts": {
+      "historical_engagements": 657,
+      "forward_events": 562,
+      "outcome_claims": 1716,
+      "activity_tape_rows": 102766
+    },
+    "wikidata": {
+      "state": "RUNNING_AFTER_HOST_REBOOT",
+      "launchd_label": "com.festival.wdgraph",
+      "observed_at": "2026-08-30T21:29:44Z",
+      "observed_lines_after_restart": 916000000,
+      "observed_kept_after_restart": 62340,
+      "stderr_bytes": 0,
+      "parallel_path_resumable": false,
+      "evidence": ["launchctl print gui/$UID/com.festival.wdgraph", "/tmp/r2_checkpoints/wd_graph.log", "kern.boottime"],
+      "note": "The host rebooted at 2026-08-30 14:06 local time. The new launchd-managed process was observed scanning again from byte zero."
+    },
+    "listenbrainz": {
+      "source_shards": 1526,
+      "source_bytes": 205073162240,
+      "completed_shards_in_stale_checkpoint": 7,
+      "checkpoint_valid": false,
+      "heavy_scan_started": false
+    },
+    "local_free_disk_gib_observed": 3.1,
+    "other_heavy_processes": "NONE_AFTER_BOOTOUT_OF_com.compute-edge.dense-derived"
+  },
+  "audit_cohort": [
+    {
+      "id": "A1",
+      "workstream": "REPO_ARCHITECTURE",
+      "decision": "ACCEPT_FINDINGS",
+      "key_result": "The 25K, Wikidata, and ListenBrainz estates are primarily lake/control artifacts and are not in the canonical serving path; catalog coverage omits Bronze and Serving."
+    },
+    {
+      "id": "A2",
+      "workstream": "WIKIDATA_PIPELINE",
+      "decision": "ACCEPT_FINDINGS_NO_LIVE_STOP",
+      "key_result": "No live-process P0, but current outputs fail normalization and publication gates: URI QIDs, dead location extraction, P31 pollution, broad venue classes, unsafe spill deletion, unbounded finalization, and no transactional generation manifest."
+    },
+    {
+      "id": "A3",
+      "workstream": "LISTENBRAINZ_MAP_REDUCE",
+      "decision": "ACCEPT_COUNTEREXAMPLES",
+      "key_result": "Reducers concatenate batch partials without global listener-artist aggregation before ranking, so duplicate fragments can consume TOP-25 slots; support thresholds are applied before global union and artist-day reduction also fails to aggregate globally."
+    },
+    {
+      "id": "A4",
+      "workstream": "LISTENBRAINZ_STATISTICS",
+      "decision": "ACCEPT_WITH_THRESHOLD_QUALIFICATION",
+      "key_result": "Current Jaccard/cosine/lift use inconsistent universes, support 3 has no multiplicity control, TOP_25 is a computational policy, and pilot stability is weak. Candidate Gold thresholds require empirical calibration."
+    },
+    {
+      "id": "A5",
+      "workstream": "IDENTITY_GRAPH",
+      "decision": "ACCEPT_FINDINGS",
+      "key_result": "Malformed/colliding provider IDs, missing provenance, silent venue first-match behavior, and canonical/serving migration drift block Identity Graph V2."
+    },
+    {
+      "id": "A6",
+      "workstream": "MARKET_GEOGRAPHY",
+      "decision": "ACCEPT_FINDINGS",
+      "key_result": "Only 23.66% of MusicBrainz performer-place rows map through the current hand-maintained geography map; venue geography and historical outcome joins are not canonical."
+    },
+    {
+      "id": "A7",
+      "workstream": "VENUE_DATA",
+      "decision": "ACCEPT_TYPED_PATH_REJECT_UNTYPED_COUNT",
+      "key_result": "82,547 MusicBrainz places are conflated with venues. A defensible candidate rail is 15,253 live-event-used places; capacity evidence is only 52 claims across 28 venues."
+    },
+    {
+      "id": "A8",
+      "workstream": "TICKET_MARKET",
+      "decision": "ACCEPT_OFFICIAL_API_PATH_REJECT_CURRENT_ACTIVE_CLAIM",
+      "key_result": "The historical 571-pair cohort is stale; only 530 were future and onsale in the August 25 snapshot reviewed on August 30. The candidate pool is large enough to evaluate a 5,000-pair target, but native IDs, freshness, longitudinal depth, and rights gates are missing."
+    },
+    {
+      "id": "A9",
+      "workstream": "YOUTUBE_SCALE",
+      "decision": "ACCEPT_RECLASSIFICATION",
+      "key_result": "The 25K artifact has zero API-verified channels. It has 10,607 artists with UC-shaped IDs, 4,018 noncanonical rows, and 25 ID collision values; blanket VERIFIED labels are invalid."
+    },
+    {
+      "id": "A10",
+      "workstream": "PRIVATE_OUTCOME_MOAT",
+      "decision": "ACCEPT_RESEARCH_DESIGN_REJECT_PRODUCTION_READINESS",
+      "key_result": "Existing import/backtest foundations are useful, but logical tenancy, a logical outcome vault, blind-export leakage, missing authenticated scope, and absent lifecycle controls block customer production use."
+    },
+    {
+      "id": "A11",
+      "workstream": "BUYER_PRODUCT_QUESTIONS",
+      "decision": "ACCEPT_EVIDENCE_WORKBENCH_REJECT_RECOMMENDATIONS",
+      "key_result": "The product can support evidence-led proposed-show comparison and deterministic economics, but ticket evidence, recent-market progression, audience overlap, availability, and private deal facts remain incomplete."
+    },
+    {
+      "id": "A12",
+      "workstream": "RIGHTS_COMMERCIAL_USE",
+      "decision": "ACCEPT_FAIL_CLOSED_GATES",
+      "key_result": "Rights metadata does not propagate consistently into canonical/serving tables; listener-level ListenBrainz data and terms-uncertain commercial sources require quarantine or explicit approval."
+    },
+    {
+      "id": "A13",
+      "workstream": "PERFORMANCE_COMPUTE",
+      "decision": "ACCEPT_MEASUREMENT_GATES",
+      "key_result": "Three GiB free disk, nonresumable Wikidata parallel reads, unbounded reducers/finalizers, and R2 small-object/read amplification require measured gates before the next heavy scan."
+    },
+    {
+      "id": "A14",
+      "workstream": "DATA_QUALITY_TESTS",
+      "decision": "ACCEPT_TEST_INVENTORY",
+      "key_result": "Release-blocking invariants are missing for provider ID quarantine, forward lifecycle, UNKNOWN-to-zero, global aggregation/restart, rights propagation, geography evidence, and serving parity."
+    },
+    {
+      "id": "A15",
+      "workstream": "OPEN_SOURCE_LEVERAGE",
+      "decision": "ACCEPT_CURRENT_FOUNDATION_PILOT_NARROW_TOOLS",
+      "key_result": "Retain Arrow/PyArrow, DuckDB, and R2. Pilot Polars, Pandera, Iceberg, Splink-shadow, and bounded NetworkX only under equivalence gates; reject distributed-platform churn without measured need."
+    },
+    {
+      "id": "A16",
+      "workstream": "COMPETITIVE_MOAT",
+      "decision": "ACCEPT_FOCUS",
+      "key_result": "Generic analytics, CRM, and ticketing UI are commodity. The defensible wedge is a provenance/PIT public event graph joined to consented private settlement and outcome history."
+    }
+  ],
+  "ranked_findings": [
+    {
+      "rank": 1,
+      "id": "CANONICAL_SERVING_PARITY",
+      "priority": "P0",
+      "decision": "FIX_FIRST",
+      "source_workstream_ids": ["A1", "A5", "A6", "A8", "A11", "A14"],
+      "finding": "Canonical and serving databases stop at migration 36 while repository product schemas reach migration 47. Major 25K/security and newer identity, ticket, and market products therefore exist in code/artifacts but not in the verified serving contract; the older core.entity_external_ids layer is present.",
+      "scores": {"MOAT_VALUE": 5, "PRODUCT_VALUE": 5, "DATA_UNIQUENESS": 4, "IMPLEMENTATION_COST": 3, "ONGOING_COST": 3, "LEGAL_RIGHTS_CONFIDENCE": 4, "TIME_TO_VALUE": 2},
+      "evidence": ["data/serving/CURRENT.json", "schema/migrations/046_artist_security_25000_database_v1.sql", "schema/migrations/047_data_estate_scale_25k_v1.sql", "python/festival_bloomberg/terminal/storage.py"],
+      "gate": "Apply migrations to a copy, materialize required tables, run content and endpoint parity, then publish an immutable snapshot."
+    },
+    {
+      "rank": 2,
+      "id": "IDENTITY_GRAPH_V2",
+      "priority": "P0",
+      "decision": "BUILD_AFTER_PARITY",
+      "source_workstream_ids": ["A1", "A5", "A6", "A9", "A14"],
+      "finding": "Provider identifiers contain malformed values and one-to-many collisions; provenance is sparse and venue resolution can silently select a first match.",
+      "scores": {"MOAT_VALUE": 5, "PRODUCT_VALUE": 5, "DATA_UNIQUENESS": 5, "IMPLEMENTATION_COST": 3, "ONGOING_COST": 3, "LEGAL_RIGHTS_CONFIDENCE": 4, "TIME_TO_VALUE": 3},
+      "evidence": ["core.entity_external_ids", "core.identity_conflicts", "python/festival_bloomberg/economics/venues.py", "python/festival_bloomberg/security/youtube_identity_scale.py"],
+      "gate": "Provider validators, append-only assertions, explicit VERIFIED_EXACT/SUPPORTED_MULTI_SOURCE/CANDIDATE/AMBIGUOUS/CONFLICT/MISSING states, and no order-based winner."
+    },
+    {
+      "rank": 3,
+      "id": "LISTENBRAINZ_CORRECTNESS",
+      "priority": "P0",
+      "decision": "BLOCK_5_PERCENT_RUN_UNTIL_FIXED",
+      "source_workstream_ids": ["A3", "A4", "A13", "A14"],
+      "finding": "Affinity batch partials are concatenated without global listener-artist aggregation before ranking, artist-day partials are not globally aggregated, support filtering is partition-local, and published similarity labels use inconsistent denominator universes.",
+      "scores": {"MOAT_VALUE": 4, "PRODUCT_VALUE": 4, "DATA_UNIQUENESS": 5, "IMPLEMENTATION_COST": 3, "ONGOING_COST": 3, "LEGAL_RIGHTS_CONFIDENCE": 3, "TIME_TO_VALUE": 2},
+      "evidence": ["scripts/lb_full_scan.py", "scripts/lb_pilot.py", "scripts/lb_sensitivity.py", "tests/python/test_lake_tooling.py"],
+      "gate": "Global SUM before TOP_K, global support union, consistent N/n_a/n_b/x universe, corrected multi-credit handling, fixture counterexamples, clean checkpoint geometry, interruption/resume hash proof."
+    },
+    {
+      "rank": 4,
+      "id": "RIGHTS_AND_PRIVACY_PROPAGATION",
+      "priority": "P0",
+      "decision": "FAIL_CLOSED",
+      "source_workstream_ids": ["A4", "A10", "A12"],
+      "finding": "Rights and commercial-use states are not recursively enforced in canonical or serving products; pseudonymous listener-level rows are labeled commercially allowed without a documented privacy gate.",
+      "scores": {"MOAT_VALUE": 5, "PRODUCT_VALUE": 5, "DATA_UNIQUENESS": 5, "IMPLEMENTATION_COST": 4, "ONGOING_COST": 4, "LEGAL_RIGHTS_CONFIDENCE": 2, "TIME_TO_VALUE": 2},
+      "evidence": ["python/festival_bloomberg/lake/catalog.py", "python/festival_bloomberg/governance/source_registry.py", "metrics.artist_attention_observations", "terminal.activity_tape"],
+      "gate": "One authoritative registry, most-restrictive inheritance, listener quarantine, attribution manifests, and commercial serving blocked for unknown/research/internal/terms-review sources."
+    },
+    {
+      "rank": 5,
+      "id": "WIKIDATA_NORMALIZED_SILVER",
+      "priority": "P1",
+      "decision": "REBUILD_FROM_CORRECTED_PIPELINE",
+      "source_workstream_ids": ["A2", "A13", "A14"],
+      "finding": "The running pass is operationally healthy but its current implementation emits URI QIDs, drops location relations, puts P31 type facts in external IDs, and cannot safely publish/delete spills transactionally.",
+      "scores": {"MOAT_VALUE": 5, "PRODUCT_VALUE": 5, "DATA_UNIQUENESS": 4, "IMPLEMENTATION_COST": 3, "ONGOING_COST": 2, "LEGAL_RIGHTS_CONFIDENCE": 5, "TIME_TO_VALUE": 3},
+      "evidence": ["scripts/build_wikidata_music_graph.py", "control/data_catalog/current.json", "/tmp/r2_checkpoints/wd_graph.log"],
+      "gate": "QID/type/location fixtures, run-scoped spills, streaming compaction, canonical generation manifest, hash/count verification, complete lineage/metrics, and operator-approved recoverable garbage collection only after verified publication."
+    },
+    {
+      "rank": 6,
+      "id": "CANONICAL_MARKET_GEOGRAPHY",
+      "priority": "P1",
+      "decision": "BUILD",
+      "source_workstream_ids": ["A1", "A5", "A6", "A11", "A14"],
+      "finding": "City/state strings and a bounded static map resolve only 23.66% of performer-place history and corrupt or miss historical engagement, venue, calendar, tape, and outcome joins.",
+      "scores": {"MOAT_VALUE": 5, "PRODUCT_VALUE": 5, "DATA_UNIQUENESS": 5, "IMPLEMENTATION_COST": 3, "ONGOING_COST": 3, "LEGAL_RIGHTS_CONFIDENCE": 5, "TIME_TO_VALUE": 3},
+      "evidence": ["python/festival_bloomberg/security/artist_market_scale.py", "python/festival_bloomberg/planning/competitive_calendar.py", "research.canonical_boxoffice_engagements", "core.venues"],
+      "gate": "Stable place/market IDs, source ancestry and coordinates, explicit raw-to-canonical resolution ledger, temporal event-location selection, and serving joins by ID."
+    },
+    {
+      "rank": 7,
+      "id": "BUYER_ACTIONABILITY_TRUST_LAYER",
+      "priority": "P1",
+      "decision": "SHIP_BOUNDED_MVP",
+      "source_workstream_ids": ["A11", "A16"],
+      "finding": "The strongest near-term product is a proposed-show evidence workbench with explicit unknown/conflict/rights/PIT states, not a booking recommendation or composite artist score.",
+      "scores": {"MOAT_VALUE": 4, "PRODUCT_VALUE": 5, "DATA_UNIQUENESS": 4, "IMPLEMENTATION_COST": 2, "ONGOING_COST": 2, "LEGAL_RIGHTS_CONFIDENCE": 4, "TIME_TO_VALUE": 5},
+      "evidence": ["docs/talent-buyer-workbench-v1-spec.md", "python/festival_bloomberg/planning/proposed_show.py", "python/festival_bloomberg/planning/candidates.py"],
+      "gate": "Two-proposal test covers identity, capacity claims, recent market plays, PIT competition, comps, deterministic economics, provenance, and a missing-evidence request list with no GO/BOOK output."
+    },
+    {
+      "rank": 8,
+      "id": "TICKETMASTER_5000_OFFICIAL_RAIL",
+      "priority": "P1",
+      "decision": "SCALE_AFTER_RIGHTS_AND_SERVING_GATES",
+      "source_workstream_ids": ["A8", "A11", "A12", "A13"],
+      "finding": "The 33,383-event Ticketmaster estate is a candidate pool large enough to evaluate a 5,000-pair structured target, but the current 571-pair claim is stale and lacks longitudinal price/inventory semantics.",
+      "scores": {"MOAT_VALUE": 4, "PRODUCT_VALUE": 5, "DATA_UNIQUENESS": 4, "IMPLEMENTATION_COST": 3, "ONGOING_COST": 3, "LEGAL_RIGHTS_CONFIDENCE": 2, "TIME_TO_VALUE": 4},
+      "evidence": ["events.provider_event_snapshots", "reports/market_liquidity_success.json", "scripts/build_cloud_watch_universe_v2.py", "cloud-runtime/src/forward-planner.ts"],
+      "gate": "5,000 future/onsale native-ID pairs, <=24h freshness, >=95% structured success over two passes, explicit price basis/availability, and no OFFSALE/zero-listing to SOLD_OUT coercion."
+    },
+    {
+      "rank": 9,
+      "id": "TYPED_VENUE_SECURITIES",
+      "priority": "P1",
+      "decision": "BUILD_10K_TYPED_RAIL",
+      "source_workstream_ids": ["A1", "A2", "A5", "A7", "A12"],
+      "finding": "MusicBrainz provides a plausible 15,253-place live-event candidate set, but all 82,547 places are currently treated as venues and only 52 capacity claims exist.",
+      "scores": {"MOAT_VALUE": 4, "PRODUCT_VALUE": 5, "DATA_UNIQUENESS": 4, "IMPLEMENTATION_COST": 3, "ONGOING_COST": 3, "LEGAL_RIGHTS_CONFIDENCE": 4, "TIME_TO_VALUE": 4},
+      "evidence": ["raw.musicbrainz_place", "core.venues", "economics.venue_capacity_claims", "docs/venue-configuration-capacity-v2.md"],
+      "gate": "PLACE versus LIVE_MUSIC_VENUE eligibility, exact provider-ID links, ambiguity ledger, and 1,000 typed capacity/configuration evidence records without collapsing claims."
+    },
+    {
+      "rank": 10,
+      "id": "YOUTUBE_PROOF_STATES",
+      "priority": "P1",
+      "decision": "RECLASSIFY_THEN_VERIFY",
+      "source_workstream_ids": ["A1", "A5", "A9", "A12", "A13"],
+      "finding": "The 25K artifact labels 15,759 rows VERIFIED despite zero API verification; 11,719 unique UC-shaped ID values across 10,607 artists make a low-quota validation pass plausible after collision quarantine.",
+      "scores": {"MOAT_VALUE": 3, "PRODUCT_VALUE": 4, "DATA_UNIQUENESS": 3, "IMPLEMENTATION_COST": 2, "ONGOING_COST": 2, "LEGAL_RIGHTS_CONFIDENCE": 2, "TIME_TO_VALUE": 4},
+      "evidence": ["control/artist_security_25000/current.json", "python/festival_bloomberg/security/youtube_identity_scale.py", "cloud-runtime/src/youtube-cloud.ts"],
+      "gate": "Separate API_VERIFIED/MB_OFFICIAL_LINK/WIKIDATA_LINK/INVALID_SHAPE/API_INVALID/MISSING, quarantine collisions, preserve raw response hash and retrieved_at, and correct quota accounting."
+    },
+    {
+      "rank": 11,
+      "id": "PRIVATE_SETTLED_OUTCOME_VAULT",
+      "priority": "P1",
+      "control_severity": "P0",
+      "decision": "PILOT_ONLY_AFTER_SECURITY_BOUNDARY",
+      "source_workstream_ids": ["A10", "A11", "A12", "A16"],
+      "finding": "Private settled outcomes are the hypothesized highest-upside moat, but production requires physical tenant boundaries, encryption, authenticated scope, consent/retention/deletion, blind reveal controls, and field-level PIT metadata.",
+      "scores": {"MOAT_VALUE": 5, "PRODUCT_VALUE": 5, "DATA_UNIQUENESS": 5, "IMPLEMENTATION_COST": 5, "ONGOING_COST": 5, "LEGAL_RIGHTS_CONFIDENCE": 3, "TIME_TO_VALUE": 1},
+      "evidence": ["docs/design-partner-data-contract.md", "python/festival_bloomberg/economics/partner_import.py", "python/festival_bloomberg/economics/retrospective.py", "schema/migrations/014_design_partner_retrospective_v1.sql"],
+      "gate": "Two-tenant cross-read denial, encrypted vault/reveal audit, streaming PII quarantine, no serving leakage, field-level availability, export/deletion/revocation, and reconciliation tests."
+    },
+    {
+      "rank": 12,
+      "id": "RELEASE_DATA_QUALITY_GATES",
+      "priority": "P1",
+      "decision": "IMPLEMENT_WITH_EACH_PRODUCT",
+      "source_workstream_ids": ["A3", "A5", "A6", "A9", "A14"],
+      "finding": "The repository lacks end-to-end production invariants for provider IDs, forward lifecycle, UNKNOWN-to-zero, geography evidence, global restart idempotence, rights inheritance, and serving parity.",
+      "scores": {"MOAT_VALUE": 4, "PRODUCT_VALUE": 5, "DATA_UNIQUENESS": 3, "IMPLEMENTATION_COST": 3, "ONGOING_COST": 2, "LEGAL_RIGHTS_CONFIDENCE": 5, "TIME_TO_VALUE": 4},
+      "evidence": ["tests/python/test_lake_tooling.py", "tests/python/test_pit_invariants.py", "tests/python/test_terminal_serving_snapshot.py"],
+      "gate": "Add production-format fixtures and canonical/serving checks; missing schemas return NOT_EVALUATED or fail, never zero."
+    },
+    {
+      "rank": 13,
+      "id": "MEASURED_COMPUTE_AND_R2",
+      "priority": "P1",
+      "decision": "OPTIMIZE_AFTER_CORRECTNESS",
+      "source_workstream_ids": ["A2", "A3", "A13", "A14"],
+      "finding": "Nonresumable source reads, unbounded final buffers/reducers, tiny objects, and R2 health read amplification create material operational risk with only about 3 GiB local free space.",
+      "scores": {"MOAT_VALUE": 3, "PRODUCT_VALUE": 4, "DATA_UNIQUENESS": 2, "IMPLEMENTATION_COST": 3, "ONGOING_COST": 3, "LEGAL_RIGHTS_CONFIDENCE": 5, "TIME_TO_VALUE": 3},
+      "evidence": ["scripts/build_wikidata_music_graph.py", "scripts/lb_full_scan.py", "cloud-runtime/src/index.ts", "cloud-runtime/src/queue-metrics.ts"],
+      "gate": "Single heavy job, explicit free-disk minimum, RSS/disk/network/object metrics, bounded pagination, and resumable or measured reread behavior."
+    },
+    {
+      "rank": 14,
+      "id": "OSS_AND_COMPETITIVE_FOCUS",
+      "priority": "P2",
+      "decision": "RETAIN_FOUNDATION_AVOID_PLATFORM_CHURN",
+      "source_workstream_ids": ["A15", "A16"],
+      "finding": "Arrow/PyArrow, DuckDB, and R2 are adequate. Commodity dashboards, CRM, social breadth, and distributed data platforms do not create the moat; consented outcomes plus evidence/PIT semantics do.",
+      "scores": {"MOAT_VALUE": 5, "PRODUCT_VALUE": 4, "DATA_UNIQUENESS": 5, "IMPLEMENTATION_COST": 2, "ONGOING_COST": 2, "LEGAL_RIGHTS_CONFIDENCE": 4, "TIME_TO_VALUE": 4},
+      "evidence": ["docs/oss-platform-adoption-v1.md", "python/festival_bloomberg/lake/catalog.py", "docs/project_manifest.yaml"],
+      "gate": "Adopt a new tool only after output-equivalence and measured runtime/memory wins; pursue licensed partnerships instead of scraping proprietary competitor networks."
+    }
+  ],
+  "explicit_disagreements": [
+    {
+      "topic": "Wikidata live-run severity",
+      "positions": ["A2 found no live-process P0 and recommended not stopping it.", "A13 rejected production acceptance because the parallel path is nonresumable and local disk is constrained."],
+      "coordinator_decision": "Do not stop the launchd-managed run solely for audit findings. Treat any output as provisional and require a corrected rebuild before canonical publication."
+    },
+    {
+      "topic": "ListenBrainz support floor",
+      "positions": ["The existing pilot uses shared support >=3.", "A4 proposed support >=10 and node support >=50 as conservative candidates."],
+      "coordinator_decision": "Reject both as validated Gold thresholds. Preserve >=3 only as Silver exploratory evidence; calibrate Gold with consistent estimators, FDR, and stability tests."
+    },
+    {
+      "topic": "ListenBrainz commercial eligibility",
+      "positions": ["Source licensing is open/CC0.", "A12 considers pseudonymous listener-level outputs a P0 privacy/governance risk."],
+      "coordinator_decision": "Quarantine listener-level rows and serve only artist-level aggregates after privacy and rights review."
+    },
+    {
+      "topic": "82,547 MusicBrainz places as venues",
+      "positions": ["The current canonical table materializes all places as venues.", "A7 supports only 15,253 live-event-used candidates as the initial defensible rail."],
+      "coordinator_decision": "Retain all source places but count venue securities only after typed eligibility and provenance gates."
+    },
+    {
+      "topic": "YouTube verified coverage",
+      "positions": ["The promoted artifact labels every row VERIFIED.", "A9 found zero API-verified rows and 10,607 artists with UC-shaped candidate IDs."],
+      "coordinator_decision": "Reject blanket VERIFIED; reclassify by proof state before API validation."
+    },
+    {
+      "topic": "Ticket pair target",
+      "positions": ["The prior milestone reports about 571 active pairs.", "A8 found only 530 future/onsale pairs using stale Aug 25 evidence."],
+      "coordinator_decision": "Use 530 only as a stale lower-quality snapshot, rebuild from current official status, and require explicit freshness for the 5,000 target."
+    },
+    {
+      "topic": "Private outcome foundation",
+      "positions": ["Existing migrations describe tenant and outcome-vault foundations.", "A10 found no enforced tenant isolation or cryptographic vault boundary."],
+      "coordinator_decision": "Accept the research workflow, reject production security claims, and implement P0 controls before any customer pilot."
+    },
+    {
+      "topic": "New data platform adoption",
+      "positions": ["Iceberg, Polars, Splink, and generic orchestration could reduce engineering work.", "A15 found the current Arrow/DuckDB/R2 foundation adequate and prior generic-tool trials negative."],
+      "coordinator_decision": "Run narrow equivalence benchmarks only; no platform migration until a measured bottleneck exists."
+    }
+  ],
+  "phase_status": [
+    {"phase": 1, "name": "FINISH_WIKIDATA", "status": "RUNNING_PROVISIONAL_AT_REPORT_TIME", "next_gate": "Coordinate with the existing launchd-managed run, preserve all evidence, then correct normalization and rebuild verified canonical Silver; retain spills until verified publication and operator-approved recoverable garbage collection."},
+    {"phase": 2, "name": "IDENTITY_GRAPH_V2", "status": "BLOCKED_BY_PHASE_1_AND_SCHEMA_PARITY", "next_gate": "Provider validators, conflict-preserving assertions, and canonical migration parity."},
+    {"phase": 3, "name": "LISTENBRAINZ_5_PERCENT", "status": "BLOCKED_CORRECTNESS", "next_gate": "Reducer/statistics fixes, clean namespace/checkpoint, interruption/resume proof and resource metrics."},
+    {"phase": 4, "name": "FULL_LISTENBRAINZ", "status": "NOT_AUTHORIZED_BY_GATES", "next_gate": "Phase 3 acceptance only."},
+    {"phase": 5, "name": "AUDIENCE_SECURITY_PRODUCTS", "status": "BLOCKED_BY_PHASE_3", "next_gate": "Rights-cleared artist aggregates and descriptive claim boundaries."},
+    {"phase": 6, "name": "AUDIENCE_AFFINITY_PRODUCT", "status": "BLOCKED_BY_PHASE_3", "next_gate": "Correct estimators, multiplicity/stability evidence, descriptive-only serving."},
+    {"phase": 7, "name": "SCALE_FORWARD_YOUTUBE", "status": "READY_FOR_RECLASSIFICATION_NOT_API_RUN", "next_gate": "Proof-state migration and collision quarantine."},
+    {"phase": 8, "name": "TICKET_TAPE_SCALE", "status": "READY_FOR_OFFICIAL_RAIL_DESIGN", "next_gate": "Serving parity, rights decision, native IDs and freshness counters."},
+    {"phase": 9, "name": "VENUE_SECURITY", "status": "READY_FOR_TYPED_DESIGN", "next_gate": "PLACE/live-venue separation, provider identity ledger and capacity claim semantics."},
+    {"phase": 10, "name": "GOLD_ARTIST_MARKET_V2", "status": "BLOCKED_BY_GEOGRAPHY_AND_IDENTITY", "next_gate": "Canonical market/place dimensions and evidence-backed resolution."},
+    {"phase": 11, "name": "PRIVATE_OUTCOME_FOUNDATION", "status": "RESEARCH_DESIGN_ACCEPTED", "next_gate": "Security/privacy/tenant P0 controls before implementation or pilot."},
+    {"phase": 12, "name": "DATA_MOAT_SCORECARD", "status": "DEFINED_BY_THIS_REPORT", "next_gate": "Implement dataset-level scorecard without a composite artist score."},
+    {"phase": 13, "name": "MVP_BUYER_ACTIONABILITY", "status": "READY_FOR_BOUNDED_TEST", "next_gate": "Two-proposal evidence workflow with no recommendation and explicit missing-evidence actions."},
+    {"phase": 14, "name": "PR_BOUNDARY", "status": "BLOCKED", "next_gate": "Fix exact-head gitleaks false positive, complete scoped corrections/tests, then green CI and split follow-on branches."}
+  ],
+  "pr_57": {
+    "state": "OPEN_DRAFT_MERGEABLE",
+    "head_matches_report": true,
+    "successful_checks": ["node", "python", "cloud-runtime"],
+    "failing_checks": ["security"],
+    "security_failure": {
+      "type": "GITLEAKS_FALSE_POSITIVE",
+      "file": "scripts/acquire_mb_dumps_25k.py",
+      "line": 80,
+      "rule": "generic-api-key",
+      "note": "The matched text is a SQL column assignment identifier, not a credential."
+    }
+  }
+}

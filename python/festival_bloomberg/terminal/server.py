@@ -61,7 +61,7 @@ from ..economics.show_economics_repository import (
     load_show_economics_scenario,
     save_show_economics_scenario,
 )
-from . import storage
+from . import artist_security, storage
 
 STATIC_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
@@ -154,11 +154,13 @@ class TerminalApp:
         conn,
         workspace_conn=None,
         *,
+        artist_security_conn=None,
         deepseek: Any = None,
         llm: Any = None,
     ) -> None:
         self.conn = conn
         self.workspace_conn = workspace_conn if workspace_conn is not None else conn
+        self.artist_security_conn = artist_security_conn
         self.deepseek = deepseek
         self.llm = llm
         # DuckDB connections are not thread-safe; ThreadingHTTPServer serves
@@ -181,8 +183,46 @@ class TerminalApp:
 
         # ---- API --------------------------------------------------------
         if path == "/api/search":
+            limit = int(params.get("limit", 25))
+            if self.artist_security_conn is not None:
+                product_hits = artist_security.search_artists(
+                    self.artist_security_conn, params.get("q", ""), limit
+                )
+                # The buyer flow is artist-first. Fall back to broader entity
+                # search only when the compact 25K product has no artist hit.
+                if product_hits:
+                    return self._ok(product_hits)
             return self._ok(readmodels.search_entities(
-                self.conn, params.get("q", ""), int(params.get("limit", 25))))
+                self.conn, params.get("q", ""), limit))
+        if path == "/api/artist-security/search":
+            if self.artist_security_conn is None:
+                return self._service_unavailable("ARTIST_SECURITY_SERVING_MISSING")
+            return self._ok(artist_security.search_artists(
+                self.artist_security_conn,
+                params.get("q", ""),
+                int(params.get("limit", 25)),
+            ))
+        if path == "/api/artist-security/compare":
+            if self.artist_security_conn is None:
+                return self._service_unavailable("ARTIST_SECURITY_SERVING_MISSING")
+            left = params.get("a")
+            right = params.get("b")
+            if not left or not right:
+                return self._bad_request("compare requires a and b artist keys")
+            comparison = artist_security.compare_artists(
+                self.artist_security_conn, left, right
+            )
+            return self._ok(comparison) if comparison is not None else self._not_found()
+        if path.startswith("/api/artist-security/"):
+            if self.artist_security_conn is None:
+                return self._service_unavailable("ARTIST_SECURITY_SERVING_MISSING")
+            artist_key = unquote(path[len("/api/artist-security/"):])
+            payload = artist_security.get_artist_security(
+                self.artist_security_conn, artist_key
+            )
+            if payload is not None:
+                self._enrich_artist_markets(payload)
+            return self._ok(payload) if payload is not None else self._not_found()
         if path == "/api/tape":
             return self._ok(readmodels.query_tape(
                 self.conn,
@@ -191,6 +231,8 @@ class TerminalApp:
                 activity_type=params.get("activity_type"),
                 limit=int(params.get("limit", 100)),
             ))
+        if path == "/api/monitor":
+            return self._ok(self._monitor())
         if path == "/api/sources":
             return self._ok(readmodels.get_sources(self.conn))
         if path == "/api/status":
@@ -546,6 +588,158 @@ class TerminalApp:
         return self._not_found()
 
     # -- entity sub-routes ------------------------------------------------
+    def _market_forms(self, slug: str) -> tuple[str, str, list[str]]:
+        """Derive evidence-consistent match forms for a slug market key."""
+        s = str(slug).lower()
+        parts = [p for p in s.split("-") if p]
+        city_prefix = " ".join(parts[:-1]) if len(parts) > 1 else s
+        forms = [s, city_prefix, f"{city_prefix}, %", f"{city_prefix} (%", f"{city_prefix} %"]
+        return s, city_prefix, forms
+
+    def _enrich_artist_markets(self, payload: dict[str, Any]) -> None:
+        """Join per-market forward evidence (serving snapshot) into the artist
+        security market rows. Only real forward observations are used; markets
+        with none keep UNKNOWN instead of a fabricated zero."""
+        markets = (payload.get("markets") or {}).get("items") or []
+        if not markets or self.conn is None:
+            return
+        artist_name = (payload.get("artist") or {}).get("name")
+        if not artist_name:
+            return
+        for m in markets:
+            slug = m.get("market_key") or m.get("market") or m.get("market_name")
+            if not slug:
+                continue
+            s, city_prefix, _forms = self._market_forms(slug)
+            try:
+                row = self.conn.execute(
+                    """
+                    SELECT count(*), min(event_date)
+                    FROM flywheel.forward_watch_events
+                    WHERE lower(artist_name) = ?
+                      AND (lower(market) = ? OR lower(market) LIKE ? || ' (%'
+                           OR lower(market) LIKE ? || ', %' OR lower(market) LIKE ? || ' %')
+                      AND event_date >= CURRENT_DATE
+                    """,
+                    [artist_name.lower(), s, city_prefix, city_prefix, city_prefix],
+                ).fetchone()
+            except Exception:
+                row = None
+            if row and row[0]:
+                m["future_events"] = int(row[0])
+                m["next_event_date"] = str(row[1])[:10] if row[1] else None
+            next_row = None
+            try:
+                next_row = self.conn.execute(
+                    """
+                    SELECT event_date, venue_name FROM flywheel.forward_watch_events
+                    WHERE lower(artist_name) = ?
+                      AND (lower(market) = ? OR lower(market) LIKE ? || ' (%'
+                           OR lower(market) LIKE ? || ', %' OR lower(market) LIKE ? || ' %')
+                      AND event_date >= CURRENT_DATE ORDER BY event_date LIMIT 1
+                    """,
+                    [artist_name.lower(), s, city_prefix, city_prefix, city_prefix],
+                ).fetchone()
+            except Exception:
+                next_row = None
+            if next_row:
+                m["next_event"] = {"date": str(next_row[0])[:10], "venue": next_row[1]}
+
+    def _monitor(self) -> dict[str, Any]:
+        """Buyer monitor read model for TODAY: real watched/shortlisted state,
+        upcoming forward events for those artists, and observed attention
+        movement — no synthetic trending."""
+        out: dict[str, Any] = {"contract_version": "terminal_monitor_v1"}
+        watched: list[dict[str, Any]] = []
+        try:
+            from ..product.workflow import list_watchlists, list_watchlist_items
+            for wl in list_watchlists(self.workspace_conn):
+                for item in list_watchlist_items(self.workspace_conn, wl["watchlist_key"]):
+                    if item.get("entity_type") == "ARTIST":
+                        watched.append({
+                            "artist_key": item.get("entity_key"),
+                            "artist_name": item.get("entity_name"),
+                            "watchlist": wl.get("name"),
+                        })
+        except Exception:
+            pass
+        shortlisted: list[dict[str, Any]] = []
+        try:
+            from ..planning import repository as planning_repo
+            for project in planning_repo.list_projects(self.workspace_conn):
+                for s in planning_repo.list_shortlists(self.workspace_conn, project["project_key"]):
+                    if str(s.get("status") or "").upper() in ("SHORTLIST", "CANDIDATE", "UNDER_REVIEW"):
+                        shortlisted.append({
+                            "artist_key": s.get("artist_key"),
+                            "artist_name": s.get("artist_name"),
+                            "project": project.get("name"),
+                            "project_key": project.get("project_key"),
+                            "status": s.get("status"),
+                        })
+        except Exception:
+            pass
+        out["watched"] = watched[:40]
+        out["shortlisted"] = shortlisted[:40]
+
+        # Upcoming forward events for watched + shortlisted artist names.
+        names = sorted({
+            str(i.get("artist_name") or "").lower()
+            for i in (out["watched"] + out["shortlisted"]) if i.get("artist_name")
+        })
+        upcoming: list[dict[str, Any]] = []
+        if names and self.conn is not None:
+            try:
+                rows = self.conn.execute(
+                    """
+                    SELECT artist_name, venue_name, market, event_date, event_status
+                    FROM flywheel.forward_watch_events
+                    WHERE lower(artist_name) IN (?) AND event_date >= CURRENT_DATE
+                    ORDER BY event_date LIMIT 60
+                    """,
+                    [names],
+                ).fetchall()
+                upcoming = [
+                    {"artist_name": r[0], "venue": r[1], "market": r[2],
+                     "date": str(r[3])[:10], "status": r[4]} for r in rows
+                ]
+            except Exception:
+                upcoming = []
+        out["upcoming"] = upcoming
+
+        # Observed attention movement: artists with a prior observation of the
+        # same weekly metric whose value actually changed.
+        movers: list[dict[str, Any]] = []
+        if self.artist_security_conn is not None:
+            try:
+                rows = self.artist_security_conn.execute(
+                    """
+                    WITH pairs AS (
+                        SELECT artist_key, metric_kind, period_end, value_sum,
+                               (period_end - period_start) AS span,
+                               LAG(value_sum) OVER (
+                                   PARTITION BY artist_key, metric_kind, (period_end - period_start)
+                                   ORDER BY period_end
+                               ) AS prior_value
+                        FROM attention_observations
+                        WHERE metric_kind = 'LISTENBRAINZ_LISTEN_COUNT' AND value_sum IS NOT NULL
+                          AND period_end IS NOT NULL AND period_start IS NOT NULL
+                    )
+                    SELECT p.artist_key, a.name, p.period_end, p.value_sum, p.prior_value,
+                           p.value_sum - p.prior_value AS change
+                    FROM pairs p JOIN artists a USING (artist_key)
+                    WHERE p.prior_value IS NOT NULL AND p.value_sum <> p.prior_value
+                    ORDER BY abs(p.value_sum - p.prior_value) DESC LIMIT 15
+                    """
+                ).fetchall()
+                movers = [
+                    {"artist_key": r[0], "artist_name": r[1], "as_of": str(r[2])[:10],
+                     "value": r[3], "prior": r[4], "change": r[5]} for r in rows
+                ]
+            except Exception:
+                movers = []
+        out["attention_movers"] = movers
+        return out
+
     def _entity_artist(self, entity_id: str, sub: str | None) -> dict[str, Any]:
         artist = readmodels.get_artist(self.conn, entity_id)
         if artist is None:
@@ -590,6 +784,17 @@ class TerminalApp:
         market = readmodels.get_market(self.conn, entity_id)
         if market is None:
             return self._not_found()
+        # Resolve upcoming artist names to 25K artist keys so the market page
+        # links into Artist Security like every other entity reference.
+        if self.artist_security_conn is not None:
+            for row in market.get("upcoming", []):
+                name = row.get("artist_name")
+                if not name:
+                    continue
+                hits = artist_security.search_artists(self.artist_security_conn, name, 1)
+                if hits:
+                    row["artist_key"] = hits[0].get("entity_id")
+                    row["artist_name"] = hits[0].get("name") or row["artist_name"]
         if sub == "calendar":
             return self._ok(market["upcoming"])
         if sub == "profile":
@@ -608,7 +813,7 @@ class TerminalApp:
         ctype = "text/html" if fp.endswith(".html") else "text/css" if fp.endswith(".css") else "application/javascript"
         with open(fp, "rb") as fh:
             data = fh.read()
-        return {"status": 200, "headers": {"Content-Type": ctype}, "body": data}
+        return {"status": 200, "headers": {"Content-Type": ctype, "Cache-Control": "no-store"}, "body": data}
 
     def _not_found(self) -> dict[str, Any]:
         return {"status": 404, "headers": {"Content-Type": "application/json"},
@@ -620,6 +825,10 @@ class TerminalApp:
 
     def _bad_request(self, message: str) -> dict[str, Any]:
         return {"status": 400, "headers": {"Content-Type": "application/json"},
+                "body": _json({"error": message})}
+
+    def _service_unavailable(self, message: str) -> dict[str, Any]:
+        return {"status": 503, "headers": {"Content-Type": "application/json"},
                 "body": _json({"error": message})}
 
 
@@ -654,6 +863,7 @@ class _Handler(BaseHTTPRequestHandler):
 def make_app(
     serving_db: str = storage.SERVING_DIR,
     workspace_db: str = storage.WORKSPACE_DEFAULT_DB,
+    artist_security_db: str = artist_security.DEFAULT_PRODUCT_DB,
 ) -> TerminalApp:
     """Build the terminal from a serving snapshot + workspace sidecar.
 
@@ -663,11 +873,21 @@ def make_app(
     load_local_env()
     serving_conn = storage.open_serving_snapshot(serving_db)
     workspace_conn = storage.create_workspace_db(workspace_db)
+    security_conn = None
+    if os.path.isfile(artist_security_db):
+        security_conn = artist_security.open_product_db(artist_security_db)
     deepseek = DeepSeekAskClient(api_key=os.environ.get("DEEPSEEK_API_KEY"))
     llm = NimClient()          # NVIDIA NIM (fail-closed without a key)
-    app = TerminalApp(serving_conn, workspace_conn, deepseek=deepseek, llm=llm)
+    app = TerminalApp(
+        serving_conn,
+        workspace_conn,
+        artist_security_conn=security_conn,
+        deepseek=deepseek,
+        llm=llm,
+    )
     app._serving_conn = serving_conn
     app._workspace_conn = workspace_conn
+    app._artist_security_conn = security_conn
     return app
 
 
@@ -688,8 +908,12 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--serving-db", default=storage.SERVING_DIR)
     parser.add_argument("--workspace-db", default=storage.WORKSPACE_DEFAULT_DB)
+    parser.add_argument("--artist-security-db", default=artist_security.DEFAULT_PRODUCT_DB)
     args = parser.parse_args()
-    serve(make_app(args.serving_db, args.workspace_db), args.port)
+    serve(
+        make_app(args.serving_db, args.workspace_db, args.artist_security_db),
+        args.port,
+    )
 
 
 if __name__ == "__main__":

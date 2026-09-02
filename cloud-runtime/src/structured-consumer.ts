@@ -1,6 +1,10 @@
+import { writeQueueBatchMetric } from "./queue-metrics";
+import { extractTicketmasterEventId } from "./forward-planner";
+
 interface StructuredEnv {
   RAW_BUCKET: R2Bucket;
   LAKE_BUCKET: R2Bucket;
+  BACKUP_BUCKET: R2Bucket;
   TICKETMASTER_API_KEY: string;
   SOFTWARE_VERSION: string;
 }
@@ -20,12 +24,21 @@ async function sha256(text: string): Promise<string> {
 }
 
 export async function handleStructuredBatch(batch: MessageBatch<TicketTask>, env: StructuredEnv): Promise<void> {
+  let acked = 0;
+  let retried = 0;
   for (const msg of batch.messages) {
     const task = msg.body;
     try {
+      const id = extractTicketmasterEventId({ provider_event_id: task.provider_event_id, marketplace_event_url: task.target_url });
+      if (!id) {
+        // This payload can never succeed, so retrying only creates a poison
+        // message and burns the queue retry/DLQ budget.
+        console.error(JSON.stringify({ event: "STRUCTURED_TASK_TERMINAL_FAILURE", task_key: task.task_key || null, event_key: task.event_key, error: "provider event id required" }));
+        msg.ack();
+        acked++;
+        continue;
+      }
       if (!env.TICKETMASTER_API_KEY) throw new Error("TICKETMASTER_API_KEY not configured");
-      const id = task.provider_event_id || task.target_url?.match(/event\/([^/?]+)/i)?.[1];
-      if (!id) throw new Error("provider event id required");
       const response = await fetch(`https://app.ticketmaster.com/discovery/v2/events/${encodeURIComponent(id)}.json?apikey=${encodeURIComponent(env.TICKETMASTER_API_KEY)}`);
       const raw = await response.text();
       if (!response.ok) {
@@ -33,6 +46,7 @@ export async function handleStructuredBatch(batch: MessageBatch<TicketTask>, env
         if (response.status === 400 || response.status === 401 || response.status === 403 || response.status === 404) {
           console.error(JSON.stringify({ event: "STRUCTURED_TASK_TERMINAL_FAILURE", task_key: task.task_key || null, event_key: task.event_key, error: detail }));
           msg.ack();
+          acked++;
           continue;
         }
         throw new Error(detail);
@@ -67,9 +81,12 @@ export async function handleStructuredBatch(batch: MessageBatch<TicketTask>, env
       await env.LAKE_BUCKET.put(key, JSON.stringify(observation), { httpMetadata: { contentType: "application/json" } });
       console.log(JSON.stringify({ event: "STRUCTURED_TASK_COMPLETED", task_key: task.task_key || null, event_key: task.event_key, raw_key: rawKey, staging_key: key, source: "TICKETMASTER_API" }));
       msg.ack();
+      acked++;
     } catch (error) {
       console.error(JSON.stringify({ event: "STRUCTURED_TASK_ERROR", task_key: task.task_key || null, error: error instanceof Error ? error.message : String(error) }));
       msg.retry();
+      retried++;
     }
   }
+  await writeQueueBatchMetric(env, { queue: batch.queue, received: batch.messages.length, acked, retried, explicit_dlq: 0 }).catch((metricError) => console.error(JSON.stringify({ event: "QUEUE_METRIC_WRITE_ERROR", queue: batch.queue, error: metricError instanceof Error ? metricError.message : String(metricError) })));
 }

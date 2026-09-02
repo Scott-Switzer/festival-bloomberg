@@ -14,6 +14,8 @@ architecture:
   flywheel: "python/festival_bloomberg/flywheel/"
   festival_spine: "python/festival_bloomberg/festivals/ (core.festival_*)"
   terminal: "python/festival_bloomberg/terminal/ + apps/terminal/static/"
+  cloud_runtime: "cloud-runtime/ (Cloudflare Worker + six production Queues + R2 evidence)"
+  data_lake: "python/festival_bloomberg/lake/ + scripts/lb_*.py + scripts/build_*_graph.py"
   config: "python/festival_bloomberg/localenv.py + config.py"
 
 semantics:
@@ -48,6 +50,10 @@ milestones:
   VENUE_CONFIGURATION_AND_CAPACITY_EVIDENCE_V1: "PARTIAL (5 venues enriched from Wikidata P1083; 9 MAX_PERSONS claims; 0 configuration-specific capacity; workbench-safe prefill = 0; MSG has 5 conflicting claims preserved; Wikipedia infobox + OSM deferred)"
   VENUE_CONFIGURATION_CAPACITY_V2: "PASS (PR #42; mwparserfromhell infobox parser replaces fuzzy search; QID->sitelink->exact-page route; 52 claims across 28 venues incl. SEATED x8 + CONCERT + SPORTS x6; 8 workbench-safe venue-configuration prefills vs 0 in V1 (MSG CONCERT 22,000 correctly blocked: CROSS_KIND_CONTRADICTION vs MAX 20,789); one shared assess_venue_claims contract across production capacity_prefill/acquisition/tests; raw/parser metadata preserved; fixed br-concatenation + DuckDB ADD-COLUMN index defects; OSM low-yield)"
   MARKET_COMPETITIVE_CALENDAR_V1: "PASS_MEASURED (full public live-event calendar: Ticketmaster sweep across Music+Sports+Arts&Theatre+Family+Film+Miscellaneous with raw classification IDs preserved; 108 partitions 90 COMPLETE/18 SPLIT/0 truncated, 872 requests, 18,818 snapshots; PIT tri-state known/post/unknown via two-pass acquisition + earliest knowledge_time; explainable competitive-calendar panel in BUILD workspace with distance buckets 5/10/25/50mi, segment split windows, no competition score; 18.3% of music targets have same-day non-music competitors and 55% see +-3d context change from non-music — information lift over music-only = PASS)"
+  ARTIST_SECURITY_25000_DATA_ESTATE_V1: "PARTIAL_DATA_READY (25,000-artist governed estate; 13,925 YouTube identities and 27,322 artist-market links; cloud schedule promotion and deeper validation remain separate gates)"
+  TALENT_BUYER_TERMINAL_V1: "PASS (compact 25,000-artist Artist Security product; SEARCH -> ARTIST SECURITY -> UNDERWRITE/COMPARE/SHORTLIST workflow; 25-artist tiered sparse/medium/deep acceptance 252/252 capabilities PASS; P95 search 24ms and Artist Security 41ms in local acceptance; three-artist browser demo + no-winner compare PASS; no booking recommendation or opaque score)"
+  CLOUD_FORWARD_DATA_PLANE_V2: "PARTIAL_LIVE_REPAIRED (production version caa3ccf6-cfbf-4d6d-ae5a-42be70a53157; bounded scheduler, six queues, durable DLQ archival, realtime backlog plus internal lifecycle telemetry, structured native-ID filtering, quota-capped YouTube; persistent aggregate counters and bounded Monid acceptance remain)"
+  R2_DATA_LAKE_PRODUCTIZATION_V1: "PARTIAL_SOURCE_VERIFIED (255.9 GB raw cataloged; MusicBrainz tooling and bounded ListenBrainz pilots validated; Wikidata launchd pass completed 8,241,853,938 lines with provisional Silver outputs; parser/finalizer audit remains before those outputs are authoritative; full ListenBrainz map/reduce remains gated on compatible checkpoint and local capacity)"
 
 providers:
   # status taxonomy: PUBLIC_NO_AUTH | AUTH_CONFIGURED | AUTH_MISSING |
@@ -94,9 +100,12 @@ docs:
   - venue-configuration-capacity-evidence-v1.md
   - venue-configuration-capacity-v2.md
   - market-competitive-calendar-v1.md
+  - cloud-forward-data-plane-v2.md
 
 key_commands:
   context: "PYTHONPATH=python .venv/bin/python -m festival_bloomberg.ops.context_snapshot"
   python_tests: ".venv/bin/python -m pytest tests/python -q"
   oa: "PYTHONPATH=python .venv/bin/python -m festival_bloomberg.oa.data_estate"
   terminal: "PYTHONPATH=python .venv/bin/python -m festival_bloomberg.terminal.server --port 8931"
+  cloud_tests: "cd cloud-runtime && npx wrangler types && npm test && npm run typecheck && npx wrangler types --check"
+  wikidata_status: "tail -n 30 /tmp/r2_checkpoints/wd_graph.log"
