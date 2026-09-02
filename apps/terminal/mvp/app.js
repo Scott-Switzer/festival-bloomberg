@@ -62,6 +62,7 @@ function route() {
   else if (head === "underwrite") renderUnderwrite();
   else if (head === "backtest" && rest.length) renderPIT(rest.join("/").replace(/^show\//, ""));
   else if (head === "backtest") renderBacktest();
+  else if (head === "portfolio") renderPortfolio();
   else if (head === "monitor") renderMonitor();
   else if (head === "compare") renderCompare();
   else if (head === "shortlist") renderShortlist();
@@ -1369,5 +1370,191 @@ document.getElementById("searchInput").addEventListener("keydown", (ev) => {
     if (q.trim()) doSearch(q);
   }
 });
+
+/* ── portfolio / lineup risk + sales pace (decision moat) ── */
+function _moneyCell(v) {
+  if (v == null || v === "") return `<span class="muted">UNKNOWN</span>`;
+  return `<b>$${money(v)}</b>`;
+}
+
+function _pctCell(v) {
+  if (v == null || v === "") return `<span class="muted">UNKNOWN</span>`;
+  const n = Number(v);
+  return Number.isFinite(n) ? (n * 100).toFixed(0) + "%" : esc(v);
+}
+
+function _exposureTable(ex) {
+  const rows = [
+    ["Events in portfolio", ex.events],
+    ["Total guarantee exposure", ex.total_guarantee == null ? `UNKNOWN (${ex.guarantee_known}/${ex.events} known)` : `$${money(ex.total_guarantee)} · ${ex.guarantee_known}/${ex.events} events`],
+    ["Base contribution (buyer scenarios)", ex.base_contribution_sum == null ? `UNKNOWN (${ex.base_contribution_known} known)` : `$${money(ex.base_contribution_sum)} · ${ex.base_contribution_known} events`],
+    ["Downside contribution (buyer scenarios)", ex.downside_contribution_sum == null ? `UNKNOWN (${ex.downside_contribution_known} known)` : `$${money(ex.downside_contribution_sum)} · ${ex.downside_contribution_known} events`],
+    ["Events below breakeven at base", ex.events_below_breakeven_at_base],
+  ];
+  return `<table><tbody>${rows.map(([k, v]) => `<tr><td class="muted">${esc(k)}</td><td><b>${esc(String(v))}</b></td></tr>`).join("")}</tbody></table>
+    <p class="note">${esc("totals sum KNOWN values only; UNKNOWN is never zeroed")}</p>`;
+}
+
+async function renderPortfolio() {
+  setNav("portfolio");
+  view.innerHTML = `<h1>Portfolio / Lineup Risk</h1>
+    <p class="muted">Aggregate your saved decision briefs into portfolio-level guarantee exposure, breakeven exposure and concentration — then stress the book with deterministic re-runs of your own scenarios.</p>
+    <div class="panel">
+      <h3>Lineups (named portfolios)</h3>
+      <div class="form-row"><label>Name</label><input id="lpName" type="text" placeholder="e.g. Summer festival slate"></div>
+      <div class="form-row"><label>Budget (manual)</label><input id="lpBudget" type="text" placeholder="e.g. 250000"></div>
+      <button class="btn primary" id="lpCreate">Create lineup →</button>
+      <div id="lpList" class="empty" style="margin-top:8px">loading…</div>
+      <div id="lpDetail"></div>
+    </div>
+    <div style="height:14px"></div>
+    <div class="panel">
+      <h3>All saved decisions (status ≠ PASSED)</h3>
+      <div id="pfExposure" class="empty">loading…</div>
+      <div id="pfStress" class="empty">loading…</div>
+      <div id="pfConcentration"></div>
+      <div id="pfEvents" class="empty">loading…</div>
+    </div>
+    <div style="height:14px"></div>
+    <div class="panel">
+      <h3>Private sales pace tape</h3>
+      <p class="small muted">Observed ticket snapshots per event (PRIVATE_ONLY). Derived sell-through/ATP are labeled DERIVED and never interpolated.</p>
+      <div class="form-row"><label>Import (paste CSV rows)</label><textarea id="paceCsv" rows="3" placeholder="artist_name,venue_name,event_date,onsale_date,snapshot_at,tickets_sold,tickets_available,capacity,ticket_gross"></textarea></div>
+      <button class="btn" id="paceImport">Import pace snapshots</button>
+      <div id="paceList" class="empty" style="margin-top:8px">loading…</div>
+      <div id="paceDetail"></div>
+    </div>`;
+
+  document.getElementById("lpCreate").onclick = async () => {
+    const name = document.getElementById("lpName").value.trim();
+    if (!name) { toast("lineup needs a name"); return; }
+    try {
+      const lp = await api("/api/portfolio/lineup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, budget: document.getElementById("lpBudget").value.trim() || null }) });
+      toast("lineup created — add decisions to it");
+      loadLineups();
+    } catch (e) { toast(e.message); }
+  };
+
+  document.getElementById("paceImport").onclick = async () => {
+    const text = document.getElementById("paceCsv").value.trim();
+    if (!text) { toast("paste pace CSV rows first"); return; }
+    const lines = text.split(/\r?\n/).filter((l) => l.trim());
+    const rows = lines.map((l) => {
+      const p = l.split(",").map((c) => c.trim());
+      return { artist_name: p[0], venue_name: p[1], event_date: p[2], onsale_date: p[3], snapshot_at: p[4], tickets_sold: p[5], tickets_available: p[6], capacity: p[7], ticket_gross: p[8] };
+    });
+    try {
+      const res = await api("/api/pace/import", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rows }) });
+      toast(`imported ${res.snapshots} snapshots across ${res.events} events (${res.skipped} skipped)`);
+      loadPace();
+    } catch (e) { toast(e.message); }
+  };
+
+  loadLineups();
+  loadPortfolio();
+  loadPace();
+}
+
+async function loadPortfolio() {
+  try {
+    const pf = await api("/api/portfolio");
+    const all = pf.all_decisions || {};
+    const ex = all.exposure || {};
+    document.getElementById("pfExposure").innerHTML = ex.events
+      ? `<h4>Exposure</h4>${_exposureTable(ex)}`
+      : `<div class="empty">No saved decision briefs yet — build an <a href="#/underwrite">Underwrite</a> brief and save it, then return here to see book-level risk.</div>`;
+    const st = all.stress || {};
+    document.getElementById("pfStress").innerHTML = Object.keys(st).length
+      ? `<h4>Deterministic stress (your saved base scenarios, one input changed)</h4>${Object.entries(st).map(([k, s]) => `
+         <div class="alt-card">
+           <b>${esc(k.replace(/_/g, " "))}</b>
+           <div class="small muted">sum contribution: ${s.sum_contribution == null ? "UNKNOWN" : "$" + money(s.sum_contribution)} · ${esc(s.events_stressed)} events stressed · ${esc(s.not_applicable)} not applicable (input UNKNOWN)</div>
+           <p class="note">${esc(s.label)}</p>
+         </div>`).join("")}`
+      : `<div class="empty">No stress rows — stress requires a saved base scenario with the shocked input known.</div>`;
+    const conc = all.concentration || {};
+    const cal = all.calendar || {};
+    document.getElementById("pfConcentration").innerHTML = `<div class="grid cols2">` +
+      `<div class="panel"><h4>Concentration (observed ratios)</h4><table><tbody>` +
+      Object.entries(conc.markets || {}).slice(0, 6).map(([k, v]) => `<tr><td class="muted">${esc(k)}</td><td><b>${esc(v)}</b></td></tr>`).join("") +
+      `<tr><td class="muted">Top-event guarantee share</td><td>${conc.high_guarantee_share == null ? `<span class="muted">UNKNOWN</span>` : _pctCell(String(conc.high_guarantee_share))}</td></tr>` +
+      `</tbody></table></div>` +
+      `<div class="panel"><h4>Calendar + capacity</h4><table><tbody>` +
+      `<tr><td class="muted">Max events in any 30-day window</td><td><b>${esc(cal.max_events_in_30d_window ?? "—")}</b></td></tr>` +
+      Object.entries(conc.capacity_bands || {}).map(([k, v]) => `<tr><td class="muted">Capacity band ${esc(k)}</td><td><b>${esc(v)}</b></td></tr>`).join("") +
+      `</tbody></table></div></div>`;
+    const evs = (all.events || []).slice(0, 30);
+    document.getElementById("pfEvents").innerHTML = evs.length
+      ? `<h4>Events (${esc(all.events.length)} total)</h4><table><thead><tr><th>Artist</th><th>Market</th><th>Date</th><th>Guarantee</th><th>Base contrib</th><th>Downside contrib</th><th>BE sell-through</th><th>Status</th></tr></thead><tbody>` +
+        evs.map((e) => `<tr>
+          <td><a href="#/artist/${encodeURIComponent(e.artist_key || "")}">${esc(e.artist_name || "?")}</a></td>
+          <td class="muted">${esc(e.market || "")}</td><td class="muted">${esc(fmtDate(e.event_date))}</td>
+          <td>${_moneyCell(e.guarantee)}</td><td>${_moneyCell(e.base_contribution)}</td><td>${_moneyCell(e.downside_contribution)}</td>
+          <td>${e.breakeven_sell_through != null ? _pctCell(String(e.breakeven_sell_through))
+              : (e.breakeven_status === "NOT_ACHIEVABLE" ? `<span class="chip unk" title="${esc(e.breakeven_reason || "")}">not achievable at cap</span>` : `<span class="muted">UNKNOWN</span>`)}</td>
+          <td><span class="chip">${esc(e.status || "")}</span></td></tr>`).join("") + `</tbody></table>`
+      : `<div class="empty">No events.</div>`;
+    const lps = pf.lineups || [];
+    if (lps.length) { await loadLineups(); }
+  } catch (e) {
+    document.getElementById("pfExposure").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+
+async function loadLineups() {
+  try {
+    const raw = await api("/api/portfolio");
+    const box = document.getElementById("lpList");
+    if (!raw.lineups.length) {
+      box.innerHTML = `<div class="empty">No lineups yet. Create one, then add decisions from the table below.</div>`;
+      return;
+    }
+    box.innerHTML = raw.lineups.map((l) => `
+      <div class="alt-card">
+        <b>${esc(l.name)}</b> <span class="small muted">${esc(l.member_count)} decisions · budget ${l.budget ? "$" + money(l.budget) : "—"}</span>
+        <button class="btn small" data-lp="${esc(l.lineup_id)}">View risk</button>
+      </div>`).join("");
+    box.querySelectorAll("button[data-lp]").forEach((b) => {
+      b.onclick = async () => {
+        try {
+          const risk = await api("/api/portfolio/lineup/" + encodeURIComponent(b.dataset.lp));
+          document.getElementById("lpDetail").innerHTML = `<div class="alt-card"><b>${esc((raw.lineups.find((x) => x.lineup_id === b.dataset.lp) || {}).name)}</b>${_exposureTable(risk.exposure || {})}</div>`;
+        } catch (e) { toast(e.message); }
+      };
+    });
+  } catch (e) { document.getElementById("lpList").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+
+async function loadPace() {
+  try {
+    const data = await api("/api/pace");
+    const box = document.getElementById("paceList");
+    if (!data.events.length) {
+      box.innerHTML = `<div class="empty">No private pace tape yet. Paste observed snapshots above (one row per snapshot) — or use the <a href="#/backtest">Backtest</a> show-history import for settled outcomes.</div>`;
+      return;
+    }
+    box.innerHTML = data.events.map((e) => `
+      <div class="alt-card">
+        <b>${esc(e.artist_name)}</b> <span class="small muted">${esc(e.event_date)} · ${esc(e.venue_name || "")} · ${esc(e.market || "")}</span>
+        <div class="small muted">${esc(e.snapshot_count)} observed snapshots · latest ${esc(e.latest_snapshot || "")} · ${e.latest_sold == null ? "" : esc(e.latest_sold) + " sold"}</div>
+        <button class="btn small" data-pe="${esc(e.event_id)}">Sales curve</button>
+      </div>`).join("");
+    box.querySelectorAll("button[data-pe]").forEach((b) => {
+      b.onclick = async () => {
+        try {
+          const curve = await api("/api/pace/event/" + encodeURIComponent(b.dataset.pe));
+          const snaps = (curve.snapshots || []).map((s) => `<tr><td class="muted">${esc(s.snapshot_at)}</td><td>${esc(s.days_to_event ?? "")}</td><td>${esc(s.tickets_sold ?? "")}</td><td>${esc(s.tickets_available ?? "")}</td><td>${esc(s.sell_through_derived ?? "UNKNOWN")}</td><td>${esc(s.atp_derived ?? "UNKNOWN")}</td><td class="muted">${esc(s.source || "")}</td></tr>`).join("");
+          const markers = (curve.pace_markers || []).map((m) => `<span class="chip obs" title="${esc(m.basis)}">${esc(m.label)}: ${esc(m.tickets_sold ?? "UNKNOWN")} sold (nearest actual)</span>`).join(" ");
+          document.getElementById("paceDetail").innerHTML =
+            `<div class="alt-card"><b>${esc(curve.event.artist_name)}</b> <span class="small muted">${esc(curve.event.event_date)} · ${esc(curve.event.venue_name || "")} · ${esc(curve.event.market || "")}</span>
+             <p class="note">sell-through and ATP are DERIVED from actual sold+available/gross; pace markers are the nearest ACTUAL observation, never interpolated.</p>
+             ${markers}
+             <table style="margin-top:6px"><thead><tr><th>Snapshot</th><th>Days to event</th><th>Sold</th><th>Available</th><th>Sell-through (derived)</th><th>ATP (derived)</th><th>Source</th></tr></thead><tbody>${snaps || `<tr><td colspan="7" class="muted">no snapshots</td></tr>`}</tbody></table>
+             </div>`;
+        } catch (e) { toast(e.message); }
+      };
+    });
+  } catch (e) { document.getElementById("paceList").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
 
 route();

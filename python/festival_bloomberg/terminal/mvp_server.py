@@ -241,6 +241,46 @@ class MvpTerminalApp:
         if path == "/api/vault" and method == "GET":
             return self._ok(decision_system.outcome_vault_summary(self.workspace_conn))
 
+        # ── decision moat: portfolio / lineup + sales pace tape ──
+        if method == "POST" and body:
+            try:
+                body = json.loads(body.decode("utf-8"))
+            except Exception:
+                body = {}
+        if path == "/api/portfolio" and method == "GET":
+            return self._ok(decision_system.portfolio_surface(self.workspace_conn))
+        if path.startswith("/api/portfolio/lineup/") and method == "GET":
+            lineup_id = unquote(path[len("/api/portfolio/lineup/"):])
+            return self._ok(decision_system.portfolio_risk(self.workspace_conn, lineup_id=lineup_id))
+        if path == "/api/portfolio/lineup" and method == "POST":
+            return self._ok(decision_system.create_lineup(
+                self.workspace_conn, name=str(body.get("name") or "").strip(),
+                budget=body.get("budget"), notes=str(body.get("notes") or "").strip(),
+            ))
+        if path.startswith("/api/portfolio/lineup/") and method == "POST":
+            rest = unquote(path[len("/api/portfolio/lineup/"):])
+            if rest.endswith("/add"):
+                lineup_id = rest[: -len("/add")]
+                ids = body.get("snapshot_ids") or []
+                return self._ok(decision_system.lineup_add(self.workspace_conn, lineup_id, list(ids)))
+            return self._not_found()
+        if path == "/api/pace" and method == "GET":
+            return self._ok({"events": decision_system.list_pace_events(self.workspace_conn)})
+        if path == "/api/pace/import" and method == "POST":
+            rows = body.get("rows") or []
+            return self._ok(decision_system.import_sales_pace(
+                self.workspace_conn, rows=list(rows), source=str(body.get("source") or "customer_export"),
+            ))
+        if path.startswith("/api/pace/event/") and method == "GET":
+            event_id = unquote(path[len("/api/pace/event/"):])
+            result = decision_system.sales_curve(self.workspace_conn, event_id)
+            return self._ok(result) if result is not None else self._not_found()
+        if path == "/api/pace/comps" and method == "GET":
+            return self._ok(decision_system.private_pace_comps(
+                self.workspace_conn, artist_key=params.get("artist_key"),
+                market=params.get("market"), limit=int(params.get("limit", 8)),
+            ))
+
         if path.startswith("/api/artist-security/"):
             artist_key = unquote(path[len("/api/artist-security/"):])
             payload = artist_security.get_artist_security(self.conn, artist_key)

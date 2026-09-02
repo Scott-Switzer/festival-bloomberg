@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import datetime
 from decimal import Decimal
 
 import duckdb
@@ -440,3 +441,111 @@ def test_monitor_baselines_and_deltas(serving, workspace):
     third = decision_system.monitor_changes(serving, workspace, ["mbid::sheeran"])
     deltas = third["artists"][0]["changes"]
     assert any(d["metric"] == "future_events" and d["before"] == 1 and d["after"] == 2 for d in deltas)
+
+
+# ── DECISION MOAT — sales pace tape + portfolio / lineup risk ──────────────
+
+def test_sales_pace_import_and_curve_never_interpolates(workspace):
+    rows = [
+        {"artist_name": "Ed Sheeran", "venue_name": "United Center", "event_date": "2026-06-01",
+         "onsale_date": "2026-01-01", "snapshot_at": "2026-01-02 09:00:00",
+         "tickets_sold": "100", "tickets_available": "900", "capacity": "1000", "ticket_gross": "4500"},
+        {"artist_name": "Ed Sheeran", "venue_name": "United Center", "event_date": "2026-06-01",
+         "onsale_date": "2026-01-01", "snapshot_at": "2026-01-09 09:00:00",
+         "tickets_sold": "300", "tickets_available": "700", "capacity": "1000", "ticket_gross": "13500"},
+        {"artist_name": "Ed Sheeran", "venue_name": "United Center", "event_date": "2026-06-01",
+         "onsale_date": "2026-01-01", "snapshot_at": "2026-05-01 09:00:00",
+         "tickets_sold": "550", "tickets_available": "450", "capacity": "1000", "ticket_gross": "24750"},
+    ]
+    res = decision_system.import_sales_pace(workspace, rows=rows)
+    assert res["events"] == 1 and res["snapshots"] == 3 and res["skipped"] == 0
+    assert res["privacy"] == "PRIVATE_ONLY — sales pace never leaves the workspace"
+    events = decision_system.list_pace_events(workspace)
+    assert len(events) == 1 and events[0]["snapshot_count"] == 3
+    event_id = events[0]["event_id"]
+    curve = decision_system.sales_curve(workspace, event_id)
+    snaps = curve["snapshots"]
+    assert len(snaps) == 3
+    # Derived sell-through/ATP are labeled DERIVED and computed from observed rows.
+    assert Decimal(snaps[0]["sell_through_derived"].rstrip("%")) == Decimal("10")
+    assert snaps[0]["atp_derived"] == "45"
+    # Days-to-event derived from event date minus snapshot date.
+    assert snaps[0]["days_to_event"] == str((datetime(2026, 6, 1) - datetime(2026, 1, 2)).days)
+    # Pace markers carry the nearest ACTUAL observation with an explicit basis.
+    assert curve["pace_markers"], "expected derived pace markers"
+    assert all(m["basis"] == "NEAREST_OBSERVED_ACTUAL — not interpolated" for m in curve["pace_markers"])
+    # Sparse rows (missing sold or available) never fabricate a sell-through.
+    decision_system.import_sales_pace(
+        workspace, rows=[{"artist_name": "Sparse Artist", "venue_name": "V", "event_date": "2026-07-01",
+                          "onsale_date": "2026-02-01", "snapshot_at": "2026-03-01", "tickets_sold": "10"}]
+    )
+    sparse = decision_system.list_pace_events(workspace)
+    sparse_id = [e for e in sparse if e["artist_name"] == "Sparse Artist"][0]["event_id"]
+    c2 = decision_system.sales_curve(workspace, sparse_id)
+    assert c2["snapshots"][0]["sell_through_derived"] is None
+
+
+def test_sales_pace_comps_require_two_observations(workspace):
+    decision_system.import_sales_pace(workspace, rows=[
+        {"artist_name": "Ed Sheeran", "market": "chicago-il", "venue_name": "United", "event_date": "2026-06-01",
+         "onsale_date": "2026-01-01", "snapshot_at": "2026-01-02", "tickets_sold": "100", "tickets_available": "900"},
+        {"artist_name": "Ed Sheeran", "market": "chicago-il", "venue_name": "United", "event_date": "2026-06-01",
+         "onsale_date": "2026-01-01", "snapshot_at": "2026-01-09", "tickets_sold": "300", "tickets_available": "700"},
+        {"artist_name": "Ed Sheeran", "market": "chicago-il", "venue_name": "Solo Room", "event_date": "2026-08-01",
+         "onsale_date": "2026-02-01", "snapshot_at": "2026-03-01", "tickets_sold": "5", "tickets_available": "45"},
+    ])
+    # Market-scoped comps: only the event with >=2 snapshots qualifies.
+    comps = decision_system.private_pace_comps(workspace, market="chicago-il")
+    assert len(comps) == 1
+    assert comps[0]["snapshot_count"] >= 2
+    # No artist_key is attached until verified identity resolution exists —
+    # matching by raw artist name is intentionally not offered.
+    assert comps[0]["artist_key"] is None
+
+
+def test_portfolio_exposure_concentration_and_stress(serving, workspace):
+    inputs = _inputs()
+    brief_a = decision_system.build_underwrite(serving, workspace, artist_key="mbid::sheeran", market_key="chicago-il", inputs=inputs)
+    snap_a = decision_system.save_decision_snapshot(
+        workspace, artist_key="mbid::sheeran", artist_name="Ed Sheeran",
+        market_key="chicago-il", venue="United", event_date="2026-12-01",
+        inputs=inputs, brief=brief_a, status="INTEREST",
+    )
+    inputs_b = dict(inputs)
+    inputs_b["guarantee"] = "25000"
+    brief_b = decision_system.build_underwrite(serving, workspace, artist_key="mbid::manny", market_key="chicago-il", inputs=inputs_b)
+    snap_b = decision_system.save_decision_snapshot(
+        workspace, artist_key="mbid::manny", artist_name="Barry Manilow",
+        market_key="chicago-il", venue="Chicago Theatre", event_date="2026-12-20",
+        inputs=inputs_b, brief=brief_b, status="RESEARCHING",
+    )
+    risk = decision_system.portfolio_risk(workspace)
+    ex = risk["exposure"]
+    assert ex["events"] == 2
+    assert ex["guarantee_known"] == 2 and ex["guarantee_unknown"] == 0
+    assert Decimal(ex["total_guarantee"]) == Decimal("40000")
+    # KNOWN-only sums: both base scenarios fully specified → 2 known contributions.
+    assert ex["base_contribution_known"] == 2
+    assert ex["downside_contribution_known"] == 2
+    # Concentration: both events in chicago-il; top guarantee share 25000/40000.
+    assert risk["concentration"]["markets"]["chicago-il"] == 2
+    assert risk["concentration"]["high_guarantee_share"] == pytest.approx(0.625)
+    # Calendar clustering: both events inside one 30-day window.
+    assert risk["calendar"]["max_events_in_30d_window"] == 2
+    # Deterministic stress re-runs the engine on saved base scenarios.
+    st = risk["stress"]
+    assert "SELL_THROUGH_MINUS_15PP" in st and st["SELL_THROUGH_MINUS_15PP"]["events_stressed"] == 2
+    assert st["SELL_THROUGH_MINUS_15PP"]["sum_contribution"] is not None
+    assert "USER-DEFINED STRESS" in st["SELL_THROUGH_MINUS_15PP"]["label"]
+    assert "MARKETING_PLUS_15PCT" in st
+    # Lineup subsets the portfolio.
+    lp = decision_system.create_lineup(workspace, name="Chicago run", budget="200000")
+    decision_system.lineup_add(workspace, lp["lineup_id"], [snap_a["snapshot_id"]])
+    lineup_risk = decision_system.portfolio_risk(workspace, lineup_id=lp["lineup_id"])
+    assert lineup_risk["exposure"]["events"] == 1
+    assert Decimal(lineup_risk["exposure"]["total_guarantee"]) == Decimal("15000")
+    lineups = decision_system.list_lineups(workspace)
+    assert len(lineups) == 1 and lineups[0]["member_count"] == 1
+    surface = decision_system.portfolio_surface(workspace)
+    assert surface["all_decisions"]["exposure"]["events"] == 2
+    assert surface["lineups"][0]["risk"]["events"] == 1
