@@ -20,6 +20,7 @@ import json
 import os
 import re
 import threading
+from contextlib import nullcontext
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
@@ -62,6 +63,7 @@ from ..economics.show_economics_repository import (
     save_show_economics_scenario,
 )
 from . import artist_security, storage
+from .connections import CompatibilityRequestLock, wrap_connection
 
 STATIC_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
@@ -158,18 +160,80 @@ class TerminalApp:
         deepseek: Any = None,
         llm: Any = None,
     ) -> None:
-        self.conn = conn
-        self.workspace_conn = workspace_conn if workspace_conn is not None else conn
-        self.artist_security_conn = artist_security_conn
+        # Production callers pass separate file-backed connections.  Each is
+        # wrapped so a request thread owns its own DuckDB connection.  Tests
+        # commonly pass one in-memory connection for both roles; retain a
+        # serialized compatibility mode because that database cannot be opened
+        # by another thread/path.
+        shared_workspace = workspace_conn is None or workspace_conn is conn
+        if shared_workspace:
+            shared = wrap_connection(conn, read_only=False)
+            self.conn = shared
+            self.workspace_conn = shared
+        else:
+            self.conn = wrap_connection(conn, read_only=True)
+            self.workspace_conn = wrap_connection(workspace_conn, read_only=False)
+        self.artist_security_conn = (
+            wrap_connection(artist_security_conn, read_only=True)
+            if artist_security_conn is not None else None
+        )
         self.deepseek = deepseek
         self.llm = llm
-        # DuckDB connections are not thread-safe; ThreadingHTTPServer serves
-        # concurrent requests, so serialize every dispatch on one lock.
-        self._lock = threading.Lock()
+        self._workspace_write_lock = threading.RLock()
+        self._compatibility_lock = CompatibilityRequestLock()
+        self._connections = tuple(
+            dict.fromkeys(
+                connection for connection in (
+                    self.conn, self.workspace_conn, self.artist_security_conn
+                ) if connection is not None
+            )
+        )
+        self._compatibility_mode = any(
+            getattr(connection, "compatibility_mode", False)
+            for connection in self._connections
+        )
 
     def dispatch(self, method: str, path: str, query: str = "", body: bytes = b"") -> dict[str, Any]:
-        with self._lock:
-            return self._dispatch_locked(method, path, query, body)
+        """Dispatch one request without serializing independent file-backed reads.
+
+        File-backed serving reads use thread-local read-only connections.  Only
+        workspace mutation routes take ``_workspace_write_lock``.  The
+        compatibility lock is intentionally limited to injected in-memory
+        fixtures, whose single DuckDB connection cannot be safely shared.
+        """
+        compatibility = self._compatibility_lock if self._compatibility_mode else nullcontext()
+        try:
+            with compatibility:
+                if self._is_workspace_mutation(method, path):
+                    with self._workspace_write_lock:
+                        return self._dispatch_locked(method, path, query, body)
+                return self._dispatch_locked(method, path, query, body)
+        finally:
+            for connection in self._connections:
+                connection.release_current()
+
+    @staticmethod
+    def _is_workspace_mutation(method: str, path: str) -> bool:
+        if method not in {"POST", "PUT", "PATCH", "DELETE"}:
+            return False
+        if path == "/api/watchlists" or path.startswith("/api/watchlists/"):
+            return True
+        if path in {"/api/planning/projects", "/api/planning/seed"}:
+            return method == "POST"
+        if not path.startswith("/api/planning/projects/"):
+            return False
+        segments = path[len("/api/planning/projects/"):].split("/")
+        sub = segments[1] if len(segments) > 1 else None
+        if sub in {"stages", "candidates", "shortlist", "scenarios", "proposed-shows"}:
+            return method == "POST"
+        # Economics calculate/compare/prefill are read-only computations even
+        # though calculate/compare use POST; saving a scenario is a mutation.
+        return sub == "economics" and len(segments) == 2 and method == "POST"
+
+    def close(self) -> None:
+        """Close all owned terminal connections."""
+        for connection in self._connections:
+            connection.close()
 
     def _dispatch_locked(self, method: str, path: str, query: str = "", body: bytes = b"") -> dict[str, Any]:
         parts = [unquote(p) for p in path.split("/") if p]
