@@ -51,7 +51,7 @@ function setNav(active) {
 }
 
 function route() {
-  const raw = location.hash.replace(/^#\/?/, "");
+  const raw = location.hash.replace(/^#\/?/, "").split("?")[0];
   const parts = raw.split("/").map(decodeURIComponent).filter((p) => p.length);
   if (!parts.length) { renderHome(); return; }
   const [head, ...rest] = parts;
@@ -88,8 +88,8 @@ async function renderHome() {
     const c = cov.counts || {};
     const rows = Object.entries({
       "Artists in universe": c.artists, "Search terms": c.artist_search_terms,
-      "Audience peer edges": c.peers, "Artists with peers": c.artists_with_peers,
-      "Market links": c.markets, "Live events": c.event_history,
+      "Audience peer edges": c.artist_peers, "Artists with peers": c.artists_with_peers,
+      "Market links": c.artist_markets, "Live events": c.event_history,
       "Festival appearances": c.festival_appearances, "Attention observations": c.attention_observations,
       "Forward/provider events": c.future_events, "External IDs": c.artist_external_ids,
     });
@@ -200,7 +200,7 @@ async function renderArtist(key) {
   <div style="height:14px"></div>
   <div class="grid cols2">
     <div class="panel"><h3>Audience peers ${statusChip(p.peers.status)}</h3><div id="peersBox"></div><p class="note">${esc(p.peers.note || "")}</p></div>
-    <div class="panel"><h3>Alternatives ${statusChip(p.alternatives.status)}</h3><div id="altsBox"></div><p class="note">${esc(p.alternatives.note || "")}</p></div>
+    <div class="panel"><h3>Alternatives ${statusChip(p.alternatives.status)}</h3><div id="altsBox" data-subject="${esc(a.artist_key)}"></div><p class="note">${esc(p.alternatives.note || "")}</p></div>
   </div>
   <div style="height:14px"></div>
   <div class="grid cols2">
@@ -488,7 +488,18 @@ async function renderCompare() {
       document.getElementById("cmpOut").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
     }
   };
-  if (compareDraft.length === 2 && compareDraft[0] && compareDraft[1]) loadCompare();
+  // Deep-link support: #/compare?a=<key>&b=<key> seeds both slots.
+  const qp = new URLSearchParams(location.hash.split("?")[1] || "");
+  const deepA = qp.get("a");
+  const deepB = qp.get("b");
+  if (deepA && deepB) {
+    compareDraft = [deepA, deepB];
+    document.getElementById("cmpA").value = deepA;
+    document.getElementById("cmpB").value = deepB;
+    loadCompare();
+  } else if (compareDraft.length === 2 && compareDraft[0] && compareDraft[1]) {
+    loadCompare();
+  }
 }
 
 function renderComparison(c) {
@@ -504,7 +515,7 @@ function renderComparison(c) {
     ["Tier", s.identity && s.identity.tier],
     ["Live events", s.historical_events],
     ["Festival appearances", s.festival_appearances],
-    ["Markets", (s.strongest_markets || []).length],
+    ["Markets", s.market_count == null ? (s.strongest_markets || []).length : s.market_count],
     ["Forward events", s.future_events],
     ["Advertised ticket ranges", s.current_ticket_ranges],
     ["Audience peers", s.audience_peers],
@@ -522,8 +533,16 @@ function renderComparison(c) {
         </div>`).join("")}
       <p class="note">${esc(c.note || "")}</p>
     </div></div>`;
+  function fmtMarket(m) {
+    if (!m || typeof m !== "object") return "";
+    const name = m.market_key || m.market_name || "";
+    const shows = m.historical_shows != null ? `${m.historical_shows} shows` : "";
+    const lastPlay = m.last_play ? ` · last ${String(m.last_play).slice(0, 10)}` : "";
+    return [name, shows, lastPlay].filter(Boolean).join(" · ");
+  }
   function renderDim(v) {
     if (v == null) return "<span class='muted'>—</span>";
+    if (Array.isArray(v)) return v.map((m) => esc(fmtMarket(m))).join("<br>") || "<span class='muted'>—</span>";
     if (typeof v === "object") return Object.entries(v).map(([k, val]) => `${esc(k)}: ${esc(val == null ? "—" : val)}`).join("<br>");
     return esc(v);
   }
@@ -611,6 +630,14 @@ document.getElementById("searchForm").addEventListener("submit", (ev) => {
   ev.preventDefault();
   const q = document.getElementById("searchInput").value;
   if (q.trim()) doSearch(q);
+});
+
+document.getElementById("searchInput").addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter") {
+    ev.preventDefault();
+    const q = document.getElementById("searchInput").value;
+    if (q.trim()) doSearch(q);
+  }
 });
 
 route();

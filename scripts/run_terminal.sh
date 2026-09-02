@@ -20,6 +20,9 @@
 #   TERMINAL_WORKER_URL   bootstrap base URL (default: deployed worker)
 #   TERMINAL_PORT         server port (default: 8931)
 #   TERMINAL_SKIP_UPDATE  reuse cache even when stale (debug only)
+#   TERMINAL_ADMIN_TOKEN  admin token for the bootstrap endpoint (transient;
+#                         falls back to ADMIN_TOKEN= in $ROOT/.env; never
+#                         printed or written to disk)
 #
 set -euo pipefail
 
@@ -50,8 +53,8 @@ echo "  terminal dir : $TERMINAL_DIR"
 mkdir -p "$TERMINAL_DIR"
 
 # ── Admin token (transient, never printed, never written) ──────────
-ADMIN_TOKEN=""
-if [ -f "$ROOT/.env" ]; then
+ADMIN_TOKEN="${TERMINAL_ADMIN_TOKEN:-}"
+if [ -z "$ADMIN_TOKEN" ] && [ -f "$ROOT/.env" ]; then
   # .env uses NAME=VALUE lines; read only ADMIN_TOKEN.
   ADMIN_TOKEN="$(sed -n 's/^ADMIN_TOKEN=//p' "$ROOT/.env" | head -1)"
 fi
@@ -171,6 +174,7 @@ done
 
 echo "  starting MVP terminal on http://127.0.0.1:$PORT ..."
 cd "$ROOT"
+export PYTHONPATH="$ROOT/python${PYTHONPATH:+:$PYTHONPATH}"
 exec "$PY_BIN" -m festival_bloomberg.terminal.mvp_server \
   --serving-db "$DB_PATH" \
   --current-json "$CURRENT_JSON" \

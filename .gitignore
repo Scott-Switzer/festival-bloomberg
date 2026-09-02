@@ -34,6 +34,7 @@ data/musicbrainz_dumps/
 data/bakeoff/
 # Serving/workspace runtime data
 data/serving/
+serving/
 data/workspace/
 *.db
 *.sqlite
