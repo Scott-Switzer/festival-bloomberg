@@ -175,6 +175,9 @@ class MvpTerminalApp:
 
     @staticmethod
     def _is_workspace_mutation(method: str, path: str) -> bool:
+        # Monitor first-look baselines are persisted even for GET requests.
+        if path == "/api/monitor":
+            return True
         if method not in {"POST", "PUT", "PATCH", "DELETE"}:
             return False
         if path == "/api/shortlist" or path.startswith("/api/shortlist/"):
@@ -182,6 +185,10 @@ class MvpTerminalApp:
         if path in {"/api/underwrite/save", "/api/backtest/commit"}:
             return True
         if path.startswith("/api/decisions/"):
+            return method == "POST"
+        if path == "/api/portfolio/lineup" or path.startswith("/api/portfolio/lineup/"):
+            return method == "POST"
+        if path == "/api/pace/import":
             return method == "POST"
         return False
 

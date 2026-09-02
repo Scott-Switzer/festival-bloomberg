@@ -214,6 +214,11 @@ class TerminalApp:
 
     @staticmethod
     def _is_workspace_mutation(method: str, path: str) -> bool:
+        # Monitor baselines are intentionally persisted on GET. Serializing
+        # this one endpoint prevents two simultaneous first-look requests from
+        # racing their baseline insert/update transaction.
+        if path == "/api/monitor":
+            return True
         if method not in {"POST", "PUT", "PATCH", "DELETE"}:
             return False
         if path == "/api/watchlists" or path.startswith("/api/watchlists/"):
