@@ -1792,3 +1792,605 @@ def model_readiness(workspace: Any, conn: Any) -> dict[str, Any]:
         },
         "note": "with_valid_pit_reconstruction means an actual leakage-safe PIT reconstruction (knowledge_time <= cutoff) PASSED; nothing is counted on resolution alone",
     }
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# DECISION MOAT — SALES PACE TAPE (private, PRIVATE_ONLY)
+#
+# Every pace row is ONE ACTUAL OBSERVATION from a ticketing source snapshot.
+# sold != scanned != attendance; hold != sold; listing != sale. Derived pace
+# points are computed ONLY from actual observations and are labeled DERIVED,
+# never presented as observations. No interpolation is ever shown as data.
+# ────────────────────────────────────────────────────────────────────────────
+
+MOAT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS sales_pace_events (
+    event_id VARCHAR PRIMARY KEY,
+    artist_name VARCHAR,
+    artist_key VARCHAR,
+    venue_name VARCHAR,
+    market VARCHAR,
+    event_date VARCHAR,
+    onsale_date VARCHAR,
+    capacity VARCHAR,
+    source_system VARCHAR,
+    provenance VARCHAR NOT NULL DEFAULT 'OBSERVED_PRIVATE',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS sales_pace_snapshots (
+    snapshot_id VARCHAR PRIMARY KEY,
+    event_id VARCHAR,
+    snapshot_at VARCHAR,
+    days_to_event VARCHAR,
+    tickets_sold VARCHAR,
+    tickets_available VARCHAR,
+    holds VARCHAR,
+    comps VARCHAR,
+    refunded VARCHAR,
+    ticket_gross VARCHAR,
+    source VARCHAR,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS lineups (
+    lineup_id VARCHAR PRIMARY KEY,
+    name VARCHAR,
+    budget VARCHAR,
+    notes VARCHAR,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS lineup_members (
+    lineup_id VARCHAR,
+    snapshot_id VARCHAR,
+    added_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (lineup_id, snapshot_id)
+);
+"""
+
+PACE_SNAPSHOT_FIELDS = {
+    "snapshot_at": "snapshot date/time of the observation",
+    "tickets_sold": "cumulative tickets sold at snapshot",
+    "tickets_available": "still available for sale at snapshot",
+    "holds": "held inventory at snapshot",
+    "comps": "complementary tickets at snapshot",
+    "refunded": "refunded tickets at snapshot",
+    "ticket_gross": "cumulative gross at snapshot",
+}
+
+
+def _ensure_moat_schema(workspace: Any) -> None:
+    try:
+        workspace.execute(MOAT_SCHEMA)
+        workspace.commit()
+    except Exception:
+        workspace.rollback()
+
+
+def _pace_num(value: Any) -> str | None:
+    """Normalize an observed numeric to a decimal string; None stays UNKNOWN."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if text == "":
+        return None
+    text = text.replace(",", "").replace("$", "").replace("%", "")
+    try:
+        return str(Decimal(text))
+    except Exception:
+        return None
+
+
+def _event_id_for(artist: str, venue: str, event_date: str) -> str:
+    key = "|".join([(artist or "").strip().lower(), (venue or "").strip().lower(), (event_date or "").strip()])
+    return "pace_" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:14]
+
+
+def import_sales_pace(workspace: Any, *, rows: list[dict[str, Any]], source: str = "customer_export") -> dict[str, Any]:
+    """Import one row per OBSERVED snapshot. PRIVATE_ONLY, stays in workspace."""
+    import uuid
+    _ensure_moat_schema(workspace)
+    events_seen: set[str] = set()
+    snapshots = 0
+    skipped = 0
+    for row in rows:
+        artist = str(row.get("artist_name") or "").strip()
+        venue = str(row.get("venue_name") or "").strip()
+        event_date = str(row.get("event_date") or "").strip()[:10]
+        snapshot_at = str(row.get("snapshot_at") or "").strip()
+        if not artist or not event_date or not snapshot_at:
+            skipped += 1
+            continue
+        event_id = _event_id_for(artist, venue, event_date)
+        if event_id not in events_seen:
+            workspace.execute(
+                """INSERT OR IGNORE INTO sales_pace_events
+                   (event_id, artist_name, artist_key, venue_name, market, event_date,
+                    onsale_date, capacity, source_system)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                [event_id, artist, row.get("artist_key") or None,
+                 venue or None, row.get("market") or None, event_date,
+                 str(row.get("onsale_date") or "").strip()[:10] or None,
+                 _pace_num(row.get("capacity")), source],
+            )
+            events_seen.add(event_id)
+        days_to_event: str | None = None
+        try:
+            days_to_event = str((datetime.fromisoformat(event_date) - datetime.fromisoformat(snapshot_at[:10])).days)
+        except Exception:
+            days_to_event = None
+        workspace.execute(
+            """INSERT INTO sales_pace_snapshots
+               (snapshot_id, event_id, snapshot_at, days_to_event, tickets_sold,
+                tickets_available, holds, comps, refunded, ticket_gross, source)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ["snap_" + uuid.uuid4().hex[:16], event_id, snapshot_at[:19], days_to_event,
+             _pace_num(row.get("tickets_sold")), _pace_num(row.get("tickets_available")),
+             _pace_num(row.get("holds")), _pace_num(row.get("comps")),
+             _pace_num(row.get("refunded")), _pace_num(row.get("ticket_gross")),
+             str(row.get("source") or source)],
+        )
+        snapshots += 1
+    workspace.commit()
+    return {
+        "events": len(events_seen),
+        "snapshots": snapshots,
+        "skipped": skipped,
+        "privacy": "PRIVATE_ONLY — sales pace never leaves the workspace",
+    }
+
+
+def list_pace_events(workspace: Any) -> list[dict[str, Any]]:
+    _ensure_moat_schema(workspace)
+    return _rows(
+        workspace,
+        """SELECT e.event_id, e.artist_name, e.venue_name, e.market, e.event_date,
+                  e.onsale_date, e.capacity, COUNT(s.snapshot_id) AS snapshot_count,
+                  MAX(s.snapshot_at) AS latest_snapshot, MAX(s.tickets_sold) AS latest_sold
+           FROM sales_pace_events e LEFT JOIN sales_pace_snapshots s USING (event_id)
+           GROUP BY e.event_id, e.artist_name, e.venue_name, e.market, e.event_date,
+                    e.onsale_date, e.capacity
+           ORDER BY e.event_date DESC""",
+    )
+
+
+def _nearest_snapshot(snapshots: list[dict[str, Any]], marker_offset: int) -> dict[str, Any] | None:
+    """Nearest ACTUAL observation to an offset; offset sign is explicit."""
+    best = None
+    best_gap: int | None = None
+    for s in snapshots:
+        if s.get("days_to_event") is None:
+            continue
+        try:
+            gap = abs(int(s["days_to_event"]) - marker_offset)
+        except Exception:
+            continue
+        if best_gap is None or gap < best_gap:
+            best, best_gap = s, gap
+    return best
+
+
+def sales_curve(workspace: Any, event_id: str) -> dict[str, Any] | None:
+    """Ordered actual observations + DERIVED pace markers (never interpolated)."""
+    _ensure_moat_schema(workspace)
+    event = _one(workspace, "SELECT * FROM sales_pace_events WHERE event_id = ?", [event_id])
+    if event is None:
+        return None
+    snaps = _rows(
+        workspace,
+        """SELECT snapshot_id, snapshot_at, days_to_event, tickets_sold, tickets_available,
+                  holds, comps, refunded, ticket_gross, source
+           FROM sales_pace_snapshots WHERE event_id = ?
+           ORDER BY snapshot_at ASC""",
+        [event_id],
+    )
+    enriched: list[dict[str, Any]] = []
+    for s in snaps:
+        sold = s.get("tickets_sold")
+        avail = s.get("tickets_available")
+        gross = s.get("ticket_gross")
+        row = dict(s)
+        row["sell_through_derived"] = None
+        row["atp_derived"] = None
+        try:
+            sold_d, avail_d = Decimal(sold), Decimal(avail)
+            if avail_d >= 0 and sold_d + avail_d > 0:
+                row["sell_through_derived"] = str((sold_d / (sold_d + avail_d)) * Decimal("100")) + "%"
+        except Exception:
+            pass
+        try:
+            if sold and gross:
+                row["atp_derived"] = str(Decimal(gross) / Decimal(sold))
+        except Exception:
+            pass
+        enriched.append(row)
+    markers: list[dict[str, Any]] = []
+    if event.get("onsale_date"):
+        try:
+            onsale = datetime.fromisoformat(str(event["onsale_date"])[:10]).date()
+            event_dt = datetime.fromisoformat(str(event["event_date"])[:10]).date()
+            total = (event_dt - onsale).days
+            for label, offset in [("T+1", 1), ("T+3", 3), ("T+7", 7), ("T+14", 14), ("T+30", 30)]:
+                target = total - offset if total >= 0 else None
+                if target is None or target < 0:
+                    continue
+                near = _nearest_snapshot(enriched, target)
+                if near is not None:
+                    markers.append({
+                        "label": label, "days_to_event_target": target,
+                        "observed_days_to_event": near.get("days_to_event"),
+                        "tickets_sold": near.get("tickets_sold"),
+                        "sell_through_derived": near.get("sell_through_derived"),
+                        "atp_derived": near.get("atp_derived"),
+                        "basis": "NEAREST_OBSERVED_ACTUAL — not interpolated",
+                    })
+        except Exception:
+            pass
+    for label, target in [("30d-to-event", 30), ("14d-to-event", 14), ("7d-to-event", 7)]:
+        near = _nearest_snapshot(enriched, target)
+        if near is not None:
+            markers.append({
+                "label": label, "days_to_event_target": target,
+                "observed_days_to_event": near.get("days_to_event"),
+                "tickets_sold": near.get("tickets_sold"),
+                "sell_through_derived": near.get("sell_through_derived"),
+                "atp_derived": near.get("atp_derived"),
+                "basis": "NEAREST_OBSERVED_ACTUAL — not interpolated",
+            })
+    return {
+        "event": {k: v for k, v in event.items() if k not in ("created_at",)},
+        "snapshots": enriched,
+        "pace_markers": markers,
+        "privacy": "PRIVATE_ONLY",
+    }
+
+
+def private_pace_comps(workspace: Any, *, artist_key: str | None = None,
+                       market: str | None = None, limit: int = 8) -> list[dict[str, Any]]:
+    """Private pace events that share the artist or market and have >=2 observations."""
+    _ensure_moat_schema(workspace)
+    conds: list[str] = []
+    params: list[Any] = []
+    if artist_key:
+        conds.append("e.artist_key = ?")
+        params.append(artist_key)
+    if market:
+        conds.append("e.market = ?")
+        params.append(market)
+    if not conds:
+        return []
+    params.append(limit)
+    sql = (
+        "SELECT e.event_id, e.artist_name, e.artist_key, e.venue_name, e.market, e.event_date, "
+        "e.capacity, COUNT(s.snapshot_id) AS snapshot_count, MAX(s.snapshot_at) AS latest_snapshot "
+        "FROM sales_pace_events e JOIN sales_pace_snapshots s USING (event_id) WHERE "
+        + " OR ".join(conds)
+        + " GROUP BY e.event_id, e.artist_name, e.artist_key, e.venue_name, e.market, "
+        + "e.event_date, e.capacity "
+        + "HAVING COUNT(s.snapshot_id) >= 2 ORDER BY e.event_date DESC LIMIT ?"
+    )
+    return _rows(workspace, sql, params)
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# DECISION MOAT — PORTFOLIO / LINEUP RISK
+#
+# Aggregate saved decision briefs. Every number is a sum of KNOWN values only;
+# events with UNKNOWN values are counted but never silently zeroed. Stress
+# variants re-run the SAME deterministic economics engine on the buyer's own
+# saved base scenario with one explicit input changed and labeled
+# USER-DEFINED STRESS — never probability.
+# ────────────────────────────────────────────────────────────────────────────
+
+def _brief_scenario(brief: dict[str, Any], label: str = "base") -> dict[str, Any] | None:
+    econ = brief.get("economics") or {}
+    scen = (econ.get(label) or {}).get("scenario") or {}
+    return scen or None
+
+
+def _out(brief: dict[str, Any], scenario_label: str, key: str) -> dict[str, Any] | None:
+    item = ((brief.get("economics") or {}).get(scenario_label) or {}).get("outputs") or {}
+    out = item.get(key) or {}
+    if out.get("status") != "KNOWN" or out.get("value") is None:
+        return None
+    return out
+
+
+def _dec(value: Any) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        return Decimal(str(value))
+    except Exception:
+        return None
+
+
+def _guarantee_of(brief: dict[str, Any]) -> Decimal | None:
+    scen = _brief_scenario(brief)
+    if scen:
+        g = ((scen.get("deal") or {}).get("guarantee") or {}).get("value")
+        if g is not None:
+            return _dec(g)
+    assumptions = brief.get("assumptions_entered") or {}
+    return _dec(assumptions.get("guarantee"))
+
+
+def _capacity_band_of(brief: dict[str, Any]) -> str | None:
+    scen = _brief_scenario(brief)
+    if not scen:
+        return None
+    cap = _dec(((scen.get("sellable_capacity") or {}).get("value")))
+    if cap is None:
+        cap = _dec(((scen.get("usable_capacity") or {}).get("value")))
+    if cap is None:
+        return None
+    if cap < 500:
+        return "<500"
+    if cap < 1500:
+        return "500–1,500"
+    if cap < 5000:
+        return "1,500–5,000"
+    return ">5,000"
+
+
+def _stress_evaluation(brief: dict[str, Any], variant: str) -> dict[str, Any] | None:
+    """Re-run the deterministic engine on the saved base scenario with exactly
+    one input changed. Only events whose base scenario is fully lossless and
+    carries the shocked input can be stressed; everything else stays UNKNOWN."""
+    from dataclasses import replace as dc_replace
+    from ..economics.show_economics import scenario_from_dict
+    scen_dict = _brief_scenario(brief)
+    if not scen_dict:
+        return None
+    try:
+        scenario = scenario_from_dict(scen_dict)
+    except Exception:
+        return None
+    try:
+        if variant == "SELL_THROUGH_MINUS_15PP":
+            base_rate = _dec((scen_dict.get("sell_through") or {}).get("value"))
+            if base_rate is None:
+                return None
+            shocked = max(Decimal("0"), base_rate - Decimal("0.15"))
+            scenario = dc_replace(
+                scenario,
+                sell_through=TypedInput(shocked, Provenance.DERIVED,
+                                        evidence_ref="portfolio.stress.v1"),
+            )
+        elif variant == "MARKETING_PLUS_15PCT":
+            costs = scenario.costs
+            marketing = costs.marketing
+            if marketing.value is None or marketing.provenance == Provenance.UNKNOWN:
+                return None
+            shocked = _dec(marketing.value) * Decimal("1.15")
+            scenario = dc_replace(
+                scenario,
+                costs=dc_replace(costs, marketing=TypedInput(
+                    shocked, Provenance.DERIVED, evidence_ref="portfolio.stress.v1")),
+            )
+        else:
+            return None
+    except Exception:
+        return None
+    try:
+        evaluation = evaluate(scenario)
+    except Exception:
+        return None
+    contribution = evaluation.outputs.get("promoter_contribution")
+    base_contribution = _out(brief, "base", "promoter_contribution")
+    out = {"variant": variant}
+    if contribution is not None and contribution.status.value == "KNOWN":
+        out["promoter_contribution"] = str(contribution.value)
+    else:
+        out["promoter_contribution"] = None
+    if base_contribution is not None:
+        out["delta_vs_base"] = str(Decimal(out["promoter_contribution"] or 0) - Decimal(base_contribution["value"])) if out["promoter_contribution"] is not None else None
+    return out
+
+
+def portfolio_risk(workspace: Any, *, lineup_id: str | None = None) -> dict[str, Any]:
+    """Aggregate saved decision briefs into portfolio-level exposure.
+
+    Not a black-box score: totals are KNOWN-only sums, UNKNOWN counts are
+    reported, and concentration/clustering are simple observed ratios.
+    """
+    _ensure_moat_schema(workspace)
+    snaps = list_decision_snapshots(workspace)
+    if lineup_id:
+        members = {
+            r["snapshot_id"] for r in _rows(
+                workspace, "SELECT snapshot_id FROM lineup_members WHERE lineup_id = ?", [lineup_id]
+            )
+        }
+        snaps = [s for s in snaps if s["snapshot_id"] in members]
+    snaps = [s for s in snaps if s.get("status") != "PASSED"]
+
+    events: list[dict[str, Any]] = []
+    guarantee_known: list[Decimal] = []
+    base_contrib_known: list[Decimal] = []
+    down_contrib_known: list[Decimal] = []
+    events_below_breakeven = 0
+    for snap in snaps:
+        brief = snap.get("brief") or {}
+        if not brief:
+            try:
+                raw = _one(workspace, "SELECT brief_json FROM decision_snapshots WHERE snapshot_id = ?", [snap["snapshot_id"]])
+                brief = json.loads((raw or {}).get("brief_json") or "{}") if raw else {}
+            except Exception:
+                brief = {}
+        guarantee = _guarantee_of(brief)
+        cap_band = _capacity_band_of(brief)
+        base_contrib = _out(brief, "base", "promoter_contribution")
+        down_contrib = _out(brief, "downside", "promoter_contribution")
+        base_gross = _out(brief, "base", "gross_ticket_revenue")
+        be_output = (((brief.get("economics") or {}).get("base") or {}).get("outputs") or {}).get("break_even_sell_through") or {}
+        breakeven = _out(brief, "base", "break_even_sell_through")
+        breakeven_status = be_output.get("status")
+        if guarantee is not None:
+            guarantee_known.append(guarantee)
+        if base_contrib is not None:
+            base_contrib_known.append(Decimal(base_contrib["value"]))
+            if base_contrib["value"] is not None and Decimal(base_contrib["value"]) < 0:
+                events_below_breakeven += 1
+        if down_contrib is not None:
+            down_contrib_known.append(Decimal(down_contrib["value"]))
+        guarantee_vs_gross = None
+        if guarantee is not None and base_gross is not None:
+            gross_d = Decimal(base_gross["value"])
+            if gross_d > 0:
+                guarantee_vs_gross = float(guarantee / gross_d)
+        events.append({
+            "snapshot_id": snap["snapshot_id"],
+            "artist_name": snap.get("artist_name"),
+            "artist_key": snap.get("artist_key"),
+            "market": snap.get("market_key"),
+            "venue": snap.get("venue"),
+            "event_date": snap.get("event_date"),
+            "status": snap.get("status"),
+            "guarantee": str(guarantee) if guarantee is not None else None,
+            "capacity_band": cap_band,
+            "base_contribution": base_contrib["value"] if base_contrib else None,
+            "downside_contribution": down_contrib["value"] if down_contrib else None,
+            "breakeven_sell_through": breakeven["value"] if breakeven else None,
+            "breakeven_status": breakeven_status,
+            "breakeven_reason": be_output.get("reason") if breakeven_status != "KNOWN" else None,
+            "guarantee_vs_base_gross": guarantee_vs_gross,
+            "brief": brief,
+        })
+
+    n = len(events)
+    exposure = {
+        "events": n,
+        "total_guarantee": str(sum(guarantee_known)) if guarantee_known else None,
+        "guarantee_known": len(guarantee_known),
+        "guarantee_unknown": n - len(guarantee_known),
+        "base_contribution_sum": str(sum(base_contrib_known)) if base_contrib_known else None,
+        "base_contribution_known": len(base_contrib_known),
+        "downside_contribution_sum": str(sum(down_contrib_known)) if down_contrib_known else None,
+        "downside_contribution_known": len(down_contrib_known),
+        "events_below_breakeven_at_base": events_below_breakeven,
+    }
+
+    # Concentration: simple observed shares — UNKNOWN when data is absent.
+    concentration: dict[str, Any] = {"markets": {}, "capacity_bands": {}, "high_guarantee_share": None, "note": "observed ratios, not a score"}
+    markets: dict[str, int] = {}
+    bands: dict[str, int] = {}
+    for e in events:
+        m = e.get("market") or "UNKNOWN"
+        markets[m] = markets.get(m, 0) + 1
+        b = e.get("capacity_band") or "UNKNOWN"
+        bands[b] = bands.get(b, 0) + 1
+    concentration["markets"] = {k: v for k, v in sorted(markets.items(), key=lambda kv: -kv[1])}
+    concentration["capacity_bands"] = {k: v for k, v in sorted(bands.items(), key=lambda kv: -kv[1])}
+    if guarantee_known:
+        total_g = sum(guarantee_known)
+        if total_g > 0:
+            top = max(guarantee_known)
+            concentration["high_guarantee_share"] = float(top / total_g)
+            concentration["high_guarantee_share_top"] = str(top)
+
+    # Calendar clustering: max events whose dates fall within any 30-day window.
+    dates: list[datetime] = []
+    for e in events:
+        try:
+            dates.append(datetime.fromisoformat(str(e["event_date"])[:10]))
+        except Exception:
+            pass
+    cluster = None
+    if len(dates) >= 2:
+        dates.sort()
+        best = 0
+        for i, d in enumerate(dates):
+            window_end = d + timedelta(days=30)
+            best = max(best, sum(1 for x in dates if d <= x <= window_end))
+        cluster = best
+    calendar: dict[str, Any] = {"max_events_in_30d_window": cluster}
+    if cluster is not None and n > 0:
+        calendar["note"] = f"{cluster} of {n} events fall inside a single 30-day window"
+
+    # Stress: deterministic re-runs on the buyer's own base scenario.
+    stress: dict[str, Any] = {}
+    for variant in ("SELL_THROUGH_MINUS_15PP", "MARKETING_PLUS_15PCT"):
+        contribs: list[Decimal] = []
+        not_applicable = 0
+        per_event: list[dict[str, Any]] = []
+        for e in events:
+            brief = e.get("brief") or {}
+            if not brief:
+                continue
+            result = _stress_evaluation(brief, variant)
+            if result is None or result.get("promoter_contribution") is None:
+                not_applicable += 1
+                continue
+            contribs.append(Decimal(result["promoter_contribution"]))
+            per_event.append({"snapshot_id": e["snapshot_id"], "promoter_contribution": result["promoter_contribution"]})
+        stress[variant] = {
+            "sum_contribution": str(sum(contribs)) if contribs else None,
+            "events_stressed": len(contribs),
+            "not_applicable": not_applicable,
+            "label": "USER-DEFINED STRESS V1 — deterministic re-run of your saved base scenario with one explicit input changed; not a probability",
+            "events": per_event[:50],
+        }
+
+    return {
+        "portfolio": {"lineup_id": lineup_id, "events": n},
+        "events": [{k: v for k, v in e.items() if k != "brief"} for e in events],
+        "exposure": exposure,
+        "concentration": concentration,
+        "calendar": calendar,
+        "stress": stress,
+        "note": "totals sum KNOWN values only; UNKNOWN is never zeroed",
+    }
+
+
+def create_lineup(workspace: Any, *, name: str, budget: str | None = None, notes: str = "") -> dict[str, Any]:
+    import uuid
+    _ensure_moat_schema(workspace)
+    lineup_id = "lineup_" + uuid.uuid4().hex[:12]
+    workspace.execute(
+        "INSERT INTO lineups (lineup_id, name, budget, notes) VALUES (?, ?, ?, ?)",
+        [lineup_id, name, budget, notes],
+    )
+    workspace.commit()
+    return {"lineup_id": lineup_id, "name": name}
+
+
+def lineup_add(workspace: Any, lineup_id: str, snapshot_ids: list[str]) -> dict[str, Any]:
+    _ensure_moat_schema(workspace)
+    added = 0
+    for sid in snapshot_ids:
+        try:
+            workspace.execute(
+                "INSERT OR IGNORE INTO lineup_members (lineup_id, snapshot_id) VALUES (?, ?)",
+                [lineup_id, sid],
+            )
+            added += 1
+        except Exception:
+            pass
+    workspace.commit()
+    return {"lineup_id": lineup_id, "added": added}
+
+
+def list_lineups(workspace: Any) -> list[dict[str, Any]]:
+    _ensure_moat_schema(workspace)
+    return _rows(
+        workspace,
+        """SELECT l.lineup_id, l.name, l.budget, l.notes, l.created_at,
+                  COUNT(m.snapshot_id) AS member_count
+           FROM lineups l LEFT JOIN lineup_members m USING (lineup_id)
+           GROUP BY l.lineup_id, l.name, l.budget, l.notes, l.created_at
+           ORDER BY l.created_at DESC""",
+    )
+
+
+def portfolio_surface(workspace: Any) -> dict[str, Any]:
+    """Full portfolio view: all saved decisions plus each named lineup."""
+    all_risk = portfolio_risk(workspace)
+    lineups: list[dict[str, Any]] = []
+    for lineup in list_lineups(workspace):
+        risk = portfolio_risk(workspace, lineup_id=lineup["lineup_id"])
+        lineup["risk"] = risk.get("exposure")
+        lineups.append(lineup)
+    return {
+        "all_decisions": all_risk,
+        "lineups": lineups,
+        "privacy": "PRIVATE_ONLY — portfolio math runs on your saved briefs in the workspace",
+    }

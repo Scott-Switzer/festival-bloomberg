@@ -1,0 +1,5 @@
+artist_name,venue_name,event_date,onsale_date,snapshot_at,tickets_sold,tickets_available,holds,comps,refunded,ticket_gross,market
+Example Artist,Example Room,2026-09-15,2026-03-01,2026-03-02 09:00,120,880,0,10,0,5400,chicago-il
+Example Artist,Example Room,2026-09-15,2026-03-01,2026-03-09 09:00,310,690,0,10,5,13950,chicago-il
+Example Artist,Example Room,2026-09-15,2026-03-01,2026-04-01 09:00,520,480,0,10,12,23400,chicago-il
+Example Artist,Example Room,2026-09-15,2026-03-01,2026-08-15 09:00,710,290,0,10,18,31950,chicago-il
