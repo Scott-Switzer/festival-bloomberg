@@ -56,6 +56,7 @@ function route() {
   if (!parts.length) { renderHome(); return; }
   const [head, ...rest] = parts;
   if (head === "artist" && rest.length) renderArtist(rest.join("/"));
+  else if (head === "search" && rest.length) doSearch(rest.join(" "));
   else if (head === "market" && rest.length) renderMarket(rest.join("/"));
   else if (head === "markets") renderMarkets();
   else if (head === "compare") renderCompare();
@@ -68,36 +69,85 @@ function route() {
 /* ── home ────────────────────────────────────────────────── */
 async function renderHome() {
   setNav("home");
-  view.innerHTML = `<h1>Artist Security — real evidence, already in R2</h1>
+  view.innerHTML = `<h1>Talent Buyer Terminal</h1>
+    <p class="muted">Real Festival Bloomberg evidence — search an artist, inspect a market, or start the guided demo.</p>
+    <div style="height:12px"></div>
     <div class="grid cols2">
-      <div class="panel" id="coveragePanel"><h3>Coverage</h3><div class="empty">loading…</div></div>
-      <div class="panel"><h3>Start</h3>
-        <p class="muted">Search an artist above, pick a <a href="#/demo">demo artist</a>,
-        or browse <a href="#/markets">markets</a>.</p>
-        <p class="small muted">Every fact on this product carries a source, a scope and a knowledge
-        time. Missing evidence stays <b>UNKNOWN</b> — never a fabricated zero. No artist score is
-        produced; alternatives are explanations, not rankings.</p>
+      <div class="panel hero">
+        <h3>What is happening now?</h3>
+        <div id="nowBox" class="empty">loading…</div>
+      </div>
+      <div class="panel">
+        <h3>What am I evaluating?</h3>
+        <div id="slBox" class="empty">loading…</div>
       </div>
     </div>
     <div style="height:14px"></div>
-    <div class="panel"><h3>Demo artists <a class="small" href="#/demo">see all →</a></h3><div id="demoStrip" class="demo-grid"><div class="empty">loading…</div></div></div>
+    <div class="panel">
+      <h3>Start here — artists with the most evidence <a class="small" href="#/demo">all demo artists →</a></h3>
+      <div id="demoStrip" class="demo-grid"><div class="empty">loading…</div></div>
+      <p class="small muted">Each card shows which evidence families are observed. Click to open the Artist Security page.</p>
+      <div style="height:6px"></div>
+      <a class="btn primary" href="#/demo">START DEMO</a>
+    </div>
     <div style="height:14px"></div>
-    <div class="panel"><h3>Top markets <a class="small" href="#/markets">all markets →</a></h3><div id="marketStrip" class="empty">loading…</div></div>`;
+    <div class="panel"><h3>Browse markets by density <a class="small" href="#/markets">all markets →</a></h3><div id="marketStrip" class="empty">loading…</div></div>
+    <div style="height:14px"></div>
+    <div id="freshLine" class="small muted"></div>`;
+
+  // Freshness — one compact line, not a wall of database counts.
   try {
     const cov = await api("/api/coverage");
     const c = cov.counts || {};
-    const rows = Object.entries({
-      "Artists in universe": c.artists, "Search terms": c.artist_search_terms,
-      "Audience peer edges": c.artist_peers, "Artists with peers": c.artists_with_peers,
-      "Market links": c.artist_markets, "Live events": c.event_history,
-      "Festival appearances": c.festival_appearances, "Attention observations": c.attention_observations,
-      "Forward/provider events": c.future_events, "External IDs": c.artist_external_ids,
+    document.getElementById("freshLine").innerHTML =
+      `<span class="badge">${esc(cov.generation || "")}</span> ` +
+      `${(c.artists ?? 0).toLocaleString()} artists · ${(c.event_history ?? 0).toLocaleString()} live events · ` +
+      `${(c.artist_peers ?? 0).toLocaleString()} audience peer edges · ${(c.future_events ?? 0).toLocaleString()} forward events` +
+      ` · built ${esc(String(cov.built_at || "").slice(0, 10))} · ${esc(cov.validation_status || "")}` +
+      ` — <span class="muted">UNKNOWN ≠ 0 · audience sample ≠ total fans</span>`;
+  } catch (e) { document.getElementById("freshLine").innerHTML = `<span class="empty">${esc(e.message)}</span>`; }
+
+  // Now strip: upcoming forward shows + recent live activity.
+  try {
+    const n = await api("/api/now");
+    const box = document.getElementById("nowBox");
+    const up = (n.upcoming || []).map((r) => `
+      <div class="now-row" data-k="${esc(r.artist_key)}">
+        <b>${esc(r.artist_name)}</b> · <span class="muted">${esc(fmtDate(r.event_date))}${r.venue_city ? " · " + esc(r.venue_city) : ""}</span>
+        <span class="chip ${r.event_status === "onsale" ? "obs" : "unk"}">${esc(r.event_status || "listed")}</span>
+      </div>`).join("");
+    const rec = (n.recent || []).map((r) => `
+      <div class="now-row" data-k="${esc(r.artist_key)}">
+        <b>${esc(r.artist_name)}</b> · <span class="muted">${esc(fmtDate(r.event_date))} · ${esc(r.event_name || "").slice(0, 46)}</span>
+      </div>`).join("");
+    box.innerHTML =
+      (up ? `<div class="small" style="margin-bottom:6px">Upcoming shows (provider-listed, not sales)</div>${up}` : "") +
+      (rec ? `<div class="small" style="margin:10px 0 6px">Recent observed live activity</div>${rec}` : "");
+    if (!up && !rec) box.innerHTML = `<div class="empty">No forward or recent activity in this generation.</div>`;
+    box.querySelectorAll(".now-row").forEach((el) => {
+      el.onclick = () => location.hash = "#/artist/" + encodeURIComponent(el.dataset.k);
     });
-    document.getElementById("coveragePanel").innerHTML =
-      "<h3>Coverage <span class='badge'>" + esc(cov.generation || "") + "</span></h3>" +
-      `<table>${rows.map(([k, v]) => `<tr><td>${esc(k)}</td><td style="text-align:right">${(v ?? 0).toLocaleString()}</td></tr>`).join("")}</table>` +
-      `<p class="small muted">${esc((cov.built_at || "").slice(0, 19))} · ${esc(cov.validation_status || "")}</p>`;
-  } catch (e) { document.getElementById("coveragePanel").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  } catch (e) { document.getElementById("nowBox").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+
+  // Shortlist preview: what am I currently evaluating?
+  try {
+    const sl = await api("/api/shortlist");
+    const box = document.getElementById("slBox");
+    if (!sl.length) {
+      box.innerHTML = `<div class="empty">Nothing yet. Open an artist and hit <b>＋ Shortlist</b>, or <a href="#/shortlist">start a project</a>.</div>`;
+    } else {
+      box.innerHTML = sl.slice(0, 5).map((it) => `
+        <div class="now-row" ${it.artist_key ? `data-k="${esc(it.artist_key)}"` : ""}>
+          <b>${esc(it.name)}</b>${it.market ? ` · <span class="muted">${esc(it.market)}</span>` : ""}
+          ${it.event_date ? `<span class="muted"> · ${esc(fmtDate(it.event_date))}</span>` : ""}
+        </div>`).join("") +
+        `<div style="margin-top:8px"><a class="small" href="#/shortlist">Open shortlist →</a></div>`;
+      box.querySelectorAll(".now-row[data-k]").forEach((el) => {
+        el.onclick = () => location.hash = "#/artist/" + encodeURIComponent(el.dataset.k);
+      });
+    }
+  } catch (e) { document.getElementById("slBox").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+
   try {
     const demo = await api("/api/demo");
     const strip = document.getElementById("demoStrip");
@@ -149,14 +199,27 @@ async function doSearch(q) {
     view.innerHTML = `<h1>Search: ${esc(q)} <span class="badge">${hits.length} hits</span></h1>
       <div class="results">
         ${hits.map((h) => `
-          <div class="result" data-k="${esc(h.entity_id)}">
+          <div class="result" data-k="${esc(h.entity_id)}" data-name="${esc(h.name)}">
             <div><b>${esc(h.name)}</b>
               ${h.tier ? `<span class="badge">${esc(h.tier)}</span>` : ""}</div>
             <div class="meta">${esc(h.mbid ? h.mbid.slice(0, 8) : "")} · ${esc(h.matched_term_type || "canonical name")}</div>
+            <button class="btn small" data-sl>＋ Shortlist</button>
           </div>`).join("")}
       </div>`;
     view.querySelectorAll(".result").forEach((el) => {
-      el.onclick = () => location.hash = "#/artist/" + encodeURIComponent(el.dataset.k);
+      el.onclick = (ev) => {
+        if (ev.target.closest("[data-sl]")) return;
+        location.hash = "#/artist/" + encodeURIComponent(el.dataset.k);
+      };
+    });
+    view.querySelectorAll(".result [data-sl]").forEach((el) => {
+      el.onclick = async () => {
+        const row = el.closest(".result");
+        try {
+          await api("/api/shortlist", { method: "POST", body: JSON.stringify({ name: row.dataset.name, artist_key: row.dataset.k, notes: "added from search" }) });
+          toast("Added " + row.dataset.name + " to shortlist.");
+        } catch (e) { toast(e.message); }
+      };
     });
   } catch (e) { view.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
 }
@@ -267,7 +330,7 @@ function renderPeers(peers) {
   const box = document.getElementById("peersBox");
   if (!box) return;
   if (!peers.items || !peers.items.length) {
-    box.innerHTML = `<div class="empty">${esc(peers.note || "No audience peer evidence.")}</div>`;
+    box.innerHTML = `<div class="empty">No audience peer evidence for this artist.</div>`;
     return;
   }
   box.innerHTML = `<table><thead><tr><th>Peer</th><th>Shared</th><th>Why related</th></tr></thead><tbody>
@@ -295,7 +358,8 @@ function renderAlts(alts) {
     <div class="alt-card">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <b>${esc(alt.artist_name)}</b>
-        <button class="btn small" data-compare="${esc(alt.artist_key)}">Compare</button>
+        <span><button class="btn small" data-sl="${esc(alt.artist_key)}" data-name="${esc(alt.artist_name)}">＋ Shortlist</button>
+        <button class="btn small" data-compare="${esc(alt.artist_key)}">Compare</button></span>
       </div>
       <div class="why">${(alt.reasons || []).map((r) => `<span class="whychip">${esc(r)}</span>`).join("")}</div>
       <div class="small muted" style="margin-top:4px">${esc(alt.source_scope || "")}${alt.knowledge_time ? " · " + esc(String(alt.knowledge_time).slice(0, 10)) : ""}</div>
@@ -305,6 +369,15 @@ function renderAlts(alts) {
       ev.stopPropagation();
       compareDraft = [alts.items[0] && box.dataset.subject, el.dataset.compare].filter(Boolean);
       location.hash = "#/compare";
+    };
+  });
+  box.querySelectorAll("[data-sl]").forEach((el) => {
+    el.onclick = async (ev) => {
+      ev.stopPropagation();
+      try {
+        await api("/api/shortlist", { method: "POST", body: JSON.stringify({ name: el.dataset.name, artist_key: el.dataset.sl, notes: "added from alternatives" }) });
+        toast("Added " + el.dataset.name + " to shortlist.");
+      } catch (e) { toast(e.message); }
     };
   });
 }
@@ -584,8 +657,10 @@ async function renderShortlist() {
       const items = await api("/api/shortlist");
       const box = document.getElementById("slList");
       if (!items.length) { box.innerHTML = `<div class="empty">Shortlist is empty — add candidates from an artist page or above.</div>`; return; }
-      box.innerHTML = `<table><thead><tr><th>Name</th><th>Market</th><th>Date</th><th>Venue / capacity</th><th>Notes</th><th></th></tr></thead><tbody>
+      box.innerHTML = `<div style="margin-bottom:8px"><button class="btn" id="slCompare">Compare selected (2)</button></div>
+        <table><thead><tr><th></th><th>Name</th><th>Market</th><th>Date</th><th>Venue / capacity</th><th>Notes</th><th></th></tr></thead><tbody>
         ${items.map((it) => `<tr>
+          <td><input type="checkbox" class="slPick" data-k="${esc(it.artist_key || "")}"></td>
           <td>${esc(it.name)}${it.artist_key ? `<div class="small"><a href="#/artist/${encodeURIComponent(it.artist_key)}">open artist →</a></div>` : ""}</td>
           <td>${esc(it.market || "—")}</td>
           <td>${esc(fmtDate(it.event_date))}</td>
@@ -593,6 +668,12 @@ async function renderShortlist() {
           <td class="small muted">${esc(it.notes || "—")}</td>
           <td><button class="danger" data-del="${esc(it.id)}">Remove</button></td>
         </tr>`).join("")}</tbody></table>`;
+      const cmpBtn = document.getElementById("slCompare");
+      cmpBtn.onclick = () => {
+        const picked = [...box.querySelectorAll(".slPick:checked")].map((c) => c.dataset.k).filter(Boolean);
+        if (picked.length !== 2) { toast("Select exactly two candidates with linked artists."); return; }
+        location.hash = "#/compare?a=" + encodeURIComponent(picked[0]) + "&b=" + encodeURIComponent(picked[1]);
+      };
       box.querySelectorAll("[data-del]").forEach((el) => {
         el.onclick = async () => {
           try { await api("/api/shortlist/" + encodeURIComponent(el.dataset.del), { method: "DELETE" }); toast("Removed."); loadList(); }
@@ -607,11 +688,43 @@ async function renderShortlist() {
 /* ── demo ────────────────────────────────────────────────── */
 async function renderDemo() {
   setNav("demo");
-  view.innerHTML = `<h1>Demo artists</h1>
-    <p class="muted">Ten real artists with the deepest cross-source evidence in this serving
-    generation — identity, audience peers, markets, live history, festivals, attention and forward
-    evidence. Click any card for the full Artist Security page.</p>
-    <div id="demoGrid" class="demo-grid"><div class="empty">loading…</div></div>`;
+  view.innerHTML = `<h1>Demo</h1>
+    <div class="panel hero" style="margin-bottom:14px">
+      <h3>Guided walkthrough — 3 minutes</h3>
+      <p class="small muted">Follow one real booking question end-to-end. Every step uses actual evidence in this generation.</p>
+      <div id="demoSteps"></div>
+    </div>
+    <div class="panel"><h3>All demo artists</h3>
+      <p class="small muted">Ten real artists with the deepest cross-source evidence — identity, audience peers, markets,
+      live history, festivals, attention and forward evidence. Click any card for the full Artist Security page.</p>
+      <div id="demoGrid" class="demo-grid"><div class="empty">loading…</div></div></div>`;
+  try {
+    const demo = await api("/api/demo");
+    if (demo.length) {
+      const a = demo[0];            // Artist A — Alice Cooper
+      const b = demo[1] || demo[0]; // Artist B — Barry Manilow
+      const steps = [
+        { n: 1, label: "Open Artist A", text: `${a.name} — what do we know?`, go: () => location.hash = "#/artist/" + encodeURIComponent(a.artist_key) },
+        { n: 2, label: "Inspect market + live evidence", text: `Look at ${a.name}'s market footprint, live history and festivals.`, go: () => location.hash = "#/artist/" + encodeURIComponent(a.artist_key) },
+        { n: 3, label: "View evidence-supported alternatives", text: `Why is each alternative related? (shared listeners, markets, festival bills)`, go: () => location.hash = "#/artist/" + encodeURIComponent(a.artist_key) },
+        { n: 4, label: "Compare Artist A vs Artist B", text: `${a.name} vs ${b.name} — audience overlap, markets, live history.`, go: () => location.hash = "#/compare?a=" + encodeURIComponent(a.artist_key) + "&b=" + encodeURIComponent(b.artist_key) },
+        { n: 5, label: "Add Artist B to your shortlist", text: `Save ${b.name} as a candidate, then reload — it persists.`, go: async () => {
+            try {
+              await api("/api/shortlist", { method: "POST", body: JSON.stringify({ name: b.name, artist_key: b.artist_key, notes: "added from guided demo" }) });
+              toast("Added " + b.name + " to shortlist.");
+              location.hash = "#/shortlist";
+            } catch (e) { toast(e.message); }
+          } },
+      ];
+      document.getElementById("demoSteps").innerHTML =
+        `<ol style="margin:6px 0 0;padding-left:20px">` +
+        steps.map((s) => `<li style="margin-bottom:6px"><b>${esc(s.label)}</b> — <span class="muted">${esc(s.text)}</span> <button class="btn small" data-step="${s.n}">Go →</button></li>`).join("") +
+        `</ol>`;
+      document.querySelectorAll("[data-step]").forEach((el) => {
+        el.onclick = () => { const s = steps[Number(el.dataset.step) - 1]; if (s) s.go(); };
+      });
+    }
+  } catch (e) { /* grid below still loads */ }
   try {
     const demo = await api("/api/demo");
     const grid = document.getElementById("demoGrid");
