@@ -245,6 +245,50 @@ export default {
       return Response.json({ error: "unknown artifact type" }, { status: 400 });
     }
 
+    if (url.pathname === "/ops/r2cat" && request.method === "GET") {
+      // Bounded, admin-protected R2 inventory listing (debug only) — returns
+      // keys+sizes under a prefix from the LAKE/RAW/BACKUPS/PRIVATE buckets.
+      // Never returns object bodies.
+      const bucketName = url.searchParams.get("bucket") || "lake";
+      const prefix = url.searchParams.get("prefix") || "";
+      const limit = Math.min(parseInt(url.searchParams.get("limit") || "500", 10), 2000);
+      const buckets: Record<string, R2Bucket | undefined> = {
+        lake: env.LAKE_BUCKET, raw: env.RAW_BUCKET,
+        backups: env.BACKUP_BUCKET, private: env.PRIVATE_BUCKET,
+      };
+      const bucket = buckets[bucketName];
+      if (!bucket) {
+        return Response.json({ error: `unknown bucket '${bucketName}'` }, { status: 400 });
+      }
+      const listing = await bucket.list({ prefix, limit });
+      return Response.json({
+        prefix, truncated: listing.truncated,
+        objects: listing.objects.map((o) => ({ key: o.key, size: o.size, uploaded: o.uploaded })),
+      });
+    }
+
+    if (url.pathname === "/ops/r2get" && request.method === "GET") {
+      // Bounded, admin-protected read of SMALL text objects (debug only) —
+      // manifests, CURRENT pointers, reports. Hard cap at 2 MiB.
+      const key = url.searchParams.get("key") || "";
+      const bucketName = url.searchParams.get("bucket") || "lake";
+      const buckets: Record<string, R2Bucket | undefined> = {
+        lake: env.LAKE_BUCKET, raw: env.RAW_BUCKET,
+        backups: env.BACKUP_BUCKET, private: env.PRIVATE_BUCKET,
+      };
+      const bucket = buckets[bucketName];
+      if (!bucket) return Response.json({ error: `unknown bucket '${bucketName}'` }, { status: 400 });
+      const obj = await bucket.get(key);
+      if (!obj) return Response.json({ error: "not found", key }, { status: 404 });
+      if (obj.size > 2 * 1024 * 1024) {
+        return Response.json({ error: "object too large for /ops/r2get", size: obj.size }, { status: 413 });
+      }
+      const text = await obj.text();
+      return new Response(text, {
+        headers: { "Content-Type": obj.httpMetadata?.contentType || "text/plain" },
+      });
+    }
+
     if (url.pathname === "/ops/health" && request.method === "GET") {
       const universe = await loadV2Universe(env);
       const governorId = env.GOVERNOR.idFromName("acquisition-governor");
