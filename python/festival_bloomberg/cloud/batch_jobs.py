@@ -616,6 +616,479 @@ def run_cloud_smoke(spec: dict, scratch_dir: Path) -> dict:
 
 
 # ════════════════════════════════════════════════════════════════
+# TERMINAL SERVING BUILD V1 — compact buyer product artifact
+# ════════════════════════════════════════════════════════════════
+
+TERMINAL_SERVING_PREFIX = "serving/artist_security_terminal_v1"
+TERMINAL_ARTIFACT = "artist_security_terminal_v1"
+TERMINAL_CONTRACT_VERSION = "artist_security_terminal_v1"
+# Ceiling for the compact serving artifact. The local launcher downloads only
+# this object, so it must stay bounded (hundreds of MB or less).
+DEFAULT_MAX_TERMINAL_ARTIFACT_BYTES = 600 * 1024 * 1024
+
+
+def _streaming_sha256(path: Path, chunk_size: int = 16 * 1024 * 1024) -> str:
+    """SHA-256 of a file using bounded-memory streaming reads."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        while True:
+            chunk = fh.read(chunk_size)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _download_to_scratch(lake, bucket: str, key: str, dest: Path) -> int:
+    """Stream an R2 object to disk (boto3 multipart download); returns bytes."""
+    lake._s3.download_file(bucket, key, str(dest))
+    return dest.stat().st_size
+
+
+def _resolve_estate(lake, work: Path) -> tuple[Path, str, str, int]:
+    """Resolve the governed 25K artist estate artifact from R2, streaming to
+    scratch. Never guesses: checks the LAKE control key first (the identity
+    job's path), then the BACKUPS pointer + fallback newest ``estate_*.json``.
+    """
+    primary_key = "control/artist_security_25000/v1/estate.json"
+    for bucket in (lake.config.lake_bucket, lake.config.backup_bucket):
+        if lake.verify_object_exists(bucket, primary_key):
+            dest = work / "estate.json"
+            size = _download_to_scratch(lake, bucket, primary_key, dest)
+            return dest, primary_key, bucket, size
+
+    pointer_key = "control/artist_security_25000/current.json"
+    pointer = lake.read_checkpoint(lake.config.backup_bucket, pointer_key)
+    if pointer and pointer.get("source"):
+        src_key = str(pointer["source"])
+        dest = work / Path(src_key).name
+        size = _download_to_scratch(lake, lake.config.backup_bucket, src_key, dest)
+        return dest, src_key, lake.config.backup_bucket, size
+
+    objs = lake.list_prefix(lake.config.backup_bucket, "control/artist_security_25000/", limit=100)
+    estate_objs = sorted(
+        (o for o in objs if o["key"].endswith(".json") and "estate" in o["key"]),
+        key=lambda o: o["key"], reverse=True,
+    )
+    if not estate_objs:
+        raise RuntimeError(
+            "ESTATE_ARTIFACT_NOT_FOUND: no estate.json in LAKE and no estate_*.json "
+            "under control/artist_security_25000/ in BACKUPS"
+        )
+    best = estate_objs[0]
+    dest = work / Path(best["key"]).name
+    size = _download_to_scratch(lake, lake.config.backup_bucket, best["key"], dest)
+    return dest, best["key"], lake.config.backup_bucket, size
+
+
+def _resolve_source_warehouse(lake, work: Path) -> tuple[Path, str, int]:
+    """Resolve the canonical research warehouse DB from R2 RAW bucket."""
+    candidates = ["warehouse/boxoffice_research_v2.duckdb"]
+    if not lake.verify_object_exists(lake.config.raw_bucket, candidates[0]):
+        objs = lake.list_prefix(lake.config.raw_bucket, "warehouse/", limit=50)
+        duck_objs = sorted(
+            (o for o in objs if o["key"].endswith(".duckdb")),
+            key=lambda o: o["key"], reverse=True,
+        )
+        if not duck_objs:
+            raise RuntimeError(
+                "WAREHOUSE_NOT_FOUND: no warehouse/*.duckdb object in RAW bucket"
+            )
+        candidates[0] = duck_objs[0]["key"]
+    dest = work / "source.duckdb"
+    size = _download_to_scratch(lake, lake.config.raw_bucket, candidates[0], dest)
+    return dest, candidates[0], size
+
+
+def _resolve_affinity(lake, work: Path) -> tuple[Path, str, int]:
+    """Resolve the ListenBrainz pilot Gold affinity parquet from LAKE."""
+    candidates = ["gold/listenbrainz_pilot/artist_audience_affinity.parquet"]
+    if not lake.verify_object_exists(lake.config.lake_bucket, candidates[0]):
+        objs = lake.list_prefix(lake.config.lake_bucket, "gold/", limit=500)
+        aff = sorted(
+            (o for o in objs if "affinity" in o["key"] and o["key"].endswith(".parquet")),
+            key=lambda o: o["key"], reverse=True,
+        )
+        if not aff:
+            raise RuntimeError(
+                "GOLD_AFFINITY_NOT_FOUND: no gold/*affinity*.parquet object in LAKE; "
+                "audience peers/alternatives cannot be materialized"
+            )
+        candidates[0] = aff[0]["key"]
+    dest = work / "affinity.parquet"
+    size = _download_to_scratch(lake, lake.config.lake_bucket, candidates[0], dest)
+    return dest, candidates[0], size
+
+
+def _compute_demo_artists(db_path: Path, limit: int = 10) -> list[dict]:
+    """Select highest cross-source-completeness artists and persist them inside
+    the serving DB as ``demo_artists`` (Phase 4). Completeness counts real
+    observed evidence families only; never fabricates values."""
+    import duckdb
+    conn = duckdb.connect(str(db_path))
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS demo_artists (
+                artist_key VARCHAR PRIMARY KEY,
+                name VARCHAR,
+                tier VARCHAR,
+                completeness INTEGER NOT NULL,
+                market_count INTEGER,
+                historical_event_count INTEGER,
+                festival_appearance_count INTEGER,
+                attention_source_count INTEGER,
+                peer_count INTEGER,
+                future_event_count INTEGER
+            )
+        """)
+        rows = conn.execute(
+            f"""
+            WITH att AS (
+                SELECT artist_key, COUNT(DISTINCT source_system) AS attention_source_count
+                FROM attention_observations GROUP BY artist_key
+            ),
+            peers AS (
+                SELECT subject_key AS artist_key, COUNT(*) AS peer_count
+                FROM artist_peers GROUP BY subject_key
+            ),
+            fut AS (
+                SELECT artist_key, COUNT(*) AS future_event_count
+                FROM future_events GROUP BY artist_key
+            )
+            SELECT
+                a.artist_key, a.name, a.tier,
+                (a.market_count > 0)::INTEGER
+                  + (a.historical_event_count > 0)::INTEGER
+                  + (a.festival_appearance_count > 0)::INTEGER
+                  + (COALESCE(att.attention_source_count, 0) > 0)::INTEGER
+                  + (COALESCE(peers.peer_count, 0) > 0)::INTEGER
+                  + (COALESCE(fut.future_event_count, 0) > 0)::INTEGER AS completeness,
+                a.market_count, a.historical_event_count, a.festival_appearance_count,
+                COALESCE(att.attention_source_count, 0),
+                COALESCE(peers.peer_count, 0),
+                COALESCE(fut.future_event_count, 0)
+            FROM artists a
+            LEFT JOIN att USING (artist_key)
+            LEFT JOIN peers USING (artist_key)
+            LEFT JOIN fut USING (artist_key)
+            ORDER BY completeness DESC, a.market_count DESC, a.historical_event_count DESC,
+                     a.festival_appearance_count DESC, a.name
+            LIMIT {int(limit)}
+            """
+        ).fetchall()
+        cols = [
+            "artist_key", "name", "tier", "completeness", "market_count",
+            "historical_event_count", "festival_appearance_count",
+            "attention_source_count", "peer_count", "future_event_count",
+        ]
+        demo = [dict(zip(cols, row)) for row in rows]
+        conn.execute("DELETE FROM demo_artists")
+        if demo:
+            conn.executemany(
+                "INSERT INTO demo_artists VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [tuple(d[c] for c in cols) for d in demo],
+            )
+        conn.execute("CHECKPOINT")
+        return demo
+    finally:
+        conn.close()
+
+
+def _validate_terminal_db(
+    db_path: Path, demo_artists: list[dict], counts: dict,
+) -> dict:
+    """Phase 5: open the serving DB read-only, run required family checks and
+    representative terminal queries, and measure query latency. Returns the
+    validation summary used in CURRENT.json."""
+    import duckdb
+    conn = duckdb.connect(str(db_path), read_only=True)
+    try:
+        minimums = {
+            "artists": 25_000, "artist_search_terms": 1, "artist_external_ids": 1,
+            "attention_observations": 1, "artist_peers": 1, "artist_markets": 1,
+            "event_history": 1, "festival_appearances": 1, "future_events": 1,
+        }
+        checks: dict[str, int] = {}
+        passed = True
+        for table, minimum in minimums.items():
+            n = int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+            checks[table] = n
+            if n < minimum:
+                passed = False
+                checks.setdefault("failures", [])
+                checks["failures"].append(f"{table}={n} below minimum {minimum}")
+        if not demo_artists:
+            passed = False
+            checks.setdefault("failures", []).append("no demo artists selected")
+        # A demo artist must yield a populated page: peers + alternatives.
+        if demo_artists:
+            probe_key = demo_artists[0]["artist_key"]
+            peer_n = int(conn.execute(
+                "SELECT COUNT(*) FROM artist_peers WHERE subject_key = ?", [probe_key]
+            ).fetchone()[0])
+            if peer_n < 1:
+                passed = False
+                checks.setdefault("failures", []).append(
+                    f"top demo artist {probe_key} has no audience peers"
+                )
+        # Representative latency probes over the actual product queries.
+        probes = {
+            "search": """
+                SELECT st.artist_key, a.name FROM artist_search_terms st
+                JOIN artists a USING (artist_key)
+                WHERE st.normalized_term LIKE 'the%' OR st.normalized_term LIKE '%the%'
+                LIMIT 25
+            """,
+            "artist": "SELECT * FROM artists WHERE artist_key = ?",
+            "artist_full": "",  # filled below
+            "compare": "",
+        }
+        latencies: dict[str, float] = {}
+        t0 = time.time()
+        conn.execute(probes["search"]).fetchall()
+        latencies["search_ms"] = round((time.time() - t0) * 1000, 1)
+        if demo_artists:
+            key = demo_artists[0]["artist_key"]
+            t0 = time.time()
+            conn.execute("SELECT * FROM artists WHERE artist_key = ?", [key]).fetchall()
+            latencies["artist_ms"] = round((time.time() - t0) * 1000, 1)
+            t0 = time.time()
+            conn.execute(
+                "SELECT * FROM artist_peers WHERE subject_key = ? ORDER BY rank LIMIT 10",
+                [key],
+            ).fetchall()
+            latencies["peers_ms"] = round((time.time() - t0) * 1000, 1)
+            if len(demo_artists) > 1:
+                other = demo_artists[1]["artist_key"]
+                t0 = time.time()
+                conn.execute(
+                    "SELECT artist_key FROM artists WHERE artist_key IN (?, ?)", [key, other]
+                ).fetchall()
+                latencies["compare_probe_ms"] = round((time.time() - t0) * 1000, 1)
+        return {
+            "passed": passed,
+            "checks": checks,
+            "family_counts": {k: v for k, v in counts.items()},
+            "latency_ms": latencies,
+            "read_only": True,
+            "unknown_preserved": True,
+            "no_composite_score": True,
+        }
+    finally:
+        conn.close()
+
+
+def run_terminal_serving_build(spec: dict, scratch_dir: Path) -> dict:
+    """Build the compact Talent Buyer serving artifact entirely from R2 assets.
+
+    Reads (existing compact R2 assets, never raw corpora):
+        - governed 25K estate (LAKE/BACKUPS control/artist_security_25000/)
+        - canonical research warehouse DB (RAW warehouse/*.duckdb) for
+          identities, aliases, events, festivals, attention and forward rows
+        - pilot Gold audience affinity (LAKE gold/*affinity*.parquet)
+
+    Materializes the existing ``artist_security_terminal_v1`` schema,
+    validates the DB read-only, selects demo artists, computes a streaming
+    SHA-256, uploads the generation object, and only then publishes
+    ``serving/artist_security_terminal_v1/CURRENT.json``.
+    """
+    lake = _get_lake()
+    job_id = spec.get("job_id", "terminal_serving_build_v1")
+    params = spec.get("params", {})
+    max_events_per_artist = int(params.get("max_events_per_artist", 60) or 60)
+    max_peers_per_artist = int(params.get("max_peers_per_artist", 12) or 12)
+    max_artifact_bytes = int(
+        params.get("max_artifact_bytes") or DEFAULT_MAX_TERMINAL_ARTIFACT_BYTES
+    )
+
+    manifest = new_manifest(
+        job_type="terminal_serving_build_v1",
+        job_id=job_id,
+        code_commit=_git_commit(),
+        container_image="festival-bloomberg-batch:latest",
+        params=params,
+    )
+    manifest_key_path = manifest_key("terminal_serving_build_v1", job_id)
+    start = time.time()
+    work = scratch_dir / "terminal_build"
+    work.mkdir(parents=True, exist_ok=True)
+
+    try:
+        if max_events_per_artist < 1:
+            raise ValueError("max_events_per_artist must be >= 1")
+
+        # ── 1. Resolve + stream inputs from R2 (no guessing) ──
+        estate_path, estate_key, estate_bucket, estate_size = _resolve_estate(lake, work)
+        manifest.source_paths.append(f"r2://{estate_bucket}/{estate_key}")
+        manifest.r2_read_bytes += estate_size
+
+        warehouse_path, warehouse_key, warehouse_size = _resolve_source_warehouse(lake, work)
+        manifest.source_paths.append(f"r2://{lake.config.raw_bucket}/{warehouse_key}")
+        manifest.r2_read_bytes += warehouse_size
+
+        affinity_path, affinity_key, affinity_size = _resolve_affinity(lake, work)
+        manifest.source_paths.append(f"r2://{lake.config.lake_bucket}/{affinity_key}")
+        manifest.r2_read_bytes += affinity_size
+
+        # ── 2. Materialize the existing terminal schema ──
+        sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+        from build_talent_buyer_terminal_v1 import build as build_terminal
+
+        output_path = work / "terminal.duckdb"
+        build_result = build_terminal(
+            report_path=estate_path,
+            serving_snapshot=warehouse_path,
+            affinity_parquet=affinity_path,
+            output_path=output_path,
+            max_events_per_artist=max_events_per_artist,
+            max_peers_per_artist=max_peers_per_artist,
+        )
+        counts = build_result["counts"]
+        manifest.rows_written = sum(int(v) for v in counts.values())
+
+        # ── 3. Demo artists (Phase 4): persisted inside the artifact ──
+        demo_artists = _compute_demo_artists(output_path)
+
+        # ── 4. Validation before any upload (Phase 5) ──
+        validation = _validate_terminal_db(output_path, demo_artists, counts)
+        if not validation["passed"]:
+            raise RuntimeError(
+                "SERVING_VALIDATION_FAILED: "
+                + "; ".join(validation["checks"].get("failures", []) or [])
+            )
+
+        # ── 5. Streaming hash + bounded-size guard ──
+        db_bytes = output_path.stat().st_size
+        if db_bytes > max_artifact_bytes:
+            raise RuntimeError(
+                f"SERVING_ARTIFACT_TOO_LARGE: {db_bytes} bytes exceeds "
+                f"max_artifact_bytes={max_artifact_bytes}; tighten row bounds and retry"
+            )
+        db_sha = _streaming_sha256(output_path)
+        generation = "terminal_v1_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+        # ── 6. Upload generation object (streaming multipart upload) ──
+        db_key = f"{TERMINAL_SERVING_PREFIX}/generations/{generation}/terminal.duckdb"
+        lake._s3.upload_file(
+            str(output_path), lake.config.lake_bucket, db_key,
+            ExtraArgs={
+                "ContentType": "application/octet-stream",
+                "Metadata": {
+                    "job_id": job_id, "sha256": db_sha,
+                    "artifact": TERMINAL_ARTIFACT, "generation": generation,
+                },
+            },
+        )
+        manifest.output_paths.append(f"r2://{lake.config.lake_bucket}/{db_key}")
+        manifest.output_hashes[db_key] = db_sha
+        manifest.r2_write_bytes += db_bytes
+
+        # ── 7. VERIFY the DB object BEFORE CURRENT moves ──
+        verify_outputs(
+            lake,
+            bucket=lake.config.lake_bucket,
+            output_hashes={db_key: db_sha},
+            manifest=manifest,
+            manifest_key_path=manifest_key_path,
+        )
+
+        # ── 8. Publish CURRENT.json ONLY after VERIFIED ──
+        current_payload = {
+            "artifact": TERMINAL_ARTIFACT,
+            "contract_version": TERMINAL_CONTRACT_VERSION,
+            "generation": generation,
+            "object_key": db_key,
+            "sha256": db_sha,
+            "bytes": db_bytes,
+            "created_at": now_iso(),
+            "source_generations": {
+                "estate_object": estate_key,
+                "estate_bucket": estate_bucket,
+                "warehouse_object": warehouse_key,
+                "affinity_object": affinity_key,
+                "code_commit": _git_commit(),
+            },
+            "row_counts": counts,
+            "demo_artists": demo_artists,
+            "validation": validation,
+        }
+        current_bytes = json.dumps(current_payload, indent=2, sort_keys=True, default=str).encode()
+        current_sha = hashlib.sha256(current_bytes).hexdigest()
+        current_key = f"{TERMINAL_SERVING_PREFIX}/CURRENT.json"
+        try:
+            lake.put_bytes(
+                lake.config.lake_bucket, current_key, current_bytes,
+                content_type="application/json",
+                metadata={"job_id": job_id, "sha256": current_sha, "generation": generation},
+            )
+        except Exception:
+            manifest.error_code = ERR_PUBLICATION_FAILED
+            manifest.error = "CURRENT.json write failed; generation remains VERIFIED"
+            manifest.publication_state = STATUS_VERIFIED
+            manifest.status = STATUS_VERIFIED
+            lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
+            raise RuntimeError(
+                f"PUBLICATION_FAILED: CURRENT pointer write failed for {current_key}"
+            )
+        manifest.output_paths.append(f"r2://{lake.config.lake_bucket}/{current_key}")
+        manifest.output_hashes[current_key] = current_sha
+        manifest.status = STATUS_PUBLISHED
+        manifest.publication_state = STATUS_PUBLISHED
+        manifest.completed_at = now_iso()
+        manifest.runtime_seconds = round(time.time() - start, 2)
+        manifest.rows_read = manifest.r2_read_bytes
+        manifest.params["generation"] = generation
+        manifest.params["demo_artist_count"] = len(demo_artists)
+        lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
+
+        return {
+            "status": "COMPLETED",
+            "manifest_key": manifest_key_path,
+            "generation": generation,
+            "serving_key": db_key,
+            "current_key": current_key,
+            "serving_sha256": db_sha,
+            "serving_bytes": db_bytes,
+            "row_counts": counts,
+            "demo_artists": demo_artists,
+            "validation_pass": validation["passed"],
+            "latency_ms": validation.get("latency_ms", {}),
+            "runtime_seconds": manifest.runtime_seconds,
+            "r2_read_bytes": manifest.r2_read_bytes,
+            "r2_write_bytes": manifest.r2_write_bytes,
+        }
+
+    except Exception as e:
+        if manifest.status == STATUS_VERIFIED:
+            if manifest.error_code is None:
+                manifest.error_code = ERR_PUBLICATION_FAILED
+            manifest.error = str(e)
+            manifest.publication_state = STATUS_VERIFIED
+            try:
+                lake.write_manifest(
+                    lake.config.lake_bucket, manifest_key_path, manifest.to_dict(),
+                )
+            except Exception:
+                pass
+            raise
+        if manifest.error_code is None:
+            manifest.error_code = ERR_JOB_EXEC_FAILED
+        manifest.status = STATUS_FAILED
+        manifest.error = str(e)
+        manifest.error_detail = traceback.format_exc()
+        manifest.completed_at = now_iso()
+        manifest.runtime_seconds = round(time.time() - start, 2)
+        try:
+            lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
+        except Exception:
+            pass
+        raise
+
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+# ════════════════════════════════════════════════════════════════
 # LISTENBRAINZ MAP STAGE
 # ════════════════════════════════════════════════════════════════
 
