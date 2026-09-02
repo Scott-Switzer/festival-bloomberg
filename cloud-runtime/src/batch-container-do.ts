@@ -131,6 +131,32 @@ export class BatchContainer extends DurableObject<BatchEnv> {
   }
 
   /**
+   * Admin-only: force the per-DO container instance to restart so a newly
+   * deployed image (new Worker version) replaces a still-running old-image
+   * instance. Cloudflare containers keep the original image until the
+   * instance is destroyed and recreated, so a deploy alone does not pick up
+   * code changes for a long-lived idle container.
+   */
+  async restartContainer(reason = "admin"): Promise<Record<string, unknown>> {
+    const hadContainer = this.containerReady;
+    this.containerReady = false;
+    try {
+      if (this.ctx.container) {
+        await this.ctx.container.destroy();
+      }
+    } catch (e) {
+      console.error("Batch container destroy failed (continuing):", e);
+    }
+    // Recreate lazily on the next startJob (ensureContainer).
+    return {
+      restarted: true,
+      had_container: hadContainer,
+      reason,
+      container_ready: this.containerReady,
+    };
+  }
+
+  /**
    * P0-2: RPC — start a batch job and return IMMEDIATELY (RUNNING).
    *
    * The container process is launched and monitored in the background.
