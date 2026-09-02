@@ -491,8 +491,14 @@ class MvpTerminalApp:
         except Exception:
             return self._bad_request("invalid JSON body")
         file_name = str(req.get("file_name") or "show_history.csv")
-        content = str(req.get("content") or "")
-        if not content.strip():
+        content = req.get("content") or ""
+        if req.get("content_b64"):
+            import base64
+            try:
+                content = base64.b64decode(str(req["content_b64"]))
+            except Exception as exc:
+                return self._bad_request(f"could not decode file content: {exc}")
+        if not content or (isinstance(content, str) and not content.strip()):
             return self._bad_request("file content is empty")
         return self._ok(decision_system.preview_private_file(file_name, content))
 
@@ -505,15 +511,38 @@ class MvpTerminalApp:
         rows = req.get("rows") or []
         mapping = req.get("mapping") or []
         forced = req.get("forced_mapping") or {}
-        if not header_data or not rows:
+        file_name = str(req.get("file_name") or "show_history.csv")
+        content = req.get("content") or ""
+        content_b64 = req.get("content_b64") or ""
+        if content_b64:
+            import base64
+            try:
+                content = base64.b64decode(str(content_b64))
+            except Exception as exc:
+                return self._bad_request(f"could not decode file content: {exc}")
+        # Preferred: server re-parses the RAW file (single parser for preview +
+        # commit: quoted commas, multiline, BOM, xlsx). Rows fallback retained.
+        if content:
+            try:
+                parsed_headers, dict_rows = decision_system._parse_tabular(file_name, content)
+            except Exception as exc:
+                return self._bad_request(f"could not parse file: {exc}")
+            header_data = parsed_headers
+            row_payload = dict_rows
+        elif rows and isinstance(rows[0], dict):
+            row_payload = [dict(r) for r in rows]
+        else:
+            row_payload = [[str(c) if c is not None else "" for c in r] for r in rows]
+        if not header_data or not row_payload:
             return self._bad_request("headers and rows are required")
         result = decision_system.import_private_shows(
             self.conn, self.workspace_conn,
-            file_name=str(req.get("file_name") or "show_history.csv"),
+            file_name=file_name,
             headers=[str(h) for h in header_data],
-            rows=[[str(c) if c is not None else "" for c in r] for r in rows],
+            rows=row_payload,
             mapping=mapping if isinstance(mapping, list) else [],
             forced_mapping={str(k): str(v) for k, v in (forced or {}).items()},
+            customer_id=str(req.get("customer_id") or "") or None,
         )
         return self._ok(result)
 

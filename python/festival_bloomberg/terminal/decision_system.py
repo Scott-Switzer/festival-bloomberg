@@ -21,7 +21,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, fields
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
@@ -51,7 +52,14 @@ def _market_pretty(market_key: str) -> str:
         return f"{city}, {region}"
     return str(market_key).title()
 
-from ..economics import design_partner
+from ..economics import design_partner, partner_import
+from ..economics.design_partner import (
+    AUTO_ACCEPTED,
+    PROHIBITED,
+    POTENTIAL_PII,
+    SAFE,
+)
+from ..economics.repository import EconomicsRepository
 from ..economics.show_economics import (
     BackendBasis,
     DealDefinition,
@@ -87,6 +95,8 @@ CREATE TABLE IF NOT EXISTS private_shows (
     import_id VARCHAR,
     artist_name VARCHAR,
     artist_key VARCHAR,
+    identity_status VARCHAR,
+    identity_detail VARCHAR,
     event_date VARCHAR,
     venue_name VARCHAR,
     venue_external_id VARCHAR,
@@ -170,6 +180,8 @@ CREATE TABLE IF NOT EXISTS monitor_baselines (
     attention INTEGER,
     seen_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+ALTER TABLE private_shows ADD COLUMN IF NOT EXISTS identity_status VARCHAR;
+ALTER TABLE private_shows ADD COLUMN IF NOT EXISTS identity_detail VARCHAR;
 """
 
 
@@ -197,34 +209,69 @@ def _decode_or_none(value: str | None) -> Decimal | None:
         return None
 
 
+SYSTEM_TEMPLATES: dict[str, dict[str, str]] = {
+    # Conservative / moderate / aggressive sell-through assumption sets.
+    # Applying a template is an explicit buyer action; every populated field is
+    # reported as SYSTEM_TEMPLATE_ASSUMPTION until the buyer accepts it.
+    "CONSERVATIVE": {"downside": "0.25", "base": "0.45", "upside": "0.65"},
+    "MODERATE": {"downside": "0.35", "base": "0.55", "upside": "0.75"},
+    "AGGRESSIVE": {"downside": "0.45", "base": "0.65", "upside": "0.85"},
+}
+
+
 def build_scenario(inputs: dict[str, Any]) -> ShowEconomicsScenario:
     """Construct the deterministic economics scenario from a buyer's inputs.
 
-    Every field entered by the buyer is USER_ASSUMPTION; everything missing is
-    UNKNOWN. Never silently fill missing deal numbers.
+    Contract:
+      BLANK                  = UNKNOWN               (TypedInput.unknown)
+      EXPLICIT "0"           = USER_ASSUMPTION ZERO
+      SYSTEM template values = SYSTEM_TEMPLATE_ASSUMPTION (tracked separately
+      via assumption_provenance(); the engine itself only knows UNKNOWN vs
+      USER_ASSUMPTION because Provenance has no template member).
+
+    There are no hidden defaults. A missing deal type, backend basis, tax rate,
+    or deduction stays UNKNOWN and propagates as UNKNOWN outputs.
     """
     usable = _decode_or_none(inputs.get("usable_capacity"))
     sellable = _decode_or_none(inputs.get("sellable_capacity"))
-    if sellable is None and usable is not None:
+    sellable_derived = sellable is None and usable is not None
+    if sellable_derived:
         sellable = usable
     atp = _decode_or_none(inputs.get("average_ticket_price"))
     sell_through = _decode_or_none(inputs.get("sell_through"))
     guarantee = _decode_or_none(inputs.get("guarantee"))
     backend_pct = _decode_or_none(inputs.get("backend_percentage"))
-    deal_type = (inputs.get("deal_type") or "GUARANTEE_VS_PERCENTAGE").strip().upper()
-    if deal_type not in {d.value for d in DealType}:
-        deal_type = DealType.GUARANTEE_VS_PERCENTAGE.value
 
     def assumption(value: Decimal | None) -> TypedInput:
         if value is None:
             return TypedInput.unknown()
         return TypedInput.assumption(value)
 
-    tier_quantity = sellable
-    price = atp if atp is not None else Decimal("0")
+    def assumption_str(value: str | None, enum_type) -> TypedInput:
+        if not value or not value.strip():
+            return TypedInput.unknown()
+        cleaned = value.strip().upper()
+        if cleaned not in {e.value for e in enum_type}:
+            return TypedInput.unknown()  # invalid enum value stays UNKNOWN, never coerced
+        return TypedInput.assumption(cleaned)
 
     def money_field(key: str) -> TypedInput:
         return assumption(_decode_or_none(inputs.get(key)))
+
+    deal_type_raw = (inputs.get("deal_type") or "").strip().upper()
+    basis_raw = (inputs.get("backend_basis") or "").strip().upper()
+
+    approved_names_raw = inputs.get("approved_expense_names")
+    approved_names: tuple[str, ...] | None = None
+    if isinstance(approved_names_raw, (list, tuple)) and approved_names_raw:
+        approved_names = tuple(str(n).strip().lower() for n in approved_names_raw if str(n).strip())
+    if isinstance(approved_names_raw, str) and approved_names_raw.strip():
+        candidate = tuple(
+            n.strip().lower() for n in approved_names_raw.split(",") if n.strip()
+        )
+        valid = {f.name for f in fields(FixedCosts)}
+        if candidate and all(n in valid for n in candidate):
+            approved_names = candidate
 
     scenario = ShowEconomicsScenario(
         currency=TypedInput.assumption("USD"),
@@ -233,24 +280,22 @@ def build_scenario(inputs: dict[str, Any]) -> ShowEconomicsScenario:
         ticket_scale=(
             TicketTier(
                 name="general",
-                price=TypedInput.assumption(price) if price > 0 else TypedInput.unknown(),
-                quantity=assumption(tier_quantity),
+                price=assumption(atp),
+                quantity=assumption(sellable),
             ),
         ),
         sell_through=assumption(sell_through),
-        ticketing_deduction_per_paid_ticket=assumption(
-            _decode_or_none(inputs.get("ticketing_deduction")) or Decimal("0")
-        ),
-        tax_rate_on_gross=assumption(_decode_or_none(inputs.get("tax_rate")) or Decimal("0")),
+        ticketing_deduction_per_paid_ticket=money_field("ticketing_deduction"),
+        tax_rate_on_gross=money_field("tax_rate"),
         deal=DealDefinition(
-            deal_type=TypedInput.assumption(deal_type),
+            deal_type=assumption_str(deal_type_raw, DealType),
             guarantee=assumption(guarantee),
             backend_percentage=assumption(backend_pct),
-            backend_basis=TypedInput.assumption(
-                inputs.get("backend_basis") or BackendBasis.ADJUSTED_GROSS.value
-            ),
+            backend_basis=assumption_str(basis_raw, BackendBasis),
             artist_expenses=money_field("artist_expenses"),
-            approved_expense_names=TypedInput.assumption(("marketing", "production")),
+            approved_expense_names=(
+                TypedInput.assumption(approved_names) if approved_names else TypedInput.unknown()
+            ),
         ),
         costs=FixedCosts(
             marketing=money_field("cost_marketing"),
@@ -266,20 +311,82 @@ def build_scenario(inputs: dict[str, Any]) -> ShowEconomicsScenario:
     return scenario
 
 
-def scenario_sets(inputs: dict[str, Any]) -> dict[str, ShowEconomicsScenario]:
-    """downside / base / upside = USER-DEFINED scenario sell-through sets.
+def assumption_provenance(inputs: dict[str, Any], *, template_applied: dict[str, str] | None = None) -> dict[str, str]:
+    """Per-input provenance for the economics surface.
 
-    Labels are explicitly "user-defined scenario" — never probability.
+    BLANK -> UNKNOWN; explicit value -> USER_ASSUMPTION; value supplied by an
+    accepted template -> SYSTEM_TEMPLATE_ASSUMPTION. sellable derived from
+    usable is DERIVED.
     """
-    base = _decode_or_none(inputs.get("sell_through"))
-    base_value = base if base is not None else Decimal("0.55")
-    lo = _decode_or_none(inputs.get("sell_through_down"))
-    hi = _decode_or_none(inputs.get("sell_through_up"))
-    return {
-        "downside": _with_sell_through(inputs, lo if lo is not None else max(Decimal("0.30"), base_value - Decimal("0.25"))),
-        "base": _with_sell_through(inputs, base_value),
-        "upside": _with_sell_through(inputs, hi if hi is not None else min(Decimal("0.85"), base_value + Decimal("0.25"))),
+    template_applied = {k: v for k, v in (template_applied or {}).items()}
+    # Normalize template keys: sell_through_base -> sell_through, etc.
+    for label, field in (("base", "sell_through"), ("downside", "sell_through_down"), ("upside", "sell_through_up")):
+        if f"sell_through_{label}" in template_applied:
+            template_applied.setdefault(field, template_applied.pop(f"sell_through_{label}"))
+    provenance: dict[str, str] = {}
+
+    _ENUM_FIELDS = {"deal_type": {e.value for e in DealType}, "backend_basis": {e.value for e in BackendBasis}}
+
+    def mark(field: str, raw_value) -> None:
+        if field in template_applied:
+            provenance[field] = "SYSTEM_TEMPLATE_ASSUMPTION"
+        elif raw_value is None or str(raw_value).strip() == "":
+            provenance[field] = "UNKNOWN"
+        elif field in _ENUM_FIELDS and str(raw_value).strip().upper() not in _ENUM_FIELDS[field]:
+            provenance[field] = "UNKNOWN"  # invalid enum stays UNKNOWN, never coerced
+        else:
+            provenance[field] = "USER_ASSUMPTION"
+
+    for key in (
+        "usable_capacity", "sellable_capacity", "average_ticket_price",
+        "guarantee", "backend_percentage", "deal_type", "backend_basis",
+        "artist_expenses", "approved_expense_names", "ticketing_deduction",
+        "tax_rate", "cost_marketing", "cost_production", "cost_venue",
+        "cost_labor", "cost_insurance", "cost_other", "ancillary_revenue",
+        "sponsorship", "sell_through", "sell_through_down", "sell_through_up",
+    ):
+        mark(key, inputs.get(key))
+    usable_raw = inputs.get("usable_capacity")
+    sellable_raw = inputs.get("sellable_capacity")
+    if (sellable_raw is None or str(sellable_raw).strip() == "") and usable_raw is not None and str(usable_raw).strip() != "":
+        provenance["sellable_capacity"] = "DERIVED"
+    return provenance
+
+
+def scenario_sets(inputs: dict[str, Any]) -> tuple[dict[str, ShowEconomicsScenario], dict[str, str]]:
+    """downside / base / upside scenarios from EXPLICIT inputs only.
+
+    Nothing is filled in implicitly. A scenario is only created when its
+    sell-through rate is entered by the buyer, or when the buyer explicitly
+    applies and accepts one of the SYSTEM_TEMPLATES (each populated field is
+    then tracked as SYSTEM_TEMPLATE_ASSUMPTION). Labels remain
+    "USER-DEFINED SCENARIO" — never probability.
+
+    Returns (scenarios, template_applied_fields).
+    """
+    template_applied: dict[str, str] = {}
+    rates: dict[str, Decimal | None] = {
+        "base": _decode_or_none(inputs.get("sell_through")),
+        "downside": _decode_or_none(inputs.get("sell_through_down")),
+        "upside": _decode_or_none(inputs.get("sell_through_up")),
     }
+    template_name = (inputs.get("template") or "").strip().upper()
+    accept = str(inputs.get("accept_template") or "").strip().lower() in ("1", "true", "yes", "accept")
+    if template_name in SYSTEM_TEMPLATES and accept:
+        for label, raw in SYSTEM_TEMPLATES[template_name].items():
+            template_rate = Decimal(raw)
+            if rates[label] is None:
+                rates[label] = template_rate
+            # A field that still equals the template value keeps
+            # SYSTEM_TEMPLATE_ASSUMPTION provenance; if the buyer edited it,
+            # it becomes their own USER_ASSUMPTION.
+            if rates[label] == template_rate:
+                template_applied[f"sell_through_{label}"] = template_name
+    scenarios: dict[str, ShowEconomicsScenario] = {}
+    for label in ("downside", "base", "upside"):
+        if rates[label] is not None:
+            scenarios[label] = _with_sell_through(inputs, rates[label])
+    return scenarios, template_applied
 
 
 def _with_sell_through(inputs: dict[str, Any], rate: Decimal) -> ShowEconomicsScenario:
@@ -350,14 +457,18 @@ def build_underwrite(
     # ── D. comparables (explainable components, no hidden score) ──
     comparables = build_comparables(conn, artist_key, market_key)
 
-    # ── E. economics (deterministic scenario math) ──
+    # ── E. economics (deterministic scenario math; strict UNKNOWN contract) ──
+    scenario_map, template_applied = scenario_sets(inputs)
     scenarios: dict[str, Any] = {}
-    for label, scenario in scenario_sets(inputs).items():
+    for label, scenario in scenario_map.items():
         try:
             evaluation = evaluate(scenario)
             scenarios[label] = {
                 "label": "USER-DEFINED SCENARIO",
-                "sell_through_assumed": str(inputs.get("sell_through")) if label == "base" else None,
+                "sell_through_assumed": (
+                    str(inputs.get("sell_through")) if label == "base"
+                    else str(inputs.get(f"sell_through_{label}"))
+                ),
                 "outputs": {name: output_to_dict(value) for name, value in evaluation.outputs.items()},
                 "scenario": scenario_to_dict(scenario),
             }
@@ -393,7 +504,10 @@ def build_underwrite(
         "market": market_state,
         "competing_events": competing,
         "comparables": comparables,
+        "comparables_meta": COMPARABLE_ORDERING_V1,
         "economics": scenarios,
+        "economics_input_provenance": assumption_provenance(inputs, template_applied=template_applied),
+        "economics_template": template_applied or None,
         "risk_flags": risk_flags,
         "alternatives": alternatives_short,
         "evidence": evidence,
@@ -551,6 +665,21 @@ def future_exists(conn, artist_key: str) -> bool:
 # COMPARABLES — explainable distance, never one hidden score
 # ────────────────────────────────────────────────────────────────────────────
 
+# Deterministic component weights used ONLY for ordering; the UI always renders
+# the components themselves. Never learned, never a prediction.
+COMPARABLE_ORDERING_V1 = {
+    "heuristic": "HEURISTIC_ORDERING_V1",
+    "weights": {
+        "shared_listeners": {"cap": 10, "per_listener": 1},
+        "shared_markets": {"per_market": 2},
+        "shared_festival_bills": {"per_festival": 3},
+        "footprint_band": {"weight": 0},
+        "same_market_preference": {"tiebreak": 1},
+    },
+    "note": "deterministic sum of explicit evidence components for ordering only; not a learned or calibrated score",
+}
+
+
 def build_comparables(conn, artist_key: str, market_key: str | None, limit: int = 8) -> list[dict[str, Any]]:
     """Comparable candidates with explicit WHY components:
 
@@ -668,11 +797,12 @@ def build_comparables(conn, artist_key: str, market_key: str | None, limit: int 
             "audience": parts["audience"],
             "shared_markets": sorted(markets_shared)[:6],
             "shared_festivals": sorted(festivals_shared)[:6],
+            "ordering_heuristic": "HEURISTIC_ORDERING_V1",
             "knowledge_time": None,
         })
     results.sort(key=lambda r: (-r["component_strength"], r["artist_name"]))
-    # Prefer same-market comps among equal strength, then cap.
-    results.sort(key=lambda r: (0 if r["same_market_now"] else 1,))
+    # Deterministic tiebreak: same-market comps first, then name.
+    results.sort(key=lambda r: (0 if r["same_market_now"] else 1, r["artist_name"]))
     return results[:limit]
 
 
@@ -680,17 +810,76 @@ def build_comparables(conn, artist_key: str, market_key: str | None, limit: int 
 # POINT-IN-TIME reconstruction — only evidence dated before the cutoff
 # ────────────────────────────────────────────────────────────────────────────
 
+# Point-in-time doctrine:
+#   occurrence_time != knowledge_time
+#   historical occurrence != historical knowability
+#   a row is admissible for decision-time reconstruction only if its own
+#   knowledge_time (when the observer/source knew about it) is <= the decision
+#   cutoff. `retrieved_at`, build dates, and event dates are never entry
+#   tickets. Rows without a knowledge_time are NOT admissible — reported
+#   honestly as excluded, never silently admitted.
+_PIT_FAMILIES = (
+    ("live_history", "event_history", "event_date"),
+    ("markets", "artist_markets", "last_play_date"),
+    ("festivals", "festival_appearances", "performance_date"),
+)
+
+
+def _pit_family(conn, artist_key: str, family: str, table: str, occurrence_col: str, cutoff_date: str) -> dict[str, Any]:
+    occurrence = f"(COALESCE({occurrence_col}, event_date))" if table == "festival_appearances" else occurrence_col
+    try:
+        occurred = int(_one(
+            conn, f"SELECT COUNT(*) AS n FROM {table} WHERE artist_key = ? AND {occurrence} < ?",
+            [artist_key, cutoff_date],
+        )["n"])
+        admissible = int(_one(
+            conn, f"SELECT COUNT(*) AS n FROM {table} WHERE artist_key = ? AND {occurrence} < ? "
+                  f"AND knowledge_time IS NOT NULL AND knowledge_time <= ?",
+            [artist_key, cutoff_date, cutoff_date],
+        )["n"])
+        excluded_no_kt = int(_one(
+            conn, f"SELECT COUNT(*) AS n FROM {table} WHERE artist_key = ? AND {occurrence} < ? "
+                  f"AND knowledge_time IS NULL",
+            [artist_key, cutoff_date],
+        )["n"])
+        excluded_after = int(_one(
+            conn, f"SELECT COUNT(*) AS n FROM {table} WHERE artist_key = ? AND {occurrence} < ? "
+                  f"AND knowledge_time IS NOT NULL AND knowledge_time > ?",
+            [artist_key, cutoff_date, cutoff_date],
+        )["n"])
+    except Exception as exc:
+        occurred = admissible = excluded_no_kt = excluded_after = 0
+        return {"family": family, "status": "UNKNOWN", "detail": f"query failed: {exc}"}
+    if not occurred:
+        status = "EMPTY"
+    elif admissible:
+        status = "ADMISSIBLE"
+    else:
+        status = "PIT_INSUFFICIENT"
+    return {
+        "family": family,
+        "occurred_before_cutoff": occurred,
+        "admissible": admissible,
+        "excluded_missing_knowledge_time": excluded_no_kt,
+        "excluded_knowledge_after_cutoff": excluded_after,
+        "status": status,
+        "detail": (
+            "rows occurred before cutoff but no leakage-safe knowledge_time evidence exists; "
+            "not admissible for point-in-time reconstruction"
+            if status == "PIT_INSUFFICIENT" else None
+        ),
+    }
+
+
 def pit_features_at(conn, artist_key: str, cutoff: str | None) -> dict[str, Any]:
-    """Reconstruct decision-time evidence strictly before ``cutoff``.
+    """Leakage-safe decision-time reconstruction.
 
-    Uses only dates/observations that were knowable before the decision:
-      - live history with event_date < cutoff
-      - markets with last play before cutoff
-      - festival appearances dated before cutoff
-      - attention observations with knowledge_time <= cutoff
-
-    Never gates on retrieved_at; never uses post-cutoff rows. If cutoff is
-    missing → UNKNOWN (PIT_INSUFFICIENT), never a silent empty reconstruction.
+    Each family admits ONLY rows whose own knowledge_time <= cutoff. Rows that
+    merely occurred before the cutoff (missing/after-cutoff knowledge_time) are
+    counted and explicitly excluded. If any admissible row exists the
+    reconstruction is PIT_COMPLETE (each family reports its own status); with
+    occurrences but zero admissible rows the result is PIT_INSUFFICIENT — never
+    a silent empty reconstruction.
     """
     if not cutoff:
         return {
@@ -702,36 +891,75 @@ def pit_features_at(conn, artist_key: str, cutoff: str | None) -> dict[str, Any]
         cutoff_dt = datetime.fromisoformat(str(cutoff)[:10])
     except Exception:
         return {"cutoff": None, "status": "PIT_INSUFFICIENT", "reason": "unparseable cutoff"}
+    cutoff_date = cutoff_dt.date().isoformat()
 
-    prior = _rows(
-        conn,
-        "SELECT COUNT(*) AS n FROM event_history WHERE artist_key = ? AND event_date < ?",
-        [artist_key, cutoff_dt.date().isoformat()],
-    )[0]["n"]
-    prior_markets = _rows(
-        conn,
-        "SELECT COUNT(*) AS n FROM artist_markets WHERE artist_key = ? AND last_play_date < ?",
-        [artist_key, cutoff_dt.date().isoformat()],
-    )[0]["n"]
-    prior_festivals = _rows(
-        conn,
-        "SELECT COUNT(*) AS n FROM festival_appearances WHERE artist_key = ? AND event_date < ?",
-        [artist_key, cutoff_dt.date().isoformat()],
-    )[0]["n"]
-    attention = _rows(
-        conn,
-        "SELECT COUNT(*) AS n FROM attention_observations WHERE artist_key = ? AND knowledge_time <= ?",
-        [artist_key, cutoff_dt.isoformat()],
-    )[0]["n"]
+    families = [
+        _pit_family(conn, artist_key, family, table, col, cutoff_date)
+        for (family, table, col) in _PIT_FAMILIES
+    ]
+    attention = {
+        "family": "attention",
+        "occurred_before_cutoff": None,
+        "admissible": 0,
+        "excluded_missing_knowledge_time": 0,
+        "excluded_knowledge_after_cutoff": 0,
+        "status": "EMPTY",
+    }
+    try:
+        att = _rows(
+            conn,
+            "SELECT COUNT(*) AS n FROM attention_observations WHERE artist_key = ? AND knowledge_time <= ?",
+            [artist_key, cutoff_date],
+        )[0]["n"]
+        att_missing = _rows(
+            conn,
+            "SELECT COUNT(*) AS n FROM attention_observations WHERE artist_key = ? AND knowledge_time IS NULL",
+            [artist_key],
+        )[0]["n"]
+        att_after = _rows(
+            conn,
+            "SELECT COUNT(*) AS n FROM attention_observations WHERE artist_key = ? AND knowledge_time IS NOT NULL AND knowledge_time > ?",
+            [artist_key, cutoff_date],
+        )[0]["n"]
+        attention["admissible"] = int(att)
+        attention["excluded_missing_knowledge_time"] = int(att_missing)
+        attention["excluded_knowledge_after_cutoff"] = int(att_after)
+        attention["status"] = "ADMISSIBLE" if att else ("PIT_INSUFFICIENT" if (att_missing or att_after) else "EMPTY")
+        if attention["status"] == "PIT_INSUFFICIENT":
+            attention["detail"] = "attention observations exist but none has leakage-safe knowledge_time <= cutoff"
+    except Exception as exc:
+        attention["status"] = "UNKNOWN"
+        attention["detail"] = f"query failed: {exc}"
+    families.append(attention)
+
+    any_admissible = any(f.get("admissible") for f in families)
+    any_occurrence = any((f.get("occurred_before_cutoff") or 0) for f in families[:3]) or bool(
+        attention.get("admissible") or attention.get("excluded_missing_knowledge_time")
+        or attention.get("excluded_knowledge_after_cutoff")
+    )
+    if any_admissible:
+        status = "PIT_COMPLETE"
+        reason = None
+    elif any_occurrence:
+        status = "PIT_INSUFFICIENT"
+        reason = (
+            "events occurred before the cutoff but no leakage-safe knowledge_time evidence exists; "
+            "rows without admissible knowledge time are NOT included in the reconstruction"
+        )
+    else:
+        status = "PIT_INSUFFICIENT"
+        reason = "no evidence that the artist occurred before the cutoff is in the serving data"
 
     return {
-        "cutoff": cutoff_dt.date().isoformat(),
-        "status": "PIT_COMPLETE" if (prior or prior_markets or prior_festivals or attention) else "PIT_PARTIAL",
-        "prior_live_events": prior,
-        "prior_markets": prior_markets,
-        "prior_festivals": prior_festivals,
-        "prior_attention_observations": attention,
-        "note": "reconstructed from serving rows dated strictly before the decision cutoff",
+        "cutoff": cutoff_date,
+        "status": status,
+        "reason": reason,
+        "families": families,
+        "prior_live_events": next(f["admissible"] for f in families if f["family"] == "live_history"),
+        "prior_markets": next(f["admissible"] for f in families if f["family"] == "markets"),
+        "prior_festivals": next(f["admissible"] for f in families if f["family"] == "festivals"),
+        "prior_attention_observations": attention["admissible"],
+        "note": "admissible only where knowledge_time <= decision cutoff; occurrence without knowledge is never admitted",
     }
 
 
@@ -739,22 +967,71 @@ def pit_features_at(conn, artist_key: str, cutoff: str | None) -> dict[str, Any]
 # PRIVATE HISTORY — import, quarantine, retrospective
 # ────────────────────────────────────────────────────────────────────────────
 
-def preview_private_file(file_name: str, content: str) -> dict[str, Any]:
-    """Parse CSV/TSV, map columns, scan PII. Values are previewed only so the
-    buyer can confirm; nothing is imported or read into analytics here."""
-    sep = "\t" if file_name.lower().endswith((".tsv", ".tab")) else ","
-    lines = content.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    lines = [ln for ln in lines if ln.strip() != ""]
-    if not lines:
-        return {"error": "file is empty"}
-    headers = [h.strip().lstrip("\ufeff") for h in lines[0].split(sep)]
-    rows: list[list[str]] = []
-    for ln in lines[1:]:
-        cells = ln.split(sep)
-        rows.append([c.strip() for c in cells])
+def _parse_tabular(file_name: str, content: str | bytes) -> tuple[list[str], list[dict[str, str]]]:
+    """Robust CSV/TSV/XLSX parsing (proper CSV parser, quotes/BOM/multiline
+    handled; openpyxl for XLSX). Returns headers + dict rows."""
+    import csv as _csv
+    import io as _io
+    import tempfile as _tmp
+
+    suffix = file_name.lower().rsplit(".", 1)[-1] if "." in file_name else ""
+    if suffix == "xlsx":
+        raw = content if isinstance(content, bytes) else content.encode("utf-8")
+        with _tmp.NamedTemporaryFile(suffix=".xlsx", delete=False) as tf:
+            tf.write(raw)
+            tmp_path = tf.name
+        try:
+            return partner_import.read_tabular(tmp_path)
+        finally:
+            try:
+                import os
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+    text = content if isinstance(content, str) else content.decode("utf-8-sig", errors="replace")
+    text = text.lstrip("\ufeff")
+    delimiter = "\t" if suffix in ("tsv", "tab") else None
+    stream = _io.StringIO(text)
+    sample = stream.read(8192)
+    stream.seek(0)
+    if delimiter is None:
+        try:
+            delimiter = _csv.Sniffer().sniff(sample, delimiters=",\t;").delimiter
+        except _csv.Error:
+            delimiter = ","
+    reader = _csv.DictReader(stream, delimiter=delimiter)
+    headers = [h.strip().lstrip("\ufeff") for h in (reader.fieldnames or [])]
+    rows: list[dict[str, str]] = []
+    for row in reader:
+        cleaned = {h: (row.get(h) or "").strip() for h in headers}
+        if any(v != "" for v in cleaned.values()):
+            rows.append(cleaned)
+    return headers, rows
+
+
+def preview_private_file(file_name: str, content: str | bytes) -> dict[str, Any]:
+    """Parse CSV/TSV/XLSX, map columns, scan PII and return a redacted preview.
+
+    PII values (PROHIBITED / POTENTIAL_PII) are REDACTED before any value is
+    returned to the browser — only the column name, classification and reason
+    are preserved. Nothing is imported or read into analytics here.
+    """
+    try:
+        headers, rows = _parse_tabular(file_name, content)
+    except Exception as exc:
+        return {"error": f"could not parse file: {exc}"}
+    if not headers or not rows:
+        return {"error": "file is empty or has no data rows"}
     mapping = [m.to_dict() for m in design_partner.map_columns(headers)]
     pii = design_partner.scan_pii_columns(headers)
-    preview_rows = rows[:5]
+    pii_indices = {i for i, h in enumerate(headers) if pii.get(h) in (PROHIBITED, POTENTIAL_PII)}
+    # Redact PII VALUES before they ever reach the browser.
+    preview_rows: list[dict[str, str]] = []
+    for row in rows[:5]:
+        preview_rows.append({
+            h: ("[REDACTED PII]" if i in pii_indices else row.get(h, ""))
+            for i, h in enumerate(headers)
+        })
     return {
         "file_name": file_name,
         "header_count": len(headers),
@@ -768,7 +1045,56 @@ def preview_private_file(file_name: str, content: str) -> dict[str, Any]:
         "unmapped": [m for m in mapping if m["status"] == "UNMAPPED"],
         "prohibited_pii": [h for h, s in pii.items() if s == "PROHIBITED"],
         "potential_pii": [h for h, s in pii.items() if s == "POTENTIAL_PII"],
+        "pii_redacted": sorted(pii_indices),
+        "note": "PII values are redacted in previews and never ingested",
     }
+
+
+def _norm_artist_name(value: str) -> str:
+    """Punctuation-robust normalization (commas/periods/etc. never block a
+    VERIFIED_EXACT match): lowercase, non-alphanumeric -> spaces."""
+    return re.sub(r"[^a-z0-9]+\s*", " ", value.lower()).strip()
+
+
+def _resolve_artist_fail_closed(conn: Any, artist_name: str) -> tuple[str | None, str, str]:
+    """Fail-closed identity resolution.
+
+    Only a single exact normalized-name/search-term match attaches an
+    artist_key (VERIFIED_EXACT). Any ambiguity, near match, or miss leaves the
+    key unset and the row in REVIEW_REQUIRED / CONFLICT / UNRESOLVED.
+    Outcome data is never silently attached to a guessed identity.
+    """
+    norm = _norm_artist_name(artist_name)
+    if not norm:
+        return None, "UNRESOLVED", "blank or unnormalizable artist name"
+    try:
+        exact = _rows(
+            conn,
+            "SELECT st.artist_key, a.name FROM artist_search_terms st "
+            "JOIN artists a USING (artist_key) WHERE st.normalized_term = ?",
+            [norm],
+        )
+    except Exception as exc:
+        return None, "UNRESOLVED", f"resolution query failed: {exc}"
+    if len(exact) == 1:
+        return exact[0]["artist_key"], "VERIFIED_EXACT", f"exact name match: {exact[0]['name']}"
+    if len(exact) > 1:
+        return None, "CONFLICT", f"{len(exact)} exact matches in the universe; buyer review required"
+    try:
+        near = artist_security.search_artists(conn, artist_name, limit=10)
+    except Exception:
+        near = []
+    if not near:
+        try:
+            near = artist_security.search_artists(conn, norm, limit=10)
+        except Exception:
+            near = []
+    if near:
+        return None, "REVIEW_REQUIRED", (
+            f"no exact match; {len(near)} near match(es) require buyer review: "
+            + ", ".join(h.get("name") or "?" for h in near[:4])
+        )
+    return None, "UNRESOLVED", "no candidate in the serving artist universe"
 
 
 def import_private_shows(
@@ -777,17 +1103,29 @@ def import_private_shows(
     *,
     file_name: str,
     headers: list[str],
-    rows: list[list[str]],
+    rows: list[list[str]] | list[dict[str, str]],
     mapping: list[dict[str, Any]],
     forced_mapping: dict[str, str] | None = None,
+    customer_id: str | None = None,
 ) -> dict[str, Any]:
     """Commit a previewed file into the private workspace tables.
 
     - PII columns (PROHIBITED / POTENTIAL_PII) are quarantined: values are
-      never read into private_shows.
+      never read into private_shows or canonical claims.
     - Only AUTO_ACCEPTED + explicitly forced mappings are ingested.
+    - Artist identity resolution FAILS CLOSED: artist_key attaches only on
+      VERIFIED_EXACT; every other row is REVIEW_REQUIRED / CONFLICT /
+      UNRESOLVED and stays unlinked.
     - Every stored show is OBSERVED_PRIVATE; nothing touches public serving.
+    - Canonical economics outcome claims + dataset/ingestion lineage are
+      written into the SAME canonical contract used by partner_import
+      (economics.customer_datasets / outcome_claims / pii_quarantine), so the
+      workspace UI surface and the canonical outcome vault converge.
     """
+    from ..acquisition.contracts import content_hash_of, utc_now
+
+
+
     pii_statuses = design_partner.scan_pii_columns(headers)
     import_id = "imp_" + hashlib.sha256(
         (file_name + str(datetime.now(timezone.utc).timestamp())).encode()
@@ -796,15 +1134,18 @@ def import_private_shows(
     header_to_field: dict[str, str] = {}
     for m in mapping:
         resolved = m.get("canonical_field")
-        if m["status"] == "AUTO_ACCEPTED" and resolved:
-            header_to_field[m["header"]] = resolved
-        elif m["header"] in forced and forced[m["header"]] in design_partner.CANONICAL_FIELDS:
-            header_to_field[m["header"]] = forced[m["header"]]
+        header = m.get("header", "")
+        if m.get("status") == "AUTO_ACCEPTED" and resolved:
+            header_to_field[header] = resolved
+        elif header in forced and forced[header] in design_partner.CANONICAL_FIELDS:
+            header_to_field[header] = forced[header]
+    mapping_by_canonical = {v: k for k, v in header_to_field.items()}
 
     quarantined: list[dict[str, Any]] = []
     for header, status in pii_statuses.items():
-        if status in ("PROHIBITED", "POTENTIAL_PII"):
+        if status in (PROHIBITED, POTENTIAL_PII):
             header_to_field.pop(header, None)
+            mapping_by_canonical = {k: v for k, v in mapping_by_canonical.items() if v != header}
             quarantined.append({"column": header, "status": status})
 
     _FIELDS = [
@@ -822,16 +1163,112 @@ def import_private_shows(
         "promoter_contribution", "settlement_gross", "settlement_net",
         "currency", "source_system", "notes",
     ]
+    # Normalize rows to dicts keyed by header (preview now returns dict rows;
+    # positional rows are still accepted for backwards compatibility).
+    dict_rows: list[dict[str, str]] = []
+    for row in rows:
+        if isinstance(row, dict):
+            dict_rows.append({h: str(row.get(h) or "") for h in headers})
+        else:
+            cells = [str(c) if c is not None else "" for c in row]
+            dict_rows.append({h: (cells[i] if i < len(cells) else "") for i, h in enumerate(headers)})
+
     inserted = 0
     skipped = 0
-    resolved_artists = 0
-    for row_index, row in enumerate(rows):
+    identity_counts: dict[str, int] = {"VERIFIED_EXACT": 0, "SUPPORTED": 0, "REVIEW_REQUIRED": 0, "UNRESOLVED": 0, "CONFLICT": 0}
+    cust_id = customer_id or f"workspace_{import_id}"
+
+    # ── canonical lineage + claims on the shared economics contract ──
+    canonical: dict[str, Any] = {"status": "NOT_APPLIED", "note": "canonical economics schema not initialized"}
+    file_id = f"f_{content_hash_of((file_name, json.dumps(dict_rows[:1], default=str)))[:16]}"
+    try:
+        _ensure_canonical_schema(workspace)
+        econ = EconomicsRepository(workspace)
+        dataset_id = f"ds_{import_id}"
+        econ.create_customer_dataset(
+            dataset_id=dataset_id, customer_id=cust_id,
+            sharing_policy="PRIVATE_ONLY", source_system="terminal_backtest",
+            notes=f"{file_name} via backtest UI",
+        )
+        econ.insert_source_file(
+            file_id=file_id, dataset_id=dataset_id, file_name=file_name,
+            format=(file_name.rsplit(".", 1)[-1] if "." in file_name else "csv"),
+            row_count=len(dict_rows),
+            raw_content_hash=content_hash_of(json.dumps(dict_rows[:20], default=str)),
+            created_at=utc_now().isoformat(),
+        )
+        econ.insert_ingestion_run(
+            ingestion_run_id=f"ir_{import_id}", dataset_id=dataset_id,
+            software_version="buyer_decision_system_v1",
+            created_at=utc_now().isoformat(),
+        )
+        for header, status in pii_statuses.items():
+            if status in (PROHIBITED, POTENTIAL_PII):
+                econ.insert_pii_quarantine(
+                    quarantine_id=f"pq_{content_hash_of((file_id, header))[:16]}",
+                    file_id=file_id, column_name=header,
+                    reason="prohibited_buyer_pii" if status == PROHIBITED else "potential_pii_review_required",
+                    sample_count=len(dict_rows),
+                    created_at=utc_now().isoformat(),
+                )
+        claims_inserted = 0
+        claims_skipped = 0
+        quality_issues: list[dict[str, Any]] = partner_import.data_quality_audit(
+            dict_rows, mapping_by_canonical=mapping_by_canonical,
+        )
+        for row_index, row_dict in enumerate(dict_rows, start=1):
+            canonical_event_id = partner_import.resolve_event_key(
+                row_dict, customer_id=cust_id, mapping_by_canonical=mapping_by_canonical,
+            )
+            currency_raw = row_dict.get(mapping_by_canonical.get("currency", "currency"), "")
+            currency = str(currency_raw).strip().upper() if currency_raw else None
+            for claim in partner_import.build_claims_for_row(
+                row_dict,
+                canonical_event_id=canonical_event_id,
+                customer_id=cust_id,
+                dataset_id=dataset_id,
+                source_file_id=file_id,
+                row_number=row_index,
+                mapping_by_canonical=mapping_by_canonical,
+                currency=currency,
+            ):
+                if econ.insert_outcome_claim(claim):
+                    claims_inserted += 1
+                else:
+                    claims_skipped += 1
+            econ.upsert_decision_cutoffs({
+                "event_id": canonical_event_id,
+                "canonical_event_id": canonical_event_id,
+                "booking_cutoff": row_dict.get(mapping_by_canonical.get("booking_date", "booking_date"), "") or None,
+                "announcement_cutoff": row_dict.get(mapping_by_canonical.get("announcement_date", "announcement_date"), "") or None,
+                "onsale_cutoff": row_dict.get(mapping_by_canonical.get("onsale_date", "onsale_date"), "") or None,
+                "event_cutoff": row_dict.get(mapping_by_canonical.get("event_date", "event_date"), "") or None,
+                "cutoff_notes": "imported via terminal backtest UI",
+                "software_version": "buyer_decision_system_v1",
+            })
+        canonical = {
+            "status": "APPLIED",
+            "dataset_id": dataset_id,
+            "customer_id": cust_id,
+            "claims_inserted": claims_inserted,
+            "duplicates_skipped": claims_skipped,
+            "quality_issues": quality_issues[:10],
+        }
+    except Exception as exc:  # canonical contract unavailable → honest degraded state
+        canonical = {
+            "status": "FAILED",
+            "error": str(exc)[:300],
+            "note": "workspace rows remain PRIVATE_ONLY; canonical outcome contract was not written",
+        }
+
+    _COLUMNS = [c for c in _FIELDS if c != "import_id"] + ["identity_status", "identity_detail"]
+    for row_index, row_dict in enumerate(dict_rows):
         record: dict[str, str | None] = {}
-        for idx, header in enumerate(headers):
+        for header in headers:
             field = header_to_field.get(header)
             if not field:
                 continue
-            value = row[idx] if idx < len(row) else ""
+            value = row_dict.get(header, "")
             if value == "":
                 value = None
             if field in design_partner._NUMERIC_FIELDS and value is not None:
@@ -844,28 +1281,19 @@ def import_private_shows(
         if not artist_name or not event_date:
             skipped += 1
             continue
-        # Resolve to a serving identity where possible (first exact-ish hit).
-        artist_key = None
-        try:
-            hits = artist_security.search_artists(conn, artist_name, limit=5)
-            for hit in hits:
-                if hit.get("name", "").lower() == artist_name.lower():
-                    artist_key = hit.get("entity_id")
-                    break
-            if artist_key is None and hits:
-                artist_key = hits[0].get("entity_id")
-        except Exception:
-            artist_key = None
-        if artist_key:
-            resolved_artists += 1
+        # Fail-closed identity resolution — never guess, never first-hit.
+        artist_key, identity_status, identity_detail = _resolve_artist_fail_closed(conn, artist_name)
+        identity_counts[identity_status] = identity_counts.get(identity_status, 0) + 1
         record["artist_key"] = artist_key
+        record["identity_status"] = identity_status
+        record["identity_detail"] = identity_detail
         show_id = "show_" + hashlib.sha256(
             (f"{artist_name}|{event_date}|{record.get('venue_name') or ''}|{row_index}").encode()
         ).hexdigest()[:20]
-        values = [show_id, import_id] + [record.get(c) for c in _FIELDS if c != "import_id"]
-        placeholders = ",".join("?" * (len(_FIELDS) + 1))
+        values = [show_id, import_id] + [record.get(c) for c in _COLUMNS]
+        placeholders = ",".join(["?"] * (len(_COLUMNS) + 2))
         workspace.execute(
-            f"INSERT OR REPLACE INTO private_shows (show_id, {', '.join(_FIELDS)}, provenance) "
+            f"INSERT OR REPLACE INTO private_shows (show_id, import_id, {', '.join(_COLUMNS)}, provenance) "
             f"VALUES ({placeholders}, 'OBSERVED_PRIVATE')",
             values,
         )
@@ -883,10 +1311,13 @@ def import_private_shows(
         "import_id": import_id,
         "rows_imported": inserted,
         "rows_skipped": skipped,
-        "artists_resolved": resolved_artists,
+        "artists_resolved": identity_counts.get("VERIFIED_EXACT", 0),
+        "identity": identity_counts,
+        "identity_review_required": identity_counts.get("REVIEW_REQUIRED", 0) + identity_counts.get("CONFLICT", 0) + identity_counts.get("UNRESOLVED", 0),
         "pii_quarantined": quarantined,
+        "canonical": canonical,
         "sharing_policy": "PRIVATE_ONLY",
-        "note": "private history never enters the public serving DuckDB",
+        "note": "private history never enters the public serving DuckDB; only VERIFIED_EXACT identities are linked to serving artists",
     }
 
 
@@ -1113,7 +1544,82 @@ def close_out_show(workspace: Any, snapshot_id: str, actuals: dict[str, Any]) ->
         [show_id] + vals,
     )
     workspace.commit()
-    return {"vault_id": vault_id, "show_id": show_id, "snapshot_id": snapshot_id, "provenance": "OBSERVED_PRIVATE"}
+    # Canonical convergence: realized actuals become outcome claims on the SAME
+    # canonical contract as design-partner imports (knowledge_time = event date).
+    canonical = _write_canonical_outcome_claims(workspace, record, suffix=f"closeout_{snapshot_id[:12]}")
+    return {
+        "vault_id": vault_id, "show_id": show_id, "snapshot_id": snapshot_id,
+        "provenance": "OBSERVED_PRIVATE", "canonical": canonical,
+    }
+
+
+def _ensure_canonical_schema(workspace: Any) -> None:
+    """Apply the canonical economics migrations at most once per workspace."""
+    from ..migrations import apply_pending_migrations
+    try:
+        has = workspace.execute(
+            "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'schema_migrations' AND table_schema = 'main'"
+        ).fetchone()[0]
+    except Exception:
+        has = 0
+    if not has:
+        apply_pending_migrations(workspace)
+
+
+def _write_canonical_outcome_claims(workspace: Any, record: dict[str, Any], *, suffix: str) -> dict[str, Any]:
+    """Write realized-outcome claims into the canonical economics contract.
+
+    Best-effort and honest: if the canonical schema is unavailable the call
+    reports FAILED and the workspace row remains PRIVATE_ONLY.
+    """
+    from ..acquisition.contracts import utc_now
+    row_dict: dict[str, str] = {}
+    for field in partner_import.OUTCOME_FIELD_MAP:
+        value = record.get(field)
+        if value is not None and str(value).strip() != "":
+            row_dict[field] = str(value)
+    copy_identity = ("artist_name", "venue_name", "event_date", "market", "city", "state",
+                     "country", "currency", "deal_type", "artist_guarantee", "artist_backend_pct",
+                     "announcement_date", "booking_date", "onsale_date")
+    for field in copy_identity:
+        value = record.get(field)
+        if value is not None and str(value).strip() != "":
+            row_dict[field] = str(value)
+    if not row_dict:
+        return {"status": "NOT_APPLIED", "note": "no realized outcome fields to claim"}
+    try:
+        _ensure_canonical_schema(workspace)
+        econ = EconomicsRepository(workspace)
+        dataset_id = f"ds_{suffix[:24]}"
+        econ.create_customer_dataset(
+            dataset_id=dataset_id, customer_id="workspace_closeout",
+            sharing_policy="PRIVATE_ONLY", source_system="terminal_closeout",
+            notes=f"post-show actuals {suffix}", created_at=utc_now().isoformat(),
+        )
+        econ.insert_ingestion_run(
+            ingestion_run_id=f"ir_{suffix[:24]}", dataset_id=dataset_id,
+            software_version="buyer_decision_system_v1", created_at=utc_now().isoformat(),
+        )
+        mapping_by_canonical = {f: f for f in row_dict}
+        claims_inserted = 0
+        claims_skipped = 0
+        for claim in partner_import.build_claims_for_row(
+            row_dict,
+            canonical_event_id=f"closeout_{suffix[:24]}",
+            customer_id="workspace_closeout",
+            dataset_id=dataset_id,
+            source_file_id=f"f_closeout_{suffix[:24]}",
+            row_number=1,
+            mapping_by_canonical=mapping_by_canonical,
+            currency=row_dict.get("currency"),
+        ):
+            if econ.insert_outcome_claim(claim):
+                claims_inserted += 1
+            else:
+                claims_skipped += 1
+        return {"status": "APPLIED", "dataset_id": dataset_id, "claims_inserted": claims_inserted, "duplicates_skipped": claims_skipped}
+    except Exception as exc:
+        return {"status": "FAILED", "error": str(exc)[:300], "note": "workspace row remains PRIVATE_ONLY"}
 
 
 def outcome_vault_summary(workspace: Any) -> dict[str, Any]:
@@ -1218,12 +1724,20 @@ def model_readiness(workspace: Any, conn: Any) -> dict[str, Any]:
     artists: set[str] = set()
     dates: list[str] = []
     eligible_oos = 0
+    pit_family_breakdown: dict[str, int] = {}
     for s in shows:
         cutoff = s.get("booking_date") or s.get("announcement_date") or s.get("onsale_date")
         if cutoff:
             with_cutoff += 1
-        if s.get("artist_key"):
-            with_pit += 1
+        pit_ok = False
+        if s.get("artist_key") and cutoff:
+            pit = pit_features_at(conn, s["artist_key"], cutoff)
+            # leakage-safe reconstruction PASS = at least one admissible family
+            pit_ok = pit.get("status") == "PIT_COMPLETE"
+            if pit_ok:
+                with_pit += 1
+            else:
+                pit_family_breakdown["PIT_INSUFFICIENT"] = pit_family_breakdown.get("PIT_INSUFFICIENT", 0) + 1
         if _decode_or_none(s.get("tickets_sold")) is not None or _decode_or_none(s.get("paid_tickets")) is not None:
             with_tickets += 1
         if _decode_or_none(s.get("ticket_gross")) is not None:
@@ -1240,9 +1754,14 @@ def model_readiness(workspace: Any, conn: Any) -> dict[str, Any]:
         artists.add(s.get("artist_name") or "UNKNOWN")
         if s.get("event_date"):
             dates.append(str(s["event_date"])[:10])
-        if s.get("artist_key") and cutoff and (
-            _decode_or_none(s.get("tickets_sold")) is not None or
-            _decode_or_none(s.get("paid_tickets")) is not None
+        # OOS eligibility: resolved event AND decision cutoff AND leakage-safe
+        # PIT reconstruction AND a target outcome AND OBSERVED_PRIVATE provenance.
+        if (
+            pit_ok
+            and (s.get("provenance") or "OBSERVED_PRIVATE") == "OBSERVED_PRIVATE"
+            and (_decode_or_none(s.get("tickets_sold")) is not None
+                 or _decode_or_none(s.get("paid_tickets")) is not None
+                 or _decode_or_none(s.get("promoter_contribution")) is not None)
         ):
             eligible_oos += 1
     time_span = None
@@ -1254,6 +1773,7 @@ def model_readiness(workspace: Any, conn: Any) -> dict[str, Any]:
         "private_settled_shows": n,
         "with_booking_cutoff": with_cutoff,
         "with_valid_pit_reconstruction": with_pit,
+        "pit_insufficient": pit_family_breakdown.get("PIT_INSUFFICIENT", 0),
         "with_tickets_sold": with_tickets,
         "with_gross": with_gross,
         "with_guarantee": with_guarantee,
@@ -1270,5 +1790,5 @@ def model_readiness(workspace: Any, conn: Any) -> dict[str, Any]:
             "200–1,000": "exploratory baselines only",
             "1,000+ diverse settled outcomes": "begin serious OOS evaluation",
         },
-        "note": "no predictive model is trained in this milestone",
+        "note": "with_valid_pit_reconstruction means an actual leakage-safe PIT reconstruction (knowledge_time <= cutoff) PASSED; nothing is counted on resolution alone",
     }

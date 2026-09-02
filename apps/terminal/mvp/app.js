@@ -848,7 +848,7 @@ async function renderMonitor() {
     document.getElementById("readyBox").innerHTML =
       `<table><tbody>
          ${[["Private settled shows", r.private_settled_shows], ["With booking/announcement/on-sale cutoff", r.with_booking_cutoff],
-           ["With PIT-reconstructable identity", r.with_valid_pit_reconstruction], ["With tickets sold", r.with_tickets_sold],
+           ["With leakage-safe PIT reconstruction", r.with_valid_pit_reconstruction], ["PIT insufficient", r.pit_insufficient], ["With tickets sold", r.with_tickets_sold],
            ["With gross", r.with_gross], ["With guarantee", r.with_guarantee], ["With expenses", r.with_expenses],
            ["With profit/contribution", r.with_profit_or_contribution], ["Markets", r.markets], ["Venues", r.venues],
            ["Artists", r.artists], ["Eligible OOS rows", r.eligible_oos_rows]].map(([k, v]) =>
@@ -861,13 +861,16 @@ async function renderMonitor() {
 /* ── underwrite ──────────────────────────────────────────── */
 let uwKey = "";
 
+// BLANK = UNKNOWN. Explicit "0" = assumed zero. No hidden defaults.
 const uwInputs = {
-  usable_capacity: "", sellable_capacity: "", average_ticket_price: "", sell_through: "0.55",
-  guarantee: "", backend_percentage: "0.15", artist_expenses: "0",
-  deal_type: "GUARANTEE_VS_PERCENTAGE",
+  usable_capacity: "", sellable_capacity: "", average_ticket_price: "",
+  sell_through: "", sell_through_down: "", sell_through_up: "",
+  guarantee: "", backend_percentage: "", artist_expenses: "",
+  deal_type: "",
   cost_marketing: "", cost_production: "", cost_venue: "", cost_labor: "",
-  cost_insurance: "0", cost_other: "0", tax_rate: "0", ticketing_deduction: "0",
-  ancillary_revenue: "0", sponsorship: "0",
+  cost_insurance: "", cost_other: "", tax_rate: "", ticketing_deduction: "",
+  ancillary_revenue: "", sponsorship: "",
+  template: "", accept_template: "",
 };
 
 async function renderUnderwrite() {
@@ -903,7 +906,16 @@ async function renderUnderwrite() {
         <div class="form-row"><label>Usable capacity</label><input id="uwUsable" type="number" placeholder="0" value="${esc(uwInputs.usable_capacity)}"></div>
         <div class="form-row"><label>Sellable capacity</label><input id="uwSellable" type="number" placeholder="default = usable" value="${esc(uwInputs.sellable_capacity)}"></div>
         <div class="form-row"><label>Average ticket price ($)</label><input id="uwAtp" type="number" placeholder="0" value="${esc(uwInputs.average_ticket_price)}"></div>
-        <div class="form-row"><label>Base sell-through (0–1)</label><input id="uwSt" type="number" step="0.01" min="0" max="1" value="${esc(uwInputs.sell_through)}"></div>
+        <div class="form-row"><label>Base sell-through (0–1)</label><input id="uwSt" type="number" step="0.01" min="0" max="1" placeholder="blank = UNKNOWN" value="${esc(uwInputs.sell_through)}"></div>
+        <div class="form-row"><label>Downside sell-through (0–1)</label><input id="uwStDown" type="number" step="0.01" min="0" max="1" placeholder="optional" value="${esc(uwInputs.sell_through_down)}"></div>
+        <div class="form-row"><label>Upside sell-through (0–1)</label><input id="uwStUp" type="number" step="0.01" min="0" max="1" placeholder="optional" value="${esc(uwInputs.sell_through_up)}"></div>
+        <div class="form-row"><label>Scenario template</label>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            ${Object.entries({ CONSERVATIVE: "25/45/65", MODERATE: "35/55/75", AGGRESSIVE: "45/65/85" }).map(([name, rates]) =>
+              `<button class="btn small" data-tpl="${name}">${name} ${rates}</button>`).join("")}
+          </div>
+          <p class="small muted">Templates fill sell-through as <b>SYSTEM_TEMPLATE_ASSUMPTION</b>. Build the brief to accept; edit a field to override it with your own USER_ASSUMPTION.</p>
+        </div>
       </div>
     </div>
     <div style="height:12px"></div>
@@ -912,15 +924,16 @@ async function renderUnderwrite() {
         <div class="form-row"><label>Guarantee ($)</label><input id="uwGuarantee" type="number" placeholder="0" value="${esc(uwInputs.guarantee)}"></div>
         <div class="form-row"><label>Backend % (0–1)</label><input id="uwBackend" type="number" step="0.01" min="0" max="1" value="${esc(uwInputs.backend_percentage)}"></div>
         <div class="form-row"><label>Artist expense allowance ($)</label><input id="uwArtistExp" type="number" value="${esc(uwInputs.artist_expenses)}"></div>
-        <div class="form-row"><label>Deal type</label><select id="uwDeal">${["GUARANTEE_VS_PERCENTAGE", "FLAT_GUARANTEE", "PERCENTAGE_OF_DEFINED_BASE"].map((t) =>
-          `<option ${t === uwInputs.deal_type ? "selected" : ""}>${t}</option>`).join("")}</select></div>
+        <div class="form-row"><label>Deal type</label><select id="uwDeal">${["", "GUARANTEE_VS_PERCENTAGE", "FLAT_GUARANTEE", "PERCENTAGE_OF_DEFINED_BASE"].map((t) =>
+          `<option value="${t}" ${t === uwInputs.deal_type ? "selected" : ""}>${t || "(blank = UNKNOWN)"}</option>`).join("")}</select></div>
       </div>
       <div class="panel"><h3>4 · Expenses & revenue (blank = UNKNOWN, 0 = assumed zero)</h3>
         <div class="form-row"><label>Marketing</label><input id="uwMkt" type="number" value="${esc(uwInputs.cost_marketing)}"></div>
         <div class="form-row"><label>Production</label><input id="uwProd" type="number" value="${esc(uwInputs.cost_production)}"></div>
         <div class="form-row"><label>Venue rental</label><input id="uwVenue" type="number" value="${esc(uwInputs.cost_venue)}"></div>
         <div class="form-row"><label>Labor / insurance / other</label><input id="uwOther" type="text" placeholder="0,0,0" value="${esc(uwInputs.cost_labor)},${esc(uwInputs.cost_insurance)},${esc(uwInputs.cost_other)}"></div>
-        <div class="form-row"><label>Ancillary revenue</label><input id="uwAnc" type="number" value="${esc(uwInputs.ancillary_revenue)}"></div>
+        <div class="form-row"><label>Ancillary revenue</label><input id="uwAnc" type="number" placeholder="blank = UNKNOWN" value="${esc(uwInputs.ancillary_revenue)}"></div>
+        <div class="form-row"><label>Tax rate (0–1) · ticket deduction</label><input id="uwTaxDed" type="text" placeholder="blank,blank = UNKNOWN" value="${esc(uwInputs.tax_rate)},${esc(uwInputs.ticketing_deduction)}"></div>
       </div>
     </div>
     <div style="height:12px"></div>
@@ -939,6 +952,21 @@ async function renderUnderwrite() {
       uwA.value = (p.artist || {}).name || aKey;
     } catch (e) { /* keep key */ }
   }
+  // Scenario template buttons (SYSTEM_TEMPLATE_ASSUMPTION until accepted).
+  // Delegated so innerHTML rebuilds can never orphan the handlers.
+  view.addEventListener("click", (ev) => {
+    const btn = ev.target.closest && ev.target.closest("[data-tpl]");
+    if (!btn) return;
+    const rates = { CONSERVATIVE: ["0.25", "0.45", "0.65"], MODERATE: ["0.35", "0.55", "0.75"], AGGRESSIVE: ["0.45", "0.65", "0.85"] }[btn.dataset.tpl];
+    if (!rates) return;
+    document.getElementById("uwStDown").value = rates[0];
+    document.getElementById("uwSt").value = rates[1];
+    document.getElementById("uwStUp").value = rates[2];
+    uwInputs.template = btn.dataset.tpl;
+    uwInputs.accept_template = "accept";
+    toast(`Template ${btn.dataset.tpl} applied — SYSTEM_TEMPLATE_ASSUMPTION. Build the brief to accept.`);
+  });
+
   uwA.addEventListener("input", async () => {
     const q = uwA.value.trim();
     const hits = document.getElementById("uwAHits");
@@ -965,11 +993,14 @@ async function renderUnderwrite() {
 
 function collectUwInputs() {
   const other = (document.getElementById("uwOther").value || "").split(",");
+  const taxDed = (document.getElementById("uwTaxDed").value || "").split(",");
   const g = (el) => (document.getElementById(el) || {}).value ?? "";
   uwInputs.usable_capacity = g("uwUsable");
   uwInputs.sellable_capacity = g("uwSellable");
   uwInputs.average_ticket_price = g("uwAtp");
   uwInputs.sell_through = g("uwSt");
+  uwInputs.sell_through_down = g("uwStDown");
+  uwInputs.sell_through_up = g("uwStUp");
   uwInputs.guarantee = g("uwGuarantee");
   uwInputs.backend_percentage = g("uwBackend");
   uwInputs.deal_type = g("uwDeal");
@@ -977,15 +1008,20 @@ function collectUwInputs() {
   uwInputs.cost_production = g("uwProd");
   uwInputs.cost_venue = g("uwVenue");
   uwInputs.cost_labor = (other[0] || "").trim();
-  uwInputs.cost_insurance = (other[1] || "0").trim();
-  uwInputs.cost_other = (other[2] || "0").trim();
+  uwInputs.cost_insurance = (other[1] || "").trim();
+  uwInputs.cost_other = (other[2] || "").trim();
   uwInputs.artist_expenses = g("uwArtistExp");
   uwInputs.ancillary_revenue = g("uwAnc");
+  uwInputs.tax_rate = (taxDed[0] || "").trim();
+  uwInputs.ticketing_deduction = (taxDed[1] || "").trim();
   uwInputs.event_date = g("uwD");
+  // Template marker travels only when the buyer actually applied it this run.
+  const payload = { ...uwInputs };
+  if (!uwInputs.template) { delete payload.template; delete payload.accept_template; }
   return {
     artist_key: uwKey,
     market_key: g("uwM").trim() || null,
-    inputs: { ...uwInputs },
+    inputs: payload,
   };
 }
 
@@ -1034,6 +1070,16 @@ function renderBrief(b) {
       <h3>${esc(label)} <span class="chip unk">USER-DEFINED SCENARIO</span></h3>
       ${economicsRows(label, sc)}
     </div>`).join("");
+  const economicsEmpty = !Object.keys(b.economics || {}).length
+    ? `<div class="panel"><h3>E · Scenario math</h3><p class="muted">No scenario sell-through entered — the brief is honest about what it cannot compute. Enter a base sell-through, or apply a template above, to run the deterministic economics.</p></div>`
+    : "";
+  const templateChip = b.economics_template ? ` <span class="chip unk">SYSTEM TEMPLATE ${esc(Object.values(b.economics_template)[0] || "")}</span>` : "";
+  const provRows = Object.entries(b.economics_input_provenance || {}).map(([k, v]) =>
+    `<tr><td class="muted">${esc(k)}</td><td>${v === "UNKNOWN" ? `<span class="chip unk">UNKNOWN</span>` : v === "SYSTEM_TEMPLATE_ASSUMPTION" ? `<span class="chip unk">SYSTEM_TEMPLATE_ASSUMPTION</span>` : prov(v)}</td></tr>`).join("");
+  const provBlock = provRows
+    ? `<div class="panel"><h3>Where did this number come from?</h3><table><tbody>${provRows}</tbody></table>
+       <p class="small muted">BLANK = UNKNOWN · explicit 0 = assumed zero · template fills = SYSTEM_TEMPLATE_ASSUMPTION until you edit or accept.</p></div>`
+    : "";
 
   const flagsHTML = (b.risk_flags || []).length
     ? b.risk_flags.map((f) => `<div class="alt-card"><b>${esc(f.label)}</b><div class="small muted">${esc(f.detail)}</div></div>`).join("")
@@ -1050,7 +1096,7 @@ function renderBrief(b) {
     `<div class="now-row"><b>${esc(e.artist_name)}</b> · <span class="muted">${esc(fmtDate(e.event_date))} · ${esc(e.venue_city || "")}</span></div>`).join("");
 
   view.innerHTML += `<div id="briefWrap" class="panel hero" style="border-top:3px solid #c9a961">
-    <h2>Buyer decision brief — ${esc(b.artist.name || "")} <span class="badge">${esc(b.generation || "")}</span></h2>
+    <h2>Buyer decision brief — ${esc(b.artist.name || "")} ${templateChip}<span class="badge">${esc(b.generation || "")}</span></h2>
     <p class="small muted">Evidence generation frozen here for audit. Every number below is ${prov("OBSERVED")} public evidence, ${prov("USER ASSUMPTION")} buyer input, or ${prov("UNKNOWN")} — never invented.</p>
     <div class="grid cols2">
       <div class="panel"><h3>A · Decision header</h3><table><tbody>
@@ -1075,7 +1121,8 @@ function renderBrief(b) {
       ${competing ? `<p class="small muted">Provider-listed shows by other artists in this market ±14 days of the planned date:</p>${competing}` : `<div class="empty">No competing forward events detected in this market window.</div>`}
     </div>
     <div style="height:12px"></div>
-    <div class="grid cols3">${scenariosHTML}</div>
+    ${economicsEmpty || `<div class="grid cols3">${scenariosHTML}</div>`}
+    ${provBlock || ""}
     <div style="height:12px"></div>
     <div class="grid cols2">
       <div class="panel"><h3>F · Risk flags <span class="chip unk">deterministic</span></h3>${flagsHTML}</div>
@@ -1211,7 +1258,7 @@ async function renderBacktest() {
     <p class="muted">Upload your historical show history (CSV/TSV/XLSX→CSV). Columns are mapped conservatively; buyer-level PII is quarantined and never read. Stays <b>PRIVATE_ONLY</b> in your workspace.</p>
     <div class="panel">
       <h3>1 · Upload</h3>
-      <input id="btFile" type="file" accept=".csv,.tsv,.tab,.txt">
+      <input id="btFile" type="file" accept=".csv,.tsv,.tab,.txt,.xlsx">
       <p class="small muted">No file handy? Load the bundled design-partner template (download <a href="/static/design_partner_show_history_template.csv" download>template.csv</a>).</p>
     </div>
     <div id="btPreview" class="empty">Choose a file to preview column mapping and PII quarantine.</div>
@@ -1223,17 +1270,25 @@ async function renderBacktest() {
   document.getElementById("btFile").addEventListener("change", async (ev) => {
     const file = ev.target.files && ev.target.files[0];
     if (!file) return;
-    const text = await file.text();
+    let body = { file_name: file.name };
+    if (file.name.toLowerCase().endsWith(".xlsx")) {
+      const buf = new Uint8Array(await file.arrayBuffer());
+      let binary = "";
+      buf.forEach((b) => { binary += String.fromCharCode(b); });
+      body.content_b64 = btoa(binary);
+    } else {
+      body.content = await file.text();
+    }
     document.getElementById("btPreview").innerHTML = `<div class="empty">previewing ${esc(file.name)}…</div>`;
     try {
-      const p = await api("/api/backtest/preview", { method: "POST", body: JSON.stringify({ file_name: file.name, content: text }) });
-      renderBacktestPreview(p, text);
+      const p = await api("/api/backtest/preview", { method: "POST", body: JSON.stringify(body) });
+      renderBacktestPreview(p, body);
     } catch (e) { document.getElementById("btPreview").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
   });
   loadRetro();
 }
 
-function renderBacktestPreview(p, content) {
+function renderBacktestPreview(p, contentBody) {
   const mapRows = (p.mapping || []).map((m) => `
     <tr>
       <td>${esc(m.header)}</td>
@@ -1245,29 +1300,30 @@ function renderBacktestPreview(p, content) {
       <td>${esc(m.status)}</td>
     </tr>`).join("");
   const piiList = (p.prohibited_pii || []).map((h) => esc(h)).join(", ") || "none";
+  const piiNote = p.pii_redacted && p.pii_redacted.length
+    ? ` — PII values <b>redacted</b> in this preview and never sent back` : "";
   const previewTable = `<table><thead><tr>${(p.headers || []).slice(0, 8).map((h) => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>
-    ${(p.preview_rows || []).map((r) => `<tr>${r.slice(0, 8).map((c) => `<td>${esc(String(c).slice(0, 24))}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+    ${(p.preview_rows || []).map((r) => `<tr>${(p.headers || []).slice(0, 8).map((h) => `<td>${esc(String(r[h] ?? "").slice(0, 24))}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
   document.getElementById("btPreview").innerHTML = `
-    <div class="panel" style="margin-top:12px;border-left:3px solid ${p.prohibited_pii.length ? "#e05d57" : "#3da44b"}">
+    <div class="panel" style="margin-top:12px;border-left:3px solid ${(p.prohibited_pii || []).length ? "#e05d57" : "#3da44b"}">
       <h3>Column mapping — ${p.row_count} rows · ${p.auto_mapped} auto-mapped</h3>
       <table><thead><tr><th>Header</th><th>Maps to</th><th>Status</th></tr></thead><tbody>${mapRows}</tbody></table>
-      <h3>PII quarantine</h3><p class="small"><b>${esc(piiList || "no PII columns detected")}</b> — prohibited/potential PII columns are never read into analytics.</p>
+      <h3>PII quarantine</h3><p class="small"><b>${esc(piiList || "no PII columns detected")}</b>${piiNote} — prohibited/potential PII columns are never read into analytics.</p>
       <h3>Preview (first 5 rows, first 8 columns)</h3>${previewTable}
       <div style="margin-top:10px"><button class="btn primary" id="btCommit">Import ${p.row_count} rows (PRIVATE_ONLY)</button></div>
     </div>`;
   document.getElementById("btCommit").onclick = async () => {
     const forced = {};
     document.querySelectorAll("[data-map]").forEach((el) => { if (el.value) forced[el.dataset.map] = el.value; });
-    // Re-split rows locally (server re-validates headers/rows contract).
-    const sep = p.file_name.toLowerCase().endsWith(".tsv") || p.file_name.toLowerCase().endsWith(".tab") ? "\t" : ",";
-    const lines = content.replace(/\r\n/g, "\n").split("\n").filter((l) => l.trim());
-    const headers = lines[0].split(sep).map((h) => h.trim());
-    const rows = lines.slice(1).map((l) => l.split(sep).map((c) => c.trim()));
+    // Commit sends the RAW file; the server re-parses with the robust parser so
+    // preview and commit always agree (quoted commas, multiline, BOM, xlsx).
     try {
       const r = await api("/api/backtest/commit", { method: "POST", body: JSON.stringify({
-        file_name: p.file_name, headers, rows, mapping: p.mapping, forced_mapping: forced,
+        file_name: p.file_name, headers: p.headers, content: contentBody.content || "",
+        content_b64: contentBody.content_b64 || "",
+        mapping: p.mapping, forced_mapping: forced,
       }) });
-      toast(`Imported ${r.rows_imported} shows (${r.artists_resolved} resolved to serving artists)`);
+      toast(`Imported ${r.rows_imported} shows · ${r.artists_resolved} VERIFIED_EXACT · ${r.identity_review_required || 0} need review`);
       loadRetro();
     } catch (e) { toast(e.message); }
   };
