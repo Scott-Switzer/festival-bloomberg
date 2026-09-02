@@ -506,7 +506,10 @@ def _materialize_markets(
     )
 
 
-def _materialize_peers(conn: duckdb.DuckDBPyConnection, affinity_path: Path | None) -> None:
+def _materialize_peers(
+    conn: duckdb.DuckDBPyConnection, affinity_path: Path | None,
+    max_peers_per_artist: int = 12,
+) -> None:
     if affinity_path is None:
         return
     if not affinity_path.exists():
@@ -565,7 +568,7 @@ def _materialize_peers(conn: duckdb.DuckDBPyConnection, affinity_path: Path | No
         QUALIFY ROW_NUMBER() OVER (
             PARTITION BY subject_key
             ORDER BY shared_listeners DESC NULLS LAST, jaccard DESC NULLS LAST, peer_key
-        ) <= 20
+        ) <= {int(max_peers_per_artist)}
         """
     )
 
@@ -787,10 +790,13 @@ def build(
     affinity_parquet: Path | None = None,
     output_path: Path = DEFAULT_OUTPUT,
     max_events_per_artist: int = 250,
+    max_peers_per_artist: int = 12,
 ) -> dict[str, Any]:
     """Materialize the product and return its compact validation summary."""
     if max_events_per_artist < 1:
         raise ValueError("max_events_per_artist must be positive")
+    if max_peers_per_artist < 1:
+        raise ValueError("max_peers_per_artist must be positive")
     report, artists = _read_estate(report_path)
     source = serving_snapshot or _current_snapshot()
     if not source.exists():
@@ -809,7 +815,10 @@ def build(
         _create_selected_table(conn, artists)
         _materialize_identity(conn)
         _materialize_attention(conn)
-        _materialize_peers(conn, affinity_parquet.resolve() if affinity_parquet else None)
+        _materialize_peers(
+            conn, affinity_parquet.resolve() if affinity_parquet else None,
+            max_peers_per_artist=max_peers_per_artist,
+        )
         _materialize_markets(conn, artists, str(report.get("created_at", ""))[:10] or "1970-01-01")
         _materialize_event_history(conn, max_events_per_artist)
         _materialize_festivals(conn)

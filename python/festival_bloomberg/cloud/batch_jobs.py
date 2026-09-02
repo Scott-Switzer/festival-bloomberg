@@ -616,6 +616,1114 @@ def run_cloud_smoke(spec: dict, scratch_dir: Path) -> dict:
 
 
 # ════════════════════════════════════════════════════════════════
+# TERMINAL SERVING BUILD V1 — compact buyer product artifact
+# ════════════════════════════════════════════════════════════════
+
+TERMINAL_SERVING_PREFIX = "serving/artist_security_terminal_v1"
+TERMINAL_ARTIFACT = "artist_security_terminal_v1"
+TERMINAL_CONTRACT_VERSION = "artist_security_terminal_v1"
+# Ceiling for the compact serving artifact. The local launcher downloads only
+# this object, so it must stay bounded (hundreds of MB or less).
+DEFAULT_MAX_TERMINAL_ARTIFACT_BYTES = 600 * 1024 * 1024
+
+
+def _streaming_sha256(path: Path, chunk_size: int = 16 * 1024 * 1024) -> str:
+    """SHA-256 of a file using bounded-memory streaming reads."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        while True:
+            chunk = fh.read(chunk_size)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _download_to_scratch(lake, bucket: str, key: str, dest: Path) -> int:
+    """Stream an R2 object to disk (boto3 multipart download); returns bytes."""
+    lake._s3.download_file(bucket, key, str(dest))
+    return dest.stat().st_size
+
+
+def _resolve_estate(lake, work: Path) -> tuple[Path, str, str, int]:
+    """Resolve the governed 25K artist estate artifact from R2, streaming to
+    scratch. Never guesses: checks the LAKE control key first (the identity
+    job's path), then the BACKUPS pointer + fallback newest ``estate_*.json``.
+    """
+    primary_key = "control/artist_security_25000/v1/estate.json"
+    for bucket in (lake.config.lake_bucket, lake.config.backup_bucket):
+        if lake.verify_object_exists(bucket, primary_key):
+            dest = work / "estate.json"
+            size = _download_to_scratch(lake, bucket, primary_key, dest)
+            return dest, primary_key, bucket, size
+
+    pointer_key = "control/artist_security_25000/current.json"
+    pointer = lake.read_checkpoint(lake.config.backup_bucket, pointer_key)
+    if pointer and pointer.get("source"):
+        src_key = str(pointer["source"])
+        dest = work / Path(src_key).name
+        size = _download_to_scratch(lake, lake.config.backup_bucket, src_key, dest)
+        return dest, src_key, lake.config.backup_bucket, size
+
+    objs = lake.list_prefix(lake.config.backup_bucket, "control/artist_security_25000/", limit=100)
+    estate_objs = sorted(
+        (o for o in objs if o["key"].endswith(".json") and "estate" in o["key"]),
+        key=lambda o: o["key"], reverse=True,
+    )
+    if not estate_objs:
+        raise RuntimeError(
+            "ESTATE_ARTIFACT_NOT_FOUND: no estate.json in LAKE and no estate_*.json "
+            "under control/artist_security_25000/ in BACKUPS"
+        )
+    best = estate_objs[0]
+    dest = work / Path(best["key"]).name
+    size = _download_to_scratch(lake, lake.config.backup_bucket, best["key"], dest)
+    return dest, best["key"], lake.config.backup_bucket, size
+
+
+def _resolve_affinity(lake, work: Path) -> tuple[Path, str, int]:
+    """Resolve the ListenBrainz pilot Gold affinity parquet from LAKE."""
+    candidates = ["gold/listenbrainz_pilot/artist_audience_affinity.parquet"]
+    if not lake.verify_object_exists(lake.config.lake_bucket, candidates[0]):
+        objs = lake.list_prefix(lake.config.lake_bucket, "gold/", limit=500)
+        aff = sorted(
+            (o for o in objs if "affinity" in o["key"] and o["key"].endswith(".parquet")),
+            key=lambda o: o["key"], reverse=True,
+        )
+        if not aff:
+            raise RuntimeError(
+                "GOLD_AFFINITY_NOT_FOUND: no gold/*affinity*.parquet object in LAKE; "
+                "audience peers/alternatives cannot be materialized"
+            )
+        candidates[0] = aff[0]["key"]
+    dest = work / "affinity.parquet"
+    size = _download_to_scratch(lake, lake.config.lake_bucket, candidates[0], dest)
+    return dest, candidates[0], size
+
+
+def _compute_demo_artists(db_path: Path, limit: int = 10) -> list[dict]:
+    """Select highest cross-source-completeness artists and persist them inside
+    the serving DB as ``demo_artists`` (Phase 4). Completeness counts real
+    observed evidence families only; never fabricates values."""
+    import duckdb
+    conn = duckdb.connect(str(db_path))
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS demo_artists (
+                artist_key VARCHAR PRIMARY KEY,
+                name VARCHAR,
+                tier VARCHAR,
+                completeness INTEGER NOT NULL,
+                market_count INTEGER,
+                historical_event_count INTEGER,
+                festival_appearance_count INTEGER,
+                attention_source_count INTEGER,
+                peer_count INTEGER,
+                future_event_count INTEGER
+            )
+        """)
+        rows = conn.execute(
+            f"""
+            WITH att AS (
+                SELECT artist_key, COUNT(DISTINCT source_system) AS attention_source_count
+                FROM attention_observations GROUP BY artist_key
+            ),
+            peers AS (
+                SELECT subject_key AS artist_key, COUNT(*) AS peer_count
+                FROM artist_peers GROUP BY subject_key
+            ),
+            fut AS (
+                SELECT artist_key, COUNT(*) AS future_event_count
+                FROM future_events GROUP BY artist_key
+            )
+            SELECT
+                a.artist_key, a.name, a.tier,
+                (a.market_count > 0)::INTEGER
+                  + (a.historical_event_count > 0)::INTEGER
+                  + (a.festival_appearance_count > 0)::INTEGER
+                  + (COALESCE(att.attention_source_count, 0) > 0)::INTEGER
+                  + (COALESCE(peers.peer_count, 0) > 0)::INTEGER
+                  + (COALESCE(fut.future_event_count, 0) > 0)::INTEGER AS completeness,
+                a.market_count, a.historical_event_count, a.festival_appearance_count,
+                COALESCE(att.attention_source_count, 0),
+                COALESCE(peers.peer_count, 0),
+                COALESCE(fut.future_event_count, 0)
+            FROM artists a
+            LEFT JOIN att USING (artist_key)
+            LEFT JOIN peers USING (artist_key)
+            LEFT JOIN fut USING (artist_key)
+            ORDER BY completeness DESC, a.market_count DESC, a.historical_event_count DESC,
+                     a.festival_appearance_count DESC, a.name
+            LIMIT {int(limit)}
+            """
+        ).fetchall()
+        cols = [
+            "artist_key", "name", "tier", "completeness", "market_count",
+            "historical_event_count", "festival_appearance_count",
+            "attention_source_count", "peer_count", "future_event_count",
+        ]
+        demo = [dict(zip(cols, row)) for row in rows]
+        conn.execute("DELETE FROM demo_artists")
+        if demo:
+            conn.executemany(
+                "INSERT INTO demo_artists VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [tuple(d[c] for c in cols) for d in demo],
+            )
+        conn.execute("CHECKPOINT")
+        return demo
+    finally:
+        conn.close()
+
+
+def _validate_terminal_db(
+    db_path: Path, demo_artists: list[dict], counts: dict,
+) -> dict:
+    """Phase 5: open the serving DB read-only, run required family checks and
+    representative terminal queries, and measure query latency. Returns the
+    validation summary used in CURRENT.json."""
+    import duckdb
+    conn = duckdb.connect(str(db_path), read_only=True)
+    try:
+        minimums = {
+            "artists": 25_000, "artist_search_terms": 1, "artist_external_ids": 1,
+            "attention_observations": 1, "artist_peers": 1, "artist_markets": 1,
+            "event_history": 1, "festival_appearances": 1, "future_events": 1,
+        }
+        checks: dict[str, int] = {}
+        passed = True
+        for table, minimum in minimums.items():
+            n = int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+            checks[table] = n
+            if n < minimum:
+                passed = False
+                checks.setdefault("failures", [])
+                checks["failures"].append(f"{table}={n} below minimum {minimum}")
+        if not demo_artists:
+            passed = False
+            checks.setdefault("failures", []).append("no demo artists selected")
+        # A demo artist must yield a populated page: peers + alternatives.
+        if demo_artists:
+            probe_key = demo_artists[0]["artist_key"]
+            peer_n = int(conn.execute(
+                "SELECT COUNT(*) FROM artist_peers WHERE subject_key = ?", [probe_key]
+            ).fetchone()[0])
+            if peer_n < 1:
+                passed = False
+                checks.setdefault("failures", []).append(
+                    f"top demo artist {probe_key} has no audience peers"
+                )
+        # Representative latency probes over the actual product queries.
+        probes = {
+            "search": """
+                SELECT st.artist_key, a.name FROM artist_search_terms st
+                JOIN artists a USING (artist_key)
+                WHERE st.normalized_term LIKE 'the%' OR st.normalized_term LIKE '%the%'
+                LIMIT 25
+            """,
+            "artist": "SELECT * FROM artists WHERE artist_key = ?",
+            "artist_full": "",  # filled below
+            "compare": "",
+        }
+        latencies: dict[str, float] = {}
+        t0 = time.time()
+        conn.execute(probes["search"]).fetchall()
+        latencies["search_ms"] = round((time.time() - t0) * 1000, 1)
+        if demo_artists:
+            key = demo_artists[0]["artist_key"]
+            t0 = time.time()
+            conn.execute("SELECT * FROM artists WHERE artist_key = ?", [key]).fetchall()
+            latencies["artist_ms"] = round((time.time() - t0) * 1000, 1)
+            t0 = time.time()
+            conn.execute(
+                "SELECT * FROM artist_peers WHERE subject_key = ? ORDER BY rank LIMIT 10",
+                [key],
+            ).fetchall()
+            latencies["peers_ms"] = round((time.time() - t0) * 1000, 1)
+            if len(demo_artists) > 1:
+                other = demo_artists[1]["artist_key"]
+                t0 = time.time()
+                conn.execute(
+                    "SELECT artist_key FROM artists WHERE artist_key IN (?, ?)", [key, other]
+                ).fetchall()
+                latencies["compare_probe_ms"] = round((time.time() - t0) * 1000, 1)
+        return {
+            "passed": passed,
+            "checks": checks,
+            "family_counts": {k: v for k, v in counts.items()},
+            "latency_ms": latencies,
+            "read_only": True,
+            "unknown_preserved": True,
+            "no_composite_score": True,
+        }
+    finally:
+        conn.close()
+
+
+_WIKIDATA_PROVIDER = {
+    # external_id_property -> (id_type, source_system)
+    "P1902": ("spotify", "wikidata"),
+    "P2397": ("youtube", "wikidata"),
+    "P213": ("isni", "wikidata"),
+    "P214": ("viaf", "wikidata"),
+    "P1953": ("discogs", "wikidata"),
+    "P856": ("official_website", "wikidata"),
+    "P434": ("musicbrainz", "wikidata"),
+    "P2003": ("instagram", "wikidata"),
+    "P2013": ("facebook", "wikidata"),
+    "P2002": ("twitter", "wikidata"),
+    "P2390": ("apple_music", "wikidata"),
+    "P2207": ("spotify_artist_id", "wikidata"),
+    "P3478": ("songkick", "wikidata"),
+    "P4208": ("bandcamp", "wikidata"),
+    "P3040": ("soundcloud", "wikidata"),
+}
+
+
+def _parquet_cols(conn, path: Path) -> set[str]:
+    """Column names of a local Parquet file without loading it."""
+    return {
+        r[0] for r in conn.execute(
+            f"DESCRIBE SELECT * FROM read_parquet('{path}')"
+        ).fetchall()
+    }
+
+
+def _pick(cols: set[str], *candidates: str) -> str | None:
+    return next((c for c in candidates if c in cols), None)
+
+
+def _qp(path: Path) -> str:
+    return "'" + str(path).replace("'", "''") + "'"
+
+
+def _materialize_r2_parquet_terminal(
+    conn, *,
+    estate_path: Path, estate_created_at: str,
+    artists: list[dict[str, Any]],
+    parquets: dict[str, Path],
+    max_events_per_artist: int = 60,
+    max_peers_per_artist: int = 12,
+) -> dict[str, Any]:
+    """Materialize the existing terminal schema from compact R2 assets only.
+
+    Sources (all confirmed present in LAKE/BACKUPS via inventory):
+        - estate.json            -> universe, markets, LB/Youtube summaries
+        - silver/events + edges  -> live history + festival appearances
+        - silver/series.parquet  -> festival identity
+        - metrics attention export -> attention observations
+        - events provider export -> forward/provider events
+        - gold affinity          -> audience peers/alternatives
+        - wikidata generation    -> artist external IDs
+
+    Every insert keeps the source/scope/status/knowledge-time boundaries of
+    the existing schema. UNKNOWN stays UNKNOWN (never zero).
+    """
+    from build_talent_buyer_terminal_v1 import (
+        _create_schema, _create_selected_table, _create_indexes,
+        _materialize_markets,
+    )
+    _create_schema(conn)
+    _create_selected_table(conn, artists)
+
+    q = _qp
+    rows_honest: dict[str, int] = {}
+
+    # ── artists (identity from estate; richer fields stay UNKNOWN/NULL) ──
+    conn.execute(
+        """
+        INSERT INTO artists (
+            artist_key, name, normalized_name, musicbrainz_id, tier,
+            selection_bucket, selection_reason, evidence_profile,
+            evidence_family_count, market_count, historical_event_count,
+            festival_appearance_count, venues_played,
+            listenbrainz_total_listens, listenbrainz_total_users,
+            youtube_identifiers, disambiguation, aliases, country,
+            origin_city, origin_region, area, artist_type, primary_genre,
+            life_span_begin, life_span_end, is_active,
+            source_system, source_scope, knowledge_time, status, rights_status
+        )
+        SELECT
+            t.artist_key, t.artist_name, lower(trim(t.artist_name)),
+            COALESCE(t.mbid, t.artist_key) , t.tier,
+            t.selection_bucket, t.selection_reason, t.evidence_profile,
+            t.evidence_family_count, t.market_count,
+            t.historical_event_count, t.festival_appearance_count,
+            t.venues_played, t.listenbrainz_total_listens,
+            t.listenbrainz_total_users, t.youtube_identifiers,
+            NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+            NULL, NULL, NULL,
+            'artist_security_estate', 'R2_CONTROL_ESTATE',
+            CAST(? AS TIMESTAMP), 'PRESENT', 'ESTATE_SUMMARY'
+        FROM selected_artists t
+        """,
+        [estate_created_at],
+    )
+    rows_honest["artists"] = int(
+        conn.execute("SELECT COUNT(*) FROM artists").fetchone()[0]
+    )
+
+    # ── artist_search_terms: canonical name + youtube channel ids ──
+    conn.execute(
+        """
+        INSERT INTO artist_search_terms
+        SELECT sha256(artist_key || '|canonical_name|' || lower(trim(name))),
+               artist_key, name, lower(trim(name)), 'canonical_name',
+               'artist_security_estate', 'R2_CONTROL_ESTATE', knowledge_time, status
+        FROM artists WHERE name IS NOT NULL AND trim(name) <> ''
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO artist_search_terms
+        SELECT
+            sha256(a.artist_key || '|youtube|' || trim(json_extract_string(yt.value, '$.channel_id'))),
+            a.artist_key, json_extract_string(yt.value, '$.channel_id'),
+            lower(trim(json_extract_string(yt.value, '$.channel_id'))),
+            'youtube_channel_id', 'artist_security_estate', 'R2_CONTROL_ESTATE',
+            a.knowledge_time, 'PRESENT'
+        FROM artists a
+        CROSS JOIN json_each(COALESCE(a.youtube_identifiers, '[]'::JSON)) yt
+        WHERE trim(json_extract_string(yt.value, '$.channel_id')) <> ''
+        """
+    )
+
+    # ── artist_external_ids from the Wikidata generation (latest) ──
+    # The wikidata parquet links qid -> typed external ids; the qid -> mbid
+    # join comes from rows whose external_id_property = 'P434' (MusicBrainz
+    # ID value).  Join each property row through that qid map, mirroring the
+    # identity graph's P434-join rule.  No mbid column is guessed.
+    wd_path = parquets.get("wikidata_artist_external_ids")
+    if wd_path is not None:
+        wd_cols = _parquet_cols(conn, wd_path)
+        prop_col = _pick(wd_cols, "external_id_property", "property")
+        val_col = _pick(wd_cols, "external_id_value", "value", "id_value")
+        qid_col = _pick(wd_cols, "qid", "wikidata_id", "QID")
+        if prop_col and val_col and qid_col:
+            conn.execute(
+                f"""
+                CREATE TEMP TABLE wd_qid_mbid AS
+                SELECT wd_qid, wd_mbid FROM (
+                    SELECT
+                        CAST({qid_col} AS VARCHAR) AS wd_qid,
+                        lower(trim(CAST({val_col} AS VARCHAR))) AS wd_mbid,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY CAST({qid_col} AS VARCHAR)
+                            ORDER BY lower(trim(CAST({val_col} AS VARCHAR)))
+                        ) AS mbid_rank
+                    FROM read_parquet({q(wd_path)})
+                    WHERE CAST({prop_col} AS VARCHAR) = 'P434'
+                      AND {val_col} IS NOT NULL
+                      AND trim(CAST({val_col} AS VARCHAR)) <> ''
+                ) q WHERE mbid_rank = 1
+                """
+            )
+            mapped = ",".join(
+                f"('{p}', '{id_type}', '{src}')"
+                for p, (id_type, src) in _WIKIDATA_PROVIDER.items()
+            )
+            conn.execute(
+                f"""
+                INSERT INTO artist_external_ids (
+                    external_id_key, artist_key, id_type, id_value, url,
+                    source_system, source_scope, knowledge_time, status,
+                    resolution_method, confidence
+                )
+                SELECT
+                    sha256('r2wd|' || w.{qid_col} || '|' || w.{prop_col} || '|' || w.{val_col}),
+                    'mbid::' || wq.wd_mbid,
+                    map.id_type, CAST(w.{val_col} AS VARCHAR), NULL,
+                    map.source_system, 'WIKIDATA_GENERATION', NULL,
+                    'PRESENT', 'WIKIDATA_PROPERTY_LINK', NULL
+                FROM read_parquet({q(wd_path)}) w
+                JOIN wd_qid_mbid wq ON wq.wd_qid = CAST(w.{qid_col} AS VARCHAR)
+                JOIN (VALUES {mapped}) map(prop, id_type, source_system)
+                  ON map.prop = CAST(w.{prop_col} AS VARCHAR)
+                JOIN selected_artists t
+                  ON t.artist_key = 'mbid::' || wq.wd_mbid
+                WHERE CAST(w.{prop_col} AS VARCHAR) <> 'P434'
+                  AND w.{val_col} IS NOT NULL
+                  AND trim(CAST(w.{val_col} AS VARCHAR)) <> ''
+                QUALIFY ROW_NUMBER() OVER (
+                    PARTITION BY sha256(
+                        'r2wd|' || w.{qid_col} || '|' || w.{prop_col} || '|' || w.{val_col}
+                    )
+                    ORDER BY map.id_type
+                ) = 1
+                """
+            )
+    # estate youtube channels also surface as external ids (observed)
+    conn.execute(
+        """
+        INSERT INTO artist_external_ids (
+            external_id_key, artist_key, id_type, id_value, url,
+            source_system, source_scope, knowledge_time, status,
+            resolution_method, confidence
+        )
+        SELECT
+            sha256('ytest|' || a.artist_key || '|' || trim(json_extract_string(yt.value, '$.channel_id'))),
+            a.artist_key, 'youtube', json_extract_string(yt.value, '$.channel_id'), NULL,
+            'artist_security_estate', 'R2_CONTROL_ESTATE', a.knowledge_time,
+            'PRESENT', 'ESTATE_OBSERVED', NULL
+        FROM artists a
+        CROSS JOIN json_each(COALESCE(a.youtube_identifiers, '[]'::JSON)) yt
+        QUALIFY ROW_NUMBER() OVER (
+            PARTITION BY sha256(
+                'ytest|' || a.artist_key || '|' || trim(json_extract_string(yt.value, '$.channel_id'))
+            )
+            ORDER BY a.artist_key
+        ) = 1
+        """
+    )
+
+    # ── attention observations from the metrics export ──
+    att_path = parquets.get("attention")
+    if att_path is not None:
+        cols = _parquet_cols(conn, att_path)
+        ak = _pick(cols, "artist_key")
+        sk = _pick(cols, "source_system")
+        mk = _pick(cols, "metric_kind")
+        ps = _pick(cols, "period_start")
+        pe = _pick(cols, "period_end")
+        vv = _pick(cols, "value")
+        vs = _pick(cols, "value_sum")
+        vu = _pick(cols, "value_unit")
+        st = _pick(cols, "status")
+        su = _pick(cols, "source_url")
+        rt = _pick(cols, "retrieved_at")
+        ok = _pick(cols, "observation_key", "observation_id", "id")
+        first = _pick(cols, "first_listen", "retrieved_at")
+        last = _pick(cols, "last_listen")
+        if ak and sk and mk:
+            conn.execute(
+                f"""
+                INSERT INTO attention_observations (
+                    observation_key, artist_key, source_system, metric_kind,
+                    period_start, period_end, value, value_sum, value_unit,
+                    status, source_url, retrieved_at, knowledge_time, source_scope
+                )
+                SELECT
+                    CASE WHEN {ok or 'NULL'} IS NOT NULL THEN CAST({ok} AS VARCHAR) ELSE sha256(
+                        'r2att|' || CAST({ak} AS VARCHAR) || '|' || CAST({sk} AS VARCHAR)
+                        || '|' || CAST({mk} AS VARCHAR) || '|' || COALESCE(CAST({ps or 'NULL'} AS VARCHAR), '') ) END,
+                    CAST({ak} AS VARCHAR), CAST({sk} AS VARCHAR), CAST({mk} AS VARCHAR),
+                    TRY_CAST(CAST({ps or 'NULL'} AS VARCHAR) AS DATE),
+                    TRY_CAST(CAST({pe or 'NULL'} AS VARCHAR) AS DATE),
+                    TRY_CAST(CAST({vv or 'NULL'} AS DOUBLE) AS DOUBLE),
+                    TRY_CAST(CAST({vs or 'NULL'} AS DOUBLE) AS DOUBLE),
+                    {vu and f'CAST({vu} AS VARCHAR)' or 'NULL'},
+                    COALESCE(CAST({st or 'NULL'} AS VARCHAR), 'ok'),
+                    {su and f'CAST({su} AS VARCHAR)' or 'NULL'},
+                    {rt and f'CAST({rt} AS TIMESTAMP)' or 'NULL'},
+                    {rt and f'CAST({rt} AS TIMESTAMP)' or 'NULL'},
+                    'R2_EXPORTED_OBSERVATION'
+                FROM read_parquet({q(att_path)})
+                WHERE CAST({ak} AS VARCHAR) IN (SELECT artist_key FROM selected_artists)
+                QUALIFY ROW_NUMBER() OVER (
+                    PARTITION BY COALESCE(
+                        CAST({ok or 'NULL'} AS VARCHAR),
+                        sha256(
+                            'r2att|' || CAST({ak} AS VARCHAR) || '|' || CAST({sk} AS VARCHAR)
+                            || '|' || CAST({mk} AS VARCHAR) || '|' || COALESCE(CAST({ps or 'NULL'} AS VARCHAR), '')
+                        )
+                    )
+                    ORDER BY {rt and f'{rt} DESC NULLS LAST' or '1'}, {sk}
+                ) = 1
+                """
+            )
+
+    # ── audience peers from gold affinity ──
+    aff_path = parquets.get("affinity")
+    if aff_path is not None:
+        aff_cols = _parquet_cols(conn, aff_path)
+        ka = _pick(aff_cols, "artist_key_a")
+        kb = _pick(aff_cols, "artist_key_b")
+        sh = _pick(aff_cols, "shared_listeners")
+        jac = _pick(aff_cols, "jaccard")
+        cos = _pick(aff_cols, "cosine")
+        kt = _pick(aff_cols, "knowledge_time")
+        if ka and kb and sh:
+            conn.execute(
+                f"""
+                CREATE TEMP VIEW affinity_directed AS
+                SELECT CAST({ka} AS VARCHAR) AS subject_key,
+                       CAST({kb} AS VARCHAR) AS peer_key,
+                       CAST({sh} AS BIGINT) AS shared_listeners,
+                       {jac and f'CAST({jac} AS DOUBLE)' or 'NULL::DOUBLE'} AS jaccard,
+                       {cos and f'CAST({cos} AS DOUBLE)' or 'NULL::DOUBLE'} AS cosine,
+                       {kt and f'CAST({kt} AS TIMESTAMP)' or 'NULL::TIMESTAMP'} AS knowledge_time
+                FROM read_parquet({q(aff_path)})
+                UNION ALL
+                SELECT CAST({kb} AS VARCHAR), CAST({ka} AS VARCHAR),
+                       CAST({sh} AS BIGINT),
+                       {jac and f'CAST({jac} AS DOUBLE)' or 'NULL::DOUBLE'},
+                       {cos and f'CAST({cos} AS DOUBLE)' or 'NULL::DOUBLE'},
+                       {kt and f'CAST({kt} AS TIMESTAMP)' or 'NULL::TIMESTAMP'}
+                FROM read_parquet({q(aff_path)})
+                """
+            )
+            conn.execute(
+                f"""
+                INSERT INTO artist_peers
+                SELECT
+                    sha256(subject_key || '|' || peer_key || '|pilot'),
+                    subject_key, peer_key, a.name AS peer_name,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY subject_key
+                        ORDER BY shared_listeners DESC NULLS LAST, jaccard DESC NULLS LAST, peer_key
+                    )::INTEGER AS rank,
+                    d.shared_listeners, d.jaccard, d.cosine,
+                    'listenbrainz', 'PILOT_AUDIENCE_DATA', d.knowledge_time,
+                    'DESCRIPTIVE_PILOT',
+                    'Pilot audience affinity only; not demand, ticket intent, or interchangeability.'
+                FROM (
+                    SELECT subject_key, peer_key, shared_listeners, jaccard, cosine,
+                           knowledge_time,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY subject_key, peer_key
+                               ORDER BY shared_listeners DESC NULLS LAST, jaccard DESC NULLS LAST
+                           ) AS dup_rank
+                    FROM affinity_directed
+                    WHERE subject_key IN (SELECT artist_key FROM selected_artists)
+                      AND peer_key IN (SELECT artist_key FROM selected_artists)
+                ) d
+                LEFT JOIN artists a ON a.artist_key = d.peer_key
+                WHERE d.dup_rank = 1
+                QUALIFY ROW_NUMBER() OVER (
+                    PARTITION BY subject_key
+                    ORDER BY shared_listeners DESC NULLS LAST, jaccard DESC NULLS LAST, peer_key
+                ) <= {int(max_peers_per_artist)}
+                """
+            )
+
+    # ── artist_markets from the governed estate (reuse estate-builder loop) ──
+    _materialize_markets(conn, artists, (estate_created_at or "1970-01-01")[:10])
+
+    # ── live history from the silver event graph ──
+    events_path = parquets.get("events")
+    edges_path = parquets.get("event_artist_edges")
+    place_edges_path = parquets.get("event_place_edges")
+    venues_path = parquets.get("venues")
+    if events_path and edges_path:
+        ev_cols = _parquet_cols(conn, events_path)
+        ed_cols = _parquet_cols(conn, edges_path)
+        ev_name = _pick(ev_cols, "name", "event_name")
+        ev_begin = _pick(ev_cols, "begin_date")
+        ev_end = _pick(ev_cols, "end_date")
+        ev_type = _pick(ev_cols, "event_type", "type")
+        ed_event = _pick(ed_cols, "event_mbid")
+        ed_artist = _pick(ed_cols, "artist_mbid")
+        ed_artist_name = _pick(ed_cols, "artist_name")
+        ed_role = _pick(ed_cols, "performer_role", "relation_type")
+        # Venue context: LEFT JOIN a bounded per-event venue name.
+        venue_join = "NULL::VARCHAR AS venue_name"
+        venue_from = ""
+        if place_edges_path and venues_path:
+            pc = _parquet_cols(conn, place_edges_path)
+            vc = _parquet_cols(conn, venues_path)
+            pe_event = _pick(pc, "event_mbid")
+            pe_place = _pick(pc, "place_mbid")
+            pe_place_name = _pick(pc, "place_name")
+            v_id = _pick(vc, "place_mbid", "place_id", "venue_mbid")
+            v_name = _pick(vc, "name", "place_name", "venue_name")
+            if pe_event and (pe_place or pe_place_name) and v_id and v_name:
+                venue_join = f"COALESCE(pe.{pe_place_name}, v.{v_name}) AS venue_name"
+                venue_from = (
+                    f"LEFT JOIN read_parquet({q(place_edges_path)}) pe "
+                    f"ON CAST(pe.{pe_event} AS VARCHAR) = CAST(e.event_mbid AS VARCHAR)\n"
+                    f"LEFT JOIN read_parquet({q(venues_path)}) v "
+                    f"ON CAST(v.{v_id} AS VARCHAR) = CAST(pe.{pe_place} AS VARCHAR)\n"
+                )
+        conn.execute(
+            f"""
+            INSERT INTO event_history (
+                event_key, artist_key, artist_name, event_name, event_date,
+                event_end_date, event_type, venue_name, market_name, city,
+                state_code, number_of_shows, is_multi_show, source_system,
+                source_url, source_scope, knowledge_time, status, location_method
+            )
+            SELECT * EXCLUDE (artist_rank)
+            FROM (
+                SELECT
+                    'mb-event::' || e.event_mbid || '::' || p.{ed_artist} AS event_key,
+                    'mbid::' || lower(p.{ed_artist}),
+                    COALESCE(p.{ed_artist_name}, a.name),
+                    e.{ev_name}, TRY_CAST(CAST(e.{ev_begin or 'begin_date'} AS VARCHAR) AS DATE),
+                    TRY_CAST(CAST(e.{ev_end or 'begin_date'} AS VARCHAR) AS DATE) AS end_date,
+                    e.{ev_type},
+                    {venue_join}, NULL, NULL, NULL, NULL, NULL,
+                    'musicbrainz', 'https://musicbrainz.org/event/' || e.event_mbid,
+                    'R2_SILVER_EVENT_GRAPH', NULL, 'OBSERVED', NULL,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY 'mbid::' || lower(p.{ed_artist})
+                        ORDER BY TRY_CAST(CAST(e.{ev_begin or 'begin_date'} AS VARCHAR) AS DATE) DESC NULLS LAST, e.event_mbid
+                    ) AS artist_rank
+                FROM read_parquet({q(edges_path)}) p
+                JOIN read_parquet({q(events_path)}) e ON CAST(e.event_mbid AS VARCHAR) = CAST(p.{ed_event} AS VARCHAR)
+                {venue_from}
+                LEFT JOIN artists a ON a.artist_key = 'mbid::' || lower(p.{ed_artist})
+                WHERE 'mbid::' || lower(p.{ed_artist}) IN (SELECT artist_key FROM selected_artists)
+                QUALIFY ROW_NUMBER() OVER (
+                    PARTITION BY 'mb-event::' || e.event_mbid || '::' || p.{ed_artist}
+                    ORDER BY TRY_CAST(CAST(e.{ev_begin or 'begin_date'} AS VARCHAR) AS DATE) DESC NULLS LAST, e.event_mbid
+                ) = 1
+            ) bounded
+            WHERE artist_rank <= {int(max_events_per_artist)}
+            """
+        )
+
+    # ── festival appearances from silver series graph (FESTIVAL only) ──
+    series_edges_path = parquets.get("event_series_edges")
+    series_path = parquets.get("series")
+    if events_path and edges_path and series_edges_path and series_path:
+        sc_cols = _parquet_cols(conn, series_edges_path)
+        s_cols = _parquet_cols(conn, series_path)
+        se_event = _pick(sc_cols, "event_mbid")
+        se_series = _pick(sc_cols, "series_mbid")
+        s_id = _pick(s_cols, "series_mbid")
+        s_name = _pick(s_cols, "name", "series_name")
+        s_class = _pick(s_cols, "classification")
+        if se_event and se_series and s_id and s_name and s_class:
+            conn.execute(
+                f"""
+                INSERT INTO festival_appearances (
+                    appearance_key, artist_key, event_key, festival_key,
+                    edition_key, festival_name, event_name, edition_year,
+                    event_date, performance_date, market_name, venue_name,
+                    billing_order, billing_tier, stage_name, artist_role,
+                    co_billed_artist_names, repeat_appearance_count,
+                    source_system, source_url, source_scope, knowledge_time, status
+                )
+                SELECT * EXCLUDE (artist_rank)
+                FROM (
+                    SELECT
+                        sha256(p.{ed_artist} || '|' || se.{se_series} || '|' || se.{se_event}) AS appearance_key,
+                        'mbid::' || lower(p.{ed_artist}),
+                        'mb-event::' || se.{se_event},
+                        s.{s_id}, s.{s_id},
+                        s.{s_name}, e.name,
+                        TRY_CAST(SUBSTR(CAST(e.{ev_begin or 'begin_date'} AS VARCHAR), 1, 4) AS INTEGER),
+                        TRY_CAST(CAST(e.{ev_begin or 'begin_date'} AS VARCHAR) AS DATE),
+                        TRY_CAST(CAST(e.{ev_begin or 'begin_date'} AS VARCHAR) AS DATE),
+                        NULL, NULL, NULL, NULL, NULL, p.{ed_role},
+                        NULL,
+                        COUNT(*) OVER (PARTITION BY 'mbid::' || lower(p.{ed_artist}), s.{s_id}),
+                        'musicbrainz', 'https://musicbrainz.org/event/' || se.{se_event},
+                        'R2_SILVER_SERIES_GRAPH', NULL, 'OBSERVED',
+                        ROW_NUMBER() OVER (
+                            PARTITION BY 'mbid::' || lower(p.{ed_artist})
+                            ORDER BY TRY_CAST(CAST(e.{ev_begin or 'begin_date'} AS VARCHAR) AS DATE) DESC NULLS LAST, se.{se_event}
+                        ) AS artist_rank
+                    FROM read_parquet({q(series_edges_path)}) se
+                    JOIN read_parquet({q(series_path)}) s
+                      ON CAST(s.{s_id} AS VARCHAR) = CAST(se.{se_series} AS VARCHAR)
+                     AND upper(CAST(s.{s_class} AS VARCHAR)) = 'FESTIVAL'
+                    JOIN read_parquet({q(edges_path)}) p ON CAST(p.{ed_event} AS VARCHAR) = CAST(se.{se_event} AS VARCHAR)
+                    JOIN read_parquet({q(events_path)}) e ON CAST(e.event_mbid AS VARCHAR) = CAST(se.{se_event} AS VARCHAR)
+                    WHERE 'mbid::' || lower(p.{ed_artist}) IN (SELECT artist_key FROM selected_artists)
+                    QUALIFY ROW_NUMBER() OVER (
+                        PARTITION BY sha256(p.{ed_artist} || '|' || se.{se_series} || '|' || se.{se_event})
+                        ORDER BY se.{se_event}
+                    ) = 1
+                ) bounded
+                WHERE artist_rank <= {int(max_events_per_artist)}
+                """
+            )
+
+    # ── forward/provider events from the events export (name-matched) ──
+    prov_path = parquets.get("provider_snapshots")
+    if prov_path is not None:
+        pc = _parquet_cols(conn, prov_path)
+        p_local = _pick(pc, "local_date", "event_date", "date")
+        p_time = _pick(pc, "event_time", "time")
+        p_status = _pick(pc, "event_status", "status")
+        p_venue = _pick(pc, "venue_name", "venue")
+        p_city = _pick(pc, "city")
+        p_state = _pick(pc, "state_code", "state")
+        p_country = _pick(pc, "country_code", "country")
+        p_promoter = _pick(pc, "promoter")
+        p_min = _pick(pc, "price_min", "price")
+        p_max = _pick(pc, "price_max")
+        p_cur = _pick(pc, "price_currency", "currency")
+        p_attractions = _pick(pc, "attractions")
+        p_provider = _pick(pc, "provider", "source_platform")
+        p_url = _pick(pc, "canonical_url", "source_url", "url")
+        p_oid = _pick(pc, "platform_object_id", "event_key", "provider_event_id", "id")
+        p_retrieved = _pick(pc, "retrieved_at")
+        p_knowledge = _pick(pc, "knowledge_time")
+        p_rights = _pick(pc, "rights_status")
+        if p_local and p_attractions and p_oid:
+            provider_filter = (
+                f"WHERE lower(CAST({p_provider} AS VARCHAR)) = 'ticketmaster'" if p_provider else ""
+            )
+            conn.execute(
+                f"""
+                INSERT INTO future_events (
+                    future_event_key, artist_key, provider_event_id, event_name,
+                    event_date, event_time, event_status, venue_name, market_name,
+                    city, state_code, promoter, ticket_price_min, ticket_price_max,
+                    ticket_price_currency, ticket_price_basis, ticket_evidence_status,
+                    source_system, source_url, source_scope, retrieved_at,
+                    knowledge_time, status, rights_status
+                )
+                SELECT
+                    sha256('prov|' || CAST(s.{p_oid} AS VARCHAR) || '|' || a.artist_key),
+                    a.artist_key, CAST(s.{p_oid} AS VARCHAR),
+                    CASE WHEN a.artist_name IS NULL OR trim(a.artist_name) = '' THEN NULL ELSE a.artist_name END,
+                    TRY_CAST(SUBSTR(CAST(s.{p_local} AS VARCHAR), 1, 10) AS DATE),
+                    {p_time and f'TRY_CAST(CAST(s.{p_time} AS VARCHAR) AS TIMESTAMP)' or 'NULL::TIMESTAMP'},
+                    {p_status and f'CAST(s.{p_status} AS VARCHAR)' or 'NULL::VARCHAR'},
+                    {p_venue and f'CAST(s.{p_venue} AS VARCHAR)' or 'NULL::VARCHAR'},
+                    NULL,
+                    {p_city and f'CAST(s.{p_city} AS VARCHAR)' or 'NULL::VARCHAR'},
+                    {p_state and f'CAST(s.{p_state} AS VARCHAR)' or 'NULL::VARCHAR'},
+                    {p_promoter and f'CAST(s.{p_promoter} AS VARCHAR)' or 'NULL::VARCHAR'},
+                    CASE WHEN s.{p_min} > 0 THEN CAST(s.{p_min} AS DOUBLE) ELSE NULL END,
+                    CASE WHEN s.{p_max} > 0 THEN CAST(s.{p_max} AS DOUBLE) ELSE NULL END,
+                    {p_cur and f'CAST(s.{p_cur} AS VARCHAR)' or 'NULL::VARCHAR'},
+                    CASE WHEN s.{p_min} > 0 OR s.{p_max} > 0
+                         THEN 'ADVERTISED_STRUCTURED_RANGE' ELSE NULL END,
+                    CASE WHEN s.{p_min} > 0 OR s.{p_max} > 0
+                         THEN 'ADVERTISED_RANGE' ELSE 'NO_CURRENT_TICKET_EVIDENCE' END,
+                    {p_provider and f'CAST(s.{p_provider} AS VARCHAR)' or "'ticketmaster'"},
+                    {p_url and f'CAST(s.{p_url} AS VARCHAR)' or 'NULL::VARCHAR'},
+                    'R2_EVENTS_EXPORT_NAME_MATCH',
+                    {p_retrieved and f'CAST(s.{p_retrieved} AS TIMESTAMP)' or 'NULL::TIMESTAMP'},
+                    {p_knowledge and f'CAST(s.{p_knowledge} AS TIMESTAMP)' or 'NULL::TIMESTAMP'},
+                    'OBSERVED', {p_rights and f'CAST(s.{p_rights} AS VARCHAR)' or 'NULL::VARCHAR'}
+                FROM (
+                    SELECT s.*, attraction.value AS attraction_json
+                    FROM read_parquet({q(prov_path)}) s
+                    CROSS JOIN json_each(COALESCE(s.{p_attractions}, '[]'::JSON)) attraction
+                ) s
+                JOIN selected_artists a
+                  ON lower(trim(COALESCE(json_extract_string(s.attraction_json, '$.name'),
+                                        json_extract_string(s.attraction_json, '$.attraction_name'), '')))
+                     = lower(trim(a.artist_name))
+                WHERE TRY_CAST(SUBSTR(CAST(s.{p_local} AS VARCHAR), 1, 10) AS DATE) >= CURRENT_DATE
+                QUALIFY ROW_NUMBER() OVER (
+                    PARTITION BY sha256('prov|' || CAST(s.{p_oid} AS VARCHAR) || '|' || a.artist_key)
+                    ORDER BY {p_knowledge and f'CAST(s.{p_knowledge} AS TIMESTAMP) DESC NULLS LAST' or '1'}, s.{p_oid}
+                ) = 1
+                """
+            )
+            # dedupe same provider event per artist
+            conn.execute(
+                """
+                DELETE FROM future_events WHERE future_event_key IN (
+                    SELECT future_event_key FROM (
+                        SELECT future_event_key,
+                               ROW_NUMBER() OVER (PARTITION BY provider_event_id, artist_key ORDER BY knowledge_time DESC NULLS LAST) rn
+                        FROM future_events
+                    ) q WHERE rn > 1
+                )
+                """
+            )
+
+    # ── provenance / product_meta ──
+    rows_honest.update({
+        "artist_search_terms": int(conn.execute("SELECT COUNT(*) FROM artist_search_terms").fetchone()[0]),
+        "artist_external_ids": int(conn.execute("SELECT COUNT(*) FROM artist_external_ids").fetchone()[0]),
+        "attention_observations": int(conn.execute("SELECT COUNT(*) FROM attention_observations").fetchone()[0]),
+        "artist_peers": int(conn.execute("SELECT COUNT(*) FROM artist_peers").fetchone()[0]),
+        "artist_markets": int(conn.execute("SELECT COUNT(*) FROM artist_markets").fetchone()[0]),
+        "event_history": int(conn.execute("SELECT COUNT(*) FROM event_history").fetchone()[0]),
+        "festival_appearances": int(conn.execute("SELECT COUNT(*) FROM festival_appearances").fetchone()[0]),
+        "future_events": int(conn.execute("SELECT COUNT(*) FROM future_events").fetchone()[0]),
+    })
+    try:
+        _create_indexes(conn)
+    except Exception:
+        pass
+    # product_meta provenance row (existing schema contract; read by the API)
+    conn.execute(
+        """
+        INSERT INTO product_meta VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            "TALENT_BUYER_TERMINAL_V1",
+            "artist_security_terminal_v1",
+            datetime.now(timezone.utc).replace(tzinfo=None),
+            "r2-lake-serving-assets",
+            str(estate_path.resolve()) or "r2-lake-estate",
+            str(parquets.get("affinity", Path("r2-lake-affinity"))),
+            rows_honest.get("artists", 0) or 0,
+            rows_honest.get("artist_markets", 0) or 0,
+            rows_honest.get("artist_peers", 0) or 0,
+            rows_honest.get("event_history", 0) or 0,
+            rows_honest.get("festival_appearances", 0) or 0,
+            rows_honest.get("future_events", 0) or 0,
+            "VERIFIED_COMPACT_BUILD",
+            json.dumps({"materializer": "_materialize_r2_parquet_terminal", "sources": sorted(str(p) for p in parquets.values())}),
+            "Read-only buyer evidence; pilot audience affinity is descriptive; no score, demand forecast, booking advice, attendance or gross prediction.",
+        ],
+    )
+    conn.execute("CHECKPOINT")
+    return rows_honest
+
+
+def run_terminal_serving_build(spec: dict, scratch_dir: Path) -> dict:
+    """Build the compact Talent Buyer serving artifact entirely from R2 assets.
+
+    Reads (existing compact R2 assets, never raw corpora):
+        - governed 25K estate (BACKUPS control/artist_security_25000/)
+        - silver event graph (events + edges + series), attention and provider
+          event exports, pilot Gold audience affinity, and the latest Wikidata
+          artist external-id generation — the canonical warehouse DB is NOT in
+          R2 (licensed, never uploaded), so this job never depends on it.
+
+    Materializes the existing ``artist_security_terminal_v1`` schema,
+    validates the DB read-only, selects demo artists, computes a streaming
+    SHA-256, uploads the generation object, and only then publishes
+    ``serving/artist_security_terminal_v1/CURRENT.json``.
+    """
+    lake = _get_lake()
+    job_id = spec.get("job_id", "terminal_serving_build_v1")
+    params = spec.get("params", {})
+    max_events_per_artist = int(params.get("max_events_per_artist", 60) or 60)
+    max_peers_per_artist = int(params.get("max_peers_per_artist", 12) or 12)
+    max_artifact_bytes = int(
+        params.get("max_artifact_bytes") or DEFAULT_MAX_TERMINAL_ARTIFACT_BYTES
+    )
+
+    manifest = new_manifest(
+        job_type="terminal_serving_build_v1",
+        job_id=job_id,
+        code_commit=_git_commit(),
+        container_image="festival-bloomberg-batch:latest",
+        params=params,
+    )
+    manifest_key_path = manifest_key("terminal_serving_build_v1", job_id)
+    start = time.time()
+    work = scratch_dir / "terminal_build"
+    work.mkdir(parents=True, exist_ok=True)
+
+    try:
+        if max_events_per_artist < 1:
+            raise ValueError("max_events_per_artist must be >= 1")
+
+        # ── 1. Resolve + stream inputs from R2 (no guessing) ──
+        estate_path, estate_key, estate_bucket, estate_size = _resolve_estate(lake, work)
+        manifest.source_paths.append(f"r2://{estate_bucket}/{estate_key}")
+        manifest.r2_read_bytes += estate_size
+
+        # Confirmed present via cloud inventory (2026-08-31):
+        #   - silver/events, silver/venues, silver/series (MB event graph)
+        #   - metrics/artist_attention_observations export
+        #   - events/provider_event_snapshots export
+        #   - gold/listenbrainz_pilot affinity
+        #   - silver/wikidata/generations/<run_id>/artist_external_ids.parquet
+        fixed_parquet_keys = {
+            "events": "silver/events/events.parquet",
+            "event_artist_edges": "silver/events/event_artist_edges.parquet",
+            "event_place_edges": "silver/events/event_place_edges.parquet",
+            "event_series_edges": "silver/events/event_series_edges.parquet",
+            "venues": "silver/venues/venues.parquet",
+            "series": "silver/series/series.parquet",
+            "attention": "metrics/artist_attention_observations/artist_attention_observations.parquet",
+            "provider_snapshots": "events/provider_event_snapshots/provider_event_snapshots.parquet",
+            "affinity": "gold/listenbrainz_pilot/artist_audience_affinity.parquet",
+        }
+        parquets: dict[str, Path] = {}
+        for name, key in fixed_parquet_keys.items():
+            if not lake.verify_object_exists(lake.config.lake_bucket, key):
+                raise RuntimeError(
+                    f"R2_INPUT_MISSING: {key} not found in LAKE bucket"
+                )
+            dest = work / Path(key).name.replace("/", "_") or Path(name + ".parquet")
+            size = _download_to_scratch(lake, lake.config.lake_bucket, key, dest)
+            parquets[name] = dest
+            manifest.source_paths.append(f"r2://{lake.config.lake_bucket}/{key}")
+            manifest.r2_read_bytes += size
+
+        # Wikidata generation: follow the CURRENT pointer, never guess run_id.
+        wd_current = lake.read_checkpoint(
+            lake.config.lake_bucket, "silver/wikidata/CURRENT.json",
+        )
+        wd_run_id = (wd_current or {}).get("run_id")
+        if not wd_run_id:
+            raise RuntimeError(
+                "WIKIDATA_CURRENT_MISSING: silver/wikidata/CURRENT.json has no run_id"
+            )
+        wd_key = f"silver/wikidata/generations/{wd_run_id}/artist_external_ids.parquet"
+        if not lake.verify_object_exists(lake.config.lake_bucket, wd_key):
+            raise RuntimeError(f"WIKIDATA_ARTIST_IDS_MISSING: {wd_key}")
+        wd_path = work / "wikidata_artist_external_ids.parquet"
+        size = _download_to_scratch(lake, lake.config.lake_bucket, wd_key, wd_path)
+        parquets["wikidata_artist_external_ids"] = wd_path
+        manifest.source_paths.append(f"r2://{lake.config.lake_bucket}/{wd_key}")
+        manifest.r2_read_bytes += size
+
+        # Estate artists (the governed 25K selection; never inferred).
+        estate_payload = json.loads(estate_path.read_text(encoding="utf-8"))
+        artists = estate_payload.get("artists") or []
+        if not artists:
+            raise RuntimeError("ESTATE_ARTISTS_EMPTY: estate payload has no artists")
+        estate_created_at = str(estate_payload.get("created_at", ""))
+
+        # ── 2. Materialize the existing terminal schema ──
+        sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+        import duckdb
+
+        output_path = work / "terminal.duckdb"
+        conn = duckdb.connect(str(output_path))
+        conn.execute("PRAGMA threads=2")
+        try:
+            counts = _materialize_r2_parquet_terminal(
+                conn,
+                estate_path=estate_path,
+                estate_created_at=estate_created_at,
+                artists=artists,
+                parquets=parquets,
+                max_events_per_artist=max_events_per_artist,
+                max_peers_per_artist=max_peers_per_artist,
+            )
+        finally:
+            conn.close()
+        manifest.rows_written = sum(int(v) for v in counts.values())
+
+        # ── 3. Demo artists (Phase 4): persisted inside the artifact ──
+        demo_artists = _compute_demo_artists(output_path)
+
+        # ── 4. Validation before any upload (Phase 5) ──
+        validation = _validate_terminal_db(output_path, demo_artists, counts)
+        if not validation["passed"]:
+            raise RuntimeError(
+                "SERVING_VALIDATION_FAILED: "
+                + "; ".join(validation["checks"].get("failures", []) or [])
+            )
+
+        # ── 5. Streaming hash + bounded-size guard ──
+        db_bytes = output_path.stat().st_size
+        if db_bytes > max_artifact_bytes:
+            raise RuntimeError(
+                f"SERVING_ARTIFACT_TOO_LARGE: {db_bytes} bytes exceeds "
+                f"max_artifact_bytes={max_artifact_bytes}; tighten row bounds and retry"
+            )
+        db_sha = _streaming_sha256(output_path)
+        generation = "terminal_v1_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+        # ── 6. Upload generation object (streaming multipart upload) ──
+        db_key = f"{TERMINAL_SERVING_PREFIX}/generations/{generation}/terminal.duckdb"
+        lake._s3.upload_file(
+            str(output_path), lake.config.lake_bucket, db_key,
+            ExtraArgs={
+                "ContentType": "application/octet-stream",
+                "Metadata": {
+                    "job_id": job_id, "sha256": db_sha,
+                    "artifact": TERMINAL_ARTIFACT, "generation": generation,
+                },
+            },
+        )
+        manifest.output_paths.append(f"r2://{lake.config.lake_bucket}/{db_key}")
+        manifest.output_hashes[db_key] = db_sha
+        manifest.r2_write_bytes += db_bytes
+
+        # ── 7. VERIFY the DB object BEFORE CURRENT moves ──
+        verify_outputs(
+            lake,
+            bucket=lake.config.lake_bucket,
+            output_hashes={db_key: db_sha},
+            manifest=manifest,
+            manifest_key_path=manifest_key_path,
+        )
+
+        # ── 8. Publish CURRENT.json ONLY after VERIFIED ──
+        current_payload = {
+            "artifact": TERMINAL_ARTIFACT,
+            "contract_version": TERMINAL_CONTRACT_VERSION,
+            "generation": generation,
+            "object_key": db_key,
+            "sha256": db_sha,
+            "bytes": db_bytes,
+            "created_at": now_iso(),
+            "source_generations": {
+                "estate_object": estate_key,
+                "estate_bucket": estate_bucket,
+                "inputs": {name: key for name, key in fixed_parquet_keys.items()},
+                "wikidata_artist_external_ids": wd_key,
+                "code_commit": _git_commit(),
+            },
+            "row_counts": counts,
+            "demo_artists": demo_artists,
+            "validation": validation,
+        }
+        current_bytes = json.dumps(current_payload, indent=2, sort_keys=True, default=str).encode()
+        current_sha = hashlib.sha256(current_bytes).hexdigest()
+        current_key = f"{TERMINAL_SERVING_PREFIX}/CURRENT.json"
+        try:
+            lake.put_bytes(
+                lake.config.lake_bucket, current_key, current_bytes,
+                content_type="application/json",
+                metadata={"job_id": job_id, "sha256": current_sha, "generation": generation},
+            )
+        except Exception:
+            manifest.error_code = ERR_PUBLICATION_FAILED
+            manifest.error = "CURRENT.json write failed; generation remains VERIFIED"
+            manifest.publication_state = STATUS_VERIFIED
+            manifest.status = STATUS_VERIFIED
+            lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
+            raise RuntimeError(
+                f"PUBLICATION_FAILED: CURRENT pointer write failed for {current_key}"
+            )
+        manifest.output_paths.append(f"r2://{lake.config.lake_bucket}/{current_key}")
+        manifest.output_hashes[current_key] = current_sha
+        manifest.status = STATUS_PUBLISHED
+        manifest.publication_state = STATUS_PUBLISHED
+        manifest.completed_at = now_iso()
+        manifest.runtime_seconds = round(time.time() - start, 2)
+        manifest.rows_read = manifest.r2_read_bytes
+        manifest.params["generation"] = generation
+        manifest.params["demo_artist_count"] = len(demo_artists)
+        lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
+
+        return {
+            "status": "COMPLETED",
+            "manifest_key": manifest_key_path,
+            "generation": generation,
+            "serving_key": db_key,
+            "current_key": current_key,
+            "serving_sha256": db_sha,
+            "serving_bytes": db_bytes,
+            "row_counts": counts,
+            "demo_artists": demo_artists,
+            "validation_pass": validation["passed"],
+            "latency_ms": validation.get("latency_ms", {}),
+            "runtime_seconds": manifest.runtime_seconds,
+            "r2_read_bytes": manifest.r2_read_bytes,
+            "r2_write_bytes": manifest.r2_write_bytes,
+        }
+
+    except Exception as e:
+        if manifest.status == STATUS_VERIFIED:
+            if manifest.error_code is None:
+                manifest.error_code = ERR_PUBLICATION_FAILED
+            manifest.error = str(e)
+            manifest.publication_state = STATUS_VERIFIED
+            try:
+                lake.write_manifest(
+                    lake.config.lake_bucket, manifest_key_path, manifest.to_dict(),
+                )
+            except Exception:
+                pass
+            raise
+        if manifest.error_code is None:
+            manifest.error_code = ERR_JOB_EXEC_FAILED
+        manifest.status = STATUS_FAILED
+        manifest.error = str(e)
+        manifest.error_detail = traceback.format_exc()
+        manifest.completed_at = now_iso()
+        manifest.runtime_seconds = round(time.time() - start, 2)
+        try:
+            lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
+        except Exception:
+            pass
+        raise
+
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+# ════════════════════════════════════════════════════════════════
 # LISTENBRAINZ MAP STAGE
 # ════════════════════════════════════════════════════════════════
 

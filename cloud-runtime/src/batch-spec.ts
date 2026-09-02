@@ -17,6 +17,7 @@ export const ALLOWED_BATCH_JOB_TYPES = new Set([
   "listenbrainz_map",
   "listenbrainz_reduce",
   "cloud_smoke",
+  "terminal_serving_build_v1",
 ]);
 
 /** Fixed safe error codes — never raw exception text. */

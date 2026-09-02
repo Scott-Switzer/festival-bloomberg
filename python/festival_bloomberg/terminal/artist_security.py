@@ -566,6 +566,7 @@ def _compare_summary(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "artist_key": artist["artist_key"],
         "artist_name": artist["name"],
+        "market_count": facts.get("markets"),
         "identity": {
             "type": artist.get("artist_type") or artist.get("type"),
             "area": artist.get("area"),
@@ -595,31 +596,74 @@ def compare_artists(conn, artist_a: str, artist_b: str) -> dict[str, Any] | None
         return None
     left_summary = _compare_summary(left)
     right_summary = _compare_summary(right)
+    shared = _shared_audience_edge(conn, left_summary["artist_key"], right_summary["artist_key"])
+    shared_dim = {
+        "label": "Audience overlap",
+        "left": shared["summary"],
+        "right": shared["summary"],
+        "explanation": "Shared-listener evidence from the 1% ListenBrainz pilot, if an observed edge exists. Shared listening is not local demand or ticket intent.",
+    }
+    dimensions = [
+        {"label": "Identity", "left": left_summary["identity"], "right": right_summary["identity"],
+         "explanation": "Public reference identity; no identity quality score."},
+        {"label": "Attention sources", "left": left_summary["attention"], "right": right_summary["attention"],
+         "explanation": "Source-separated attention states; attention is not local demand."},
+        {"label": "Audience peers", "left": left_summary["audience_peers"], "right": right_summary["audience_peers"],
+         "explanation": "Count of available 1% ListenBrainz pilot peer edges."},
+        {"label": "Strongest observed markets", "left": left_summary["strongest_markets"], "right": right_summary["strongest_markets"],
+         "explanation": "Ordered by observed historical shows; UNKNOWN dates stay unknown."},
+        {"label": "Live history", "left": left_summary["historical_events"], "right": right_summary["historical_events"],
+         "explanation": "Descriptive observed event counts, not attendance."},
+        {"label": "Festival history", "left": left_summary["festival_appearances"], "right": right_summary["festival_appearances"],
+         "explanation": "Observed festival/series appearances and co-bills."},
+        {"label": "Future events", "left": left_summary["future_events"], "right": right_summary["future_events"],
+         "explanation": "Latest retained Ticketmaster Discovery observations."},
+        {"label": "Current ticket ranges", "left": left_summary["current_ticket_ranges"], "right": right_summary["current_ticket_ranges"],
+         "explanation": "Provider-advertised structured ranges only; not transactions or sales."},
+        {"label": "Evidence coverage", "left": left_summary["coverage_state"], "right": right_summary["coverage_state"],
+         "explanation": "Explicit observed/unknown states; no composite score."},
+    ]
+    if shared["has_edge"]:
+        dimensions.insert(1, shared_dim)
     return {
         "contract_version": CONTRACT_VERSION,
         "release_label": RELEASE_LABEL,
         "left": left_summary,
         "right": right_summary,
-        "dimensions": [
-            {"label": "Identity", "left": left_summary["identity"], "right": right_summary["identity"],
-             "explanation": "Public reference identity; no identity quality score."},
-            {"label": "Attention sources", "left": left_summary["attention"], "right": right_summary["attention"],
-             "explanation": "Source-separated attention states; attention is not local demand."},
-            {"label": "Audience peers", "left": left_summary["audience_peers"], "right": right_summary["audience_peers"],
-             "explanation": "Count of available 1% ListenBrainz pilot peer edges."},
-            {"label": "Strongest observed markets", "left": left_summary["strongest_markets"], "right": right_summary["strongest_markets"],
-             "explanation": "Ordered by observed historical shows; UNKNOWN dates stay unknown."},
-            {"label": "Live history", "left": left_summary["historical_events"], "right": right_summary["historical_events"],
-             "explanation": "Descriptive observed event counts, not attendance."},
-            {"label": "Festival history", "left": left_summary["festival_appearances"], "right": right_summary["festival_appearances"],
-             "explanation": "Observed festival/series appearances and co-bills."},
-            {"label": "Future events", "left": left_summary["future_events"], "right": right_summary["future_events"],
-             "explanation": "Latest retained Ticketmaster Discovery observations."},
-            {"label": "Current ticket ranges", "left": left_summary["current_ticket_ranges"], "right": right_summary["current_ticket_ranges"],
-             "explanation": "Provider-advertised structured ranges only; not transactions or sales."},
-            {"label": "Evidence coverage", "left": left_summary["coverage_state"], "right": right_summary["coverage_state"],
-             "explanation": "Explicit observed/unknown states; no composite score."},
-        ],
+        "dimensions": dimensions,
         "no_winner": True,
         "note": "No fixed weights, artist score, ranking, or booking recommendation is produced.",
     }
+
+
+def _shared_audience_edge(conn, left_key: str, right_key: str) -> dict[str, Any]:
+    """Look up the observed audience edge between two artists, either direction."""
+    row = _one(conn, """
+        SELECT p.shared_listeners, p.jaccard,
+               (SELECT COUNT(*) FROM artist_markets mine
+                JOIN artist_markets theirs ON mine.market_key = theirs.market_key
+                WHERE mine.artist_key = p.subject_key
+                  AND theirs.artist_key = p.peer_key) AS shared_markets,
+               (SELECT COUNT(DISTINCT mine.event_key)
+                FROM festival_appearances mine
+                JOIN festival_appearances theirs ON mine.event_key = theirs.event_key
+                WHERE mine.artist_key = p.subject_key
+                  AND theirs.artist_key = p.peer_key) AS shared_festival_bills
+        FROM artist_peers p
+        WHERE (p.subject_key = ? AND p.peer_key = ?) OR (p.subject_key = ? AND p.peer_key = ?)
+        ORDER BY p.shared_listeners DESC NULLS LAST
+        LIMIT 1
+    """, [left_key, right_key, right_key, left_key])
+    if row is None:
+        return {"has_edge": False, "summary": "No observed audience edge in the 1% ListenBrainz pilot."}
+    parts: list[str] = []
+    if row.get("shared_listeners") is not None:
+        parts.append(f"{row['shared_listeners']} shared listeners")
+    if row.get("jaccard") is not None:
+        parts.append(f"Jaccard {row['jaccard']}")
+    if row.get("shared_markets"):
+        parts.append(f"{row['shared_markets']} shared markets")
+    if row.get("shared_festival_bills"):
+        parts.append(f"{row['shared_festival_bills']} shared festival bills")
+    summary = " · ".join(parts) if parts else "Observed edge without detail"
+    return {"has_edge": True, "summary": summary}

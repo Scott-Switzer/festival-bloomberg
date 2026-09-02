@@ -131,6 +131,32 @@ export class BatchContainer extends DurableObject<BatchEnv> {
   }
 
   /**
+   * Admin-only: force the per-DO container instance to restart so a newly
+   * deployed image (new Worker version) replaces a still-running old-image
+   * instance. Cloudflare containers keep the original image until the
+   * instance is destroyed and recreated, so a deploy alone does not pick up
+   * code changes for a long-lived idle container.
+   */
+  async restartContainer(reason = "admin"): Promise<Record<string, unknown>> {
+    const hadContainer = this.containerReady;
+    this.containerReady = false;
+    try {
+      if (this.ctx.container) {
+        await this.ctx.container.destroy();
+      }
+    } catch (e) {
+      console.error("Batch container destroy failed (continuing):", e);
+    }
+    // Recreate lazily on the next startJob (ensureContainer).
+    return {
+      restarted: true,
+      had_container: hadContainer,
+      reason,
+      container_ready: this.containerReady,
+    };
+  }
+
+  /**
    * P0-2: RPC — start a batch job and return IMMEDIATELY (RUNNING).
    *
    * The container process is launched and monitored in the background.
@@ -253,6 +279,23 @@ export class BatchContainer extends DurableObject<BatchEnv> {
 
       // P9: Persist durable status — survives DO/Worker/container restart.
       await this.persistDurableStatus(result);
+
+      if (result.status === "FAILED") {
+        // P8 stays intact: never expose raw stdout/stderr via the status API.
+        // These internal-only logs make container failures debuggable via
+        // `wrangler tail` without weakening the safe-status contract.
+        const tailOut = (result._stdout || "").split("\n").filter((l) => l.trim()).slice(-6).join(" | ");
+        const tailErr = (result._stderr || "").split("\n").filter((l) => l.trim()).slice(-6).join(" | ");
+        console.error(JSON.stringify({
+          event: "BATCH_JOB_FAILED",
+          job_id: result.job_id,
+          job_type: result.job_type,
+          exit_code: result.exit_code,
+          last_safe_error_code: result.last_safe_error_code,
+          stdout_tail: tailOut.slice(0, 1500),
+          stderr_tail: tailErr.slice(0, 1500),
+        }));
+      }
     } catch (e: unknown) {
       result.status = "FAILED";
       result.last_safe_error_code = mapErrorToCode(e, BATCH_ERROR_CODES.JOB_EXEC_FAILED);

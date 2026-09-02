@@ -197,6 +197,111 @@ export default {
       return Response.json(status);
     }
 
+    if (url.pathname === "/ops/container/restart" && request.method === "POST") {
+      // Admin-only: destroy the DO's container instance so the next job
+      // starts with the CURRENT deployed image (old long-lived instances
+      // keep their original image across deploys).
+      const authFail = requireBatchAuth(request, env.ADMIN_TOKEN || "");
+      if (authFail) return authFail;
+      const jobId = url.searchParams.get("job_id") || "terminal_serving_build_v1";
+      const doId = env.BATCH_CONTAINER.idFromName(jobId);
+      const batchDo = env.BATCH_CONTAINER.get(doId) as any;
+      const result = await batchDo.restartContainer("admin");
+      return Response.json(result);
+    }
+
+    if (url.pathname === "/terminal/bootstrap/current" && request.method === "GET") {
+      // Narrow, admin-protected bootstrap path for the compact serving
+      // artifact ONLY (Phase 7B): CURRENT.json metadata or the current
+      // terminal.duckdb, streamed from the LAKE R2 binding. No arbitrary R2
+      // key access, no public bucket, no file browser.
+      const artifact = url.searchParams.get("artifact") || "metadata";
+      const currentKey = "serving/artist_security_terminal_v1/CURRENT.json";
+      const currentObj = await env.LAKE_BUCKET.get(currentKey);
+      if (!currentObj) {
+        return Response.json(
+          { error: "TERMINAL_CURRENT_NOT_FOUND", key: currentKey },
+          { status: 404 },
+        );
+      }
+      const current = (await currentObj.json()) as {
+        generation?: string;
+        object_key?: string;
+        sha256?: string;
+        [k: string]: unknown;
+      };
+      if (artifact === "metadata") {
+        return Response.json(current);
+      }
+      if (artifact === "db") {
+        const objectKey = current.object_key;
+        if (!objectKey) {
+          return Response.json({ error: "TERMINAL_OBJECT_KEY_MISSING" }, { status: 500 });
+        }
+        const db = await env.LAKE_BUCKET.get(objectKey);
+        if (!db) {
+          return Response.json(
+            { error: "TERMINAL_ARTIFACT_NOT_FOUND", key: objectKey },
+            { status: 404 },
+          );
+        }
+        return new Response(db.body, {
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "Content-Length": String(db.size),
+            "X-Serving-Generation": current.generation || "",
+            "X-Serving-SHA256": current.sha256 || "",
+            "Cache-Control": "no-store",
+          },
+        });
+      }
+      return Response.json({ error: "unknown artifact type" }, { status: 400 });
+    }
+
+    if (url.pathname === "/ops/r2cat" && request.method === "GET") {
+      // Bounded, admin-protected R2 inventory listing (debug only) — returns
+      // keys+sizes under a prefix from the LAKE/RAW/BACKUPS/PRIVATE buckets.
+      // Never returns object bodies.
+      const bucketName = url.searchParams.get("bucket") || "lake";
+      const prefix = url.searchParams.get("prefix") || "";
+      const limit = Math.min(parseInt(url.searchParams.get("limit") || "500", 10), 2000);
+      const buckets: Record<string, R2Bucket | undefined> = {
+        lake: env.LAKE_BUCKET, raw: env.RAW_BUCKET,
+        backups: env.BACKUP_BUCKET, private: env.PRIVATE_BUCKET,
+      };
+      const bucket = buckets[bucketName];
+      if (!bucket) {
+        return Response.json({ error: `unknown bucket '${bucketName}'` }, { status: 400 });
+      }
+      const listing = await bucket.list({ prefix, limit });
+      return Response.json({
+        prefix, truncated: listing.truncated,
+        objects: listing.objects.map((o) => ({ key: o.key, size: o.size, uploaded: o.uploaded })),
+      });
+    }
+
+    if (url.pathname === "/ops/r2get" && request.method === "GET") {
+      // Bounded, admin-protected read of SMALL text objects (debug only) —
+      // manifests, CURRENT pointers, reports. Hard cap at 2 MiB.
+      const key = url.searchParams.get("key") || "";
+      const bucketName = url.searchParams.get("bucket") || "lake";
+      const buckets: Record<string, R2Bucket | undefined> = {
+        lake: env.LAKE_BUCKET, raw: env.RAW_BUCKET,
+        backups: env.BACKUP_BUCKET, private: env.PRIVATE_BUCKET,
+      };
+      const bucket = buckets[bucketName];
+      if (!bucket) return Response.json({ error: `unknown bucket '${bucketName}'` }, { status: 400 });
+      const obj = await bucket.get(key);
+      if (!obj) return Response.json({ error: "not found", key }, { status: 404 });
+      if (obj.size > 2 * 1024 * 1024) {
+        return Response.json({ error: "object too large for /ops/r2get", size: obj.size }, { status: 413 });
+      }
+      const text = await obj.text();
+      return new Response(text, {
+        headers: { "Content-Type": obj.httpMetadata?.contentType || "text/plain" },
+      });
+    }
+
     if (url.pathname === "/ops/health" && request.method === "GET") {
       const universe = await loadV2Universe(env);
       const governorId = env.GOVERNOR.idFromName("acquisition-governor");
@@ -841,6 +946,46 @@ export default {
         writeQueueEnqueueMetric(env, "fi-structured-api", structuredQueued, runId),
         writeQueueEnqueueMetric(env, "fi-monid", webQueued, runId),
       ]).catch((metricError) => console.error(JSON.stringify({ event: "QUEUE_METRIC_WRITE_ERROR", run_id: runId, error: metricError instanceof Error ? metricError.message : String(metricError) })));
+
+      // ── Serving freshness: nightly compact terminal rebuild ──
+      // One gated trigger per 24h. The materializer moves CURRENT only after
+      // validation + SHA verification, so a failed refresh leaves the previous
+      // generation active. Failures are logged but never break the cron.
+      try {
+        const refreshKey = "control/serving/terminal/LAST_REFRESH.json";
+        const lastObj = await env.BACKUP_BUCKET.get(refreshKey);
+        let lastRunMs: number | null = null;
+        if (lastObj) {
+          try {
+            const lastData = (await lastObj.json()) as { ran_at?: string };
+            if (lastData.ran_at) lastRunMs = new Date(lastData.ran_at).getTime();
+          } catch { /* ignore malformed */ }
+        }
+        const nowMs = Date.now();
+        if (lastRunMs === null || nowMs - lastRunMs > 24 * 3600 * 1000) {
+          const stamp = new Date(nowMs).toISOString().replace(/[-:.TZ]/g, "").slice(0, 8);
+          const jobId = `terminal_serving_build_v1_nightly_${stamp}`;
+          const doId = env.BATCH_CONTAINER.idFromName(jobId);
+          const batchDo = env.BATCH_CONTAINER.get(doId) as any;
+          // Pick up the CURRENT deployed image (long-lived idle containers
+          // keep their original image across deploys).
+          await batchDo.restartContainer("nightly-refresh");
+          const spec = { job_id: jobId, job_type: "terminal_serving_build_v1", params: {} };
+          const started = await batchDo.startJob(spec);
+          await env.BACKUP_BUCKET.put(
+            refreshKey,
+            JSON.stringify({ ran_at: new Date().toISOString(), job_id: started.job_id, status: "TRIGGERED" }),
+            { httpMetadata: { contentType: "application/json" } },
+          );
+          console.log(JSON.stringify({ event: "TERMINAL_REFRESH_TRIGGERED", job_id: started.job_id }));
+        }
+      } catch (refreshError) {
+        console.error(JSON.stringify({
+          event: "TERMINAL_REFRESH_ERROR",
+          error: refreshError instanceof Error ? refreshError.message : String(refreshError),
+        }));
+      }
+
       console.log(JSON.stringify({ event: "CRON_RUN_COMPLETED", ...audit }));
     } catch (e: unknown) {
       const error = e instanceof Error ? e.message : String(e);
