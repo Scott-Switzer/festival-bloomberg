@@ -197,6 +197,54 @@ export default {
       return Response.json(status);
     }
 
+    if (url.pathname === "/terminal/bootstrap/current" && request.method === "GET") {
+      // Narrow, admin-protected bootstrap path for the compact serving
+      // artifact ONLY (Phase 7B): CURRENT.json metadata or the current
+      // terminal.duckdb, streamed from the LAKE R2 binding. No arbitrary R2
+      // key access, no public bucket, no file browser.
+      const artifact = url.searchParams.get("artifact") || "metadata";
+      const currentKey = "serving/artist_security_terminal_v1/CURRENT.json";
+      const currentObj = await env.LAKE_BUCKET.get(currentKey);
+      if (!currentObj) {
+        return Response.json(
+          { error: "TERMINAL_CURRENT_NOT_FOUND", key: currentKey },
+          { status: 404 },
+        );
+      }
+      const current = (await currentObj.json()) as {
+        generation?: string;
+        object_key?: string;
+        sha256?: string;
+        [k: string]: unknown;
+      };
+      if (artifact === "metadata") {
+        return Response.json(current);
+      }
+      if (artifact === "db") {
+        const objectKey = current.object_key;
+        if (!objectKey) {
+          return Response.json({ error: "TERMINAL_OBJECT_KEY_MISSING" }, { status: 500 });
+        }
+        const db = await env.LAKE_BUCKET.get(objectKey);
+        if (!db) {
+          return Response.json(
+            { error: "TERMINAL_ARTIFACT_NOT_FOUND", key: objectKey },
+            { status: 404 },
+          );
+        }
+        return new Response(db.body, {
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "Content-Length": String(db.size),
+            "X-Serving-Generation": current.generation || "",
+            "X-Serving-SHA256": current.sha256 || "",
+            "Cache-Control": "no-store",
+          },
+        });
+      }
+      return Response.json({ error: "unknown artifact type" }, { status: 400 });
+    }
+
     if (url.pathname === "/ops/health" && request.method === "GET") {
       const universe = await loadV2Universe(env);
       const governorId = env.GOVERNOR.idFromName("acquisition-governor");
