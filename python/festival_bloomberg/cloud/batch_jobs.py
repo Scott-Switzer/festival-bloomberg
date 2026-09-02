@@ -1002,14 +1002,19 @@ def _materialize_r2_parquet_terminal(
             conn.execute(
                 f"""
                 CREATE TEMP TABLE wd_qid_mbid AS
-                SELECT
-                    CAST({qid_col} AS VARCHAR) AS wd_qid,
-                    lower(trim(CAST({val_col} AS VARCHAR))) AS wd_mbid
-                FROM read_parquet({q(wd_path)})
-                WHERE CAST({prop_col} AS VARCHAR) = 'P434'
-                  AND {val_col} IS NOT NULL
-                  AND trim(CAST({val_col} AS VARCHAR)) <> ''
-                GROUP BY 1, 2
+                SELECT wd_qid, wd_mbid FROM (
+                    SELECT
+                        CAST({qid_col} AS VARCHAR) AS wd_qid,
+                        lower(trim(CAST({val_col} AS VARCHAR))) AS wd_mbid,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY CAST({qid_col} AS VARCHAR)
+                            ORDER BY lower(trim(CAST({val_col} AS VARCHAR)))
+                        ) AS mbid_rank
+                    FROM read_parquet({q(wd_path)})
+                    WHERE CAST({prop_col} AS VARCHAR) = 'P434'
+                      AND {val_col} IS NOT NULL
+                      AND trim(CAST({val_col} AS VARCHAR)) <> ''
+                ) q WHERE mbid_rank = 1
                 """
             )
             mapped = ",".join(
@@ -1038,6 +1043,12 @@ def _materialize_r2_parquet_terminal(
                 WHERE CAST(w.{prop_col} AS VARCHAR) <> 'P434'
                   AND w.{val_col} IS NOT NULL
                   AND trim(CAST(w.{val_col} AS VARCHAR)) <> ''
+                QUALIFY ROW_NUMBER() OVER (
+                    PARTITION BY sha256(
+                        'r2wd|' || w.{qid_col} || '|' || w.{prop_col} || '|' || w.{val_col}
+                    )
+                    ORDER BY map.id_type
+                ) = 1
                 """
             )
     # estate youtube channels also surface as external ids (observed)
@@ -1055,6 +1066,12 @@ def _materialize_r2_parquet_terminal(
             'PRESENT', 'ESTATE_OBSERVED', NULL
         FROM artists a
         CROSS JOIN json_each(COALESCE(a.youtube_identifiers, '[]'::JSON)) yt
+        QUALIFY ROW_NUMBER() OVER (
+            PARTITION BY sha256(
+                'ytest|' || a.artist_key || '|' || trim(json_extract_string(yt.value, '$.channel_id'))
+            )
+            ORDER BY a.artist_key
+        ) = 1
         """
     )
 
@@ -1101,6 +1118,16 @@ def _materialize_r2_parquet_terminal(
                     'R2_EXPORTED_OBSERVATION'
                 FROM read_parquet({q(att_path)})
                 WHERE CAST({ak} AS VARCHAR) IN (SELECT artist_key FROM selected_artists)
+                QUALIFY ROW_NUMBER() OVER (
+                    PARTITION BY COALESCE(
+                        CAST({ok or 'NULL'} AS VARCHAR),
+                        sha256(
+                            'r2att|' || CAST({ak} AS VARCHAR) || '|' || CAST({sk} AS VARCHAR)
+                            || '|' || CAST({mk} AS VARCHAR) || '|' || COALESCE(CAST({ps or 'NULL'} AS VARCHAR), '')
+                        )
+                    )
+                    ORDER BY {rt and f'{rt} DESC NULLS LAST' or '1'}, {sk}
+                ) = 1
                 """
             )
 
@@ -1217,7 +1244,7 @@ def _materialize_r2_parquet_terminal(
             SELECT * EXCLUDE (artist_rank)
             FROM (
                 SELECT
-                    'mb-event::' || e.event_mbid || '::' || p.{ed_artist},
+                    'mb-event::' || e.event_mbid || '::' || p.{ed_artist} AS event_key,
                     'mbid::' || lower(p.{ed_artist}),
                     COALESCE(p.{ed_artist_name}, a.name),
                     e.{ev_name}, TRY_CAST(CAST(e.{ev_begin or 'begin_date'} AS VARCHAR) AS DATE),
@@ -1235,6 +1262,10 @@ def _materialize_r2_parquet_terminal(
                 {venue_from}
                 LEFT JOIN artists a ON a.artist_key = 'mbid::' || lower(p.{ed_artist})
                 WHERE 'mbid::' || lower(p.{ed_artist}) IN (SELECT artist_key FROM selected_artists)
+                QUALIFY ROW_NUMBER() OVER (
+                    PARTITION BY 'mb-event::' || e.event_mbid || '::' || p.{ed_artist}
+                    ORDER BY TRY_CAST(CAST(e.{ev_begin or 'begin_date'} AS VARCHAR) AS DATE) DESC NULLS LAST, e.event_mbid
+                ) = 1
             ) bounded
             WHERE artist_rank <= {int(max_events_per_artist)}
             """
@@ -1265,7 +1296,7 @@ def _materialize_r2_parquet_terminal(
                 SELECT * EXCLUDE (artist_rank)
                 FROM (
                     SELECT
-                        sha256(p.{ed_artist} || '|' || se.{se_series} || '|' || se.{se_event}),
+                        sha256(p.{ed_artist} || '|' || se.{se_series} || '|' || se.{se_event}) AS appearance_key,
                         'mbid::' || lower(p.{ed_artist}),
                         'mb-event::' || se.{se_event},
                         s.{s_id}, s.{s_id},
@@ -1289,6 +1320,10 @@ def _materialize_r2_parquet_terminal(
                     JOIN read_parquet({q(edges_path)}) p ON CAST(p.{ed_event} AS VARCHAR) = CAST(se.{se_event} AS VARCHAR)
                     JOIN read_parquet({q(events_path)}) e ON CAST(e.event_mbid AS VARCHAR) = CAST(se.{se_event} AS VARCHAR)
                     WHERE 'mbid::' || lower(p.{ed_artist}) IN (SELECT artist_key FROM selected_artists)
+                    QUALIFY ROW_NUMBER() OVER (
+                        PARTITION BY sha256(p.{ed_artist} || '|' || se.{se_series} || '|' || se.{se_event})
+                        ORDER BY se.{se_event}
+                    ) = 1
                 ) bounded
                 WHERE artist_rank <= {int(max_events_per_artist)}
                 """
@@ -1365,6 +1400,10 @@ def _materialize_r2_parquet_terminal(
                                         json_extract_string(s.attraction_json, '$.attraction_name'), '')))
                      = lower(trim(a.artist_name))
                 WHERE TRY_CAST(SUBSTR(CAST(s.{p_local} AS VARCHAR), 1, 10) AS DATE) >= CURRENT_DATE
+                QUALIFY ROW_NUMBER() OVER (
+                    PARTITION BY sha256('prov|' || CAST(s.{p_oid} AS VARCHAR) || '|' || a.artist_key)
+                    ORDER BY {p_knowledge and f'CAST(s.{p_knowledge} AS TIMESTAMP) DESC NULLS LAST' or '1'}, s.{p_oid}
+                ) = 1
                 """
             )
             # dedupe same provider event per artist
