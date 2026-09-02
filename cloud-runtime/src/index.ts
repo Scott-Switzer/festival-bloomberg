@@ -197,6 +197,19 @@ export default {
       return Response.json(status);
     }
 
+    if (url.pathname === "/ops/container/restart" && request.method === "POST") {
+      // Admin-only: destroy the DO's container instance so the next job
+      // starts with the CURRENT deployed image (old long-lived instances
+      // keep their original image across deploys).
+      const authFail = requireBatchAuth(request, env.ADMIN_TOKEN || "");
+      if (authFail) return authFail;
+      const jobId = url.searchParams.get("job_id") || "terminal_serving_build_v1";
+      const doId = env.BATCH_CONTAINER.idFromName(jobId);
+      const batchDo = env.BATCH_CONTAINER.get(doId) as any;
+      const result = await batchDo.restartContainer("admin");
+      return Response.json(result);
+    }
+
     if (url.pathname === "/terminal/bootstrap/current" && request.method === "GET") {
       // Narrow, admin-protected bootstrap path for the compact serving
       // artifact ONLY (Phase 7B): CURRENT.json metadata or the current
