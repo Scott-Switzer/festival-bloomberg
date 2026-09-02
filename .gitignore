@@ -45,6 +45,7 @@ reports/*
 !reports/data_moat_swarm_review_v1.json
 !reports/TALENT_BUYER_TERMINAL_ACCEPTANCE.json
 !reports/TALENT_BUYER_TERMINAL_V1_REPORT.md
+!reports/TALENT_BUYER_MVP_RELEASE_V1.json
 !reports/talent_buyer_terminal_v1/
 reports/talent_buyer_terminal_v1/*
 !reports/talent_buyer_terminal_v1/browser_acceptance.json

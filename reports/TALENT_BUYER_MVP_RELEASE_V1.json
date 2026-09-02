@@ -1,0 +1,58 @@
+{
+  "release": "TALENT_BUYER_MVP_RELEASE_V1",
+  "status": "PASS",
+  "merge_sha": "7b7bc60bd5320deee4f3388e857b5949e7e43c75",
+  "feature_branch": "feat/talent-buyer-mvp-v1",
+  "feature_head_pre_merge": "1833e1dba1dd16747c05a1c72f81bbf24519e662",
+  "pr_58": "MERGED (2026-09-02T04:15:16Z, merge commit 7b7bc60)",
+  "pr_57": "CLOSED as superseded by #58 (comment posted at issuecomment-5504281861)",
+  "serving": {
+    "artifact": "artist_security_terminal_v1",
+    "generation": "terminal_v1_20260902T015717Z",
+    "object_key": "serving/artist_security_terminal_v1/generations/terminal_v1_20260902T015717Z/terminal.duckdb",
+    "bytes": 121122816,
+    "sha256": "464f9d0c94087b753a811148dfdee1b61810102bf99cd265cacc2e398483f97f",
+    "created_at": "2026-09-02T01:57:27Z",
+    "row_counts": {
+      "artists": 25000,
+      "artist_search_terms": 40759,
+      "artist_markets": 27322,
+      "artist_peers": 90866,
+      "event_history": 134448,
+      "festival_appearances": 14758,
+      "attention_observations": 50886,
+      "future_events": 6731,
+      "artist_external_ids": 47602
+    },
+    "validation": {
+      "passed": true,
+      "read_only": true,
+      "no_composite_score": true,
+      "unknown_preserved": true,
+      "latency_ms": { "search": 8.1, "artist": 4.8, "peers": 6, "compare_probe": 1.2 }
+    },
+    "demo_artists": [
+      "Alice Cooper", "Barry Manilow", "Pierce the Veil", "Ed Sheeran",
+      "Metallica", "Olivia Rodrigo", "Mötley Crüe", "Journey", "Iron Maiden", "Charli xcx"
+    ]
+  },
+  "start_command": "./scripts/run_terminal.sh",
+  "cold_start": {
+    "result": "PASS",
+    "automated": "scripts/accept_cold_start.sh (fetch CURRENT -> download compact DB -> SHA verify -> launch -> status/search/artist OK)"
+  },
+  "product_tests": { "result": "PASS", "count": 24, "suites": ["test_artist_security_25000", "test_terminal_serving_snapshot"] },
+  "cloud_checks": { "tsc_noEmit": "PASS", "cloud_tests": { "count": 144, "files": 17 } },
+  "browser_regression": { "result": "PASS", "surfaces": ["Home", "Search", "Artist", "Market", "Alternatives", "Compare", "Shortlist persistence", "Demo"], "console_errors": 0 },
+  "ci": {
+    "exact_head": "1833e1dba1dd16747c05a1c72f81bbf24519e662",
+    "node": "PASS", "python": "PASS", "cloud-runtime": "PASS", "security": "PASS"
+  },
+  "known_limitations": [
+    "Wikimedia/YouTube attention panels UNKNOWN in current serving generation",
+    "Audience relationships derive from a 1% ListenBrainz pilot sample (labeled as sample, never total fans)",
+    "Artist type/origin area empty for many artists",
+    "Hosted read-only demo deferred (path: R2-public-served DB + duckdb-wasm SPA, or DO-container proxy)",
+    "No nightly serving refresh automation yet"
+  ]
+}
