@@ -140,3 +140,26 @@ input[type="text"], input[type="search"], input[type="date"], textarea {
 .spark span { flex: 1; background: var(--accent); border-radius: 2px 2px 0 0; min-height: 2px; }
 .empty { color: var(--muted); font-style: italic; padding: 10px 0; }
 .note { color: var(--muted); font-size: 12px; }
+
+/* buyer decision system */
+.cols3 { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.whychip.link { display: inline; padding: 2px 8px; background: rgba(47,129,247,.12); border: 1px solid #1f4e8f; border-radius: 9px; font-size: 12px; color: #79b8ff; margin-right: 4px; }
+.whychip.link:hover { border-color: var(--accent); text-decoration: none; }
+select {
+  background: var(--bg); color: var(--text); border: 1px solid var(--border);
+  border-radius: 8px; padding: 7px 9px; font-size: 13px;
+}
+input[type="number"] {
+  background: var(--bg); color: var(--text); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 10px; font-size: 13px; width: 100%;
+}
+input[type="file"] { color: var(--muted); }
+.alt-card .whychip { display: inline-block; }
+#briefWrap { margin-top: 4px; }
+#briefWrap h2 { font-size: 18px; }
+#uwArtistHits, #uwAHits { margin-top: 4px; }
+#uwArtistHits .result, #uwAHits .result {
+  border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px;
+  margin-top: 4px; cursor: pointer; font-size: 13px;
+}
+#uwArtistHits .result:hover, #uwAHits .result:hover { border-color: var(--accent); }

@@ -59,6 +59,10 @@ function route() {
   else if (head === "search" && rest.length) doSearch(rest.join(" "));
   else if (head === "market" && rest.length) renderMarket(rest.join("/"));
   else if (head === "markets") renderMarkets();
+  else if (head === "underwrite") renderUnderwrite();
+  else if (head === "backtest" && rest.length) renderPIT(rest.join("/").replace(/^show\//, ""));
+  else if (head === "backtest") renderBacktest();
+  else if (head === "monitor") renderMonitor();
   else if (head === "compare") renderCompare();
   else if (head === "shortlist") renderShortlist();
   else if (head === "demo") renderDemo();
@@ -80,6 +84,21 @@ async function renderHome() {
       <div class="panel">
         <h3>What am I evaluating?</h3>
         <div id="slBox" class="empty">loading…</div>
+      </div>
+    </div>
+    <div style="height:14px"></div>
+    <div class="grid cols2">
+      <div class="panel">
+        <h3>Since your last look <a class="small" href="#/monitor">monitor →</a></h3>
+        <div id="monStrip" class="empty">loading…</div>
+      </div>
+      <div class="panel">
+        <h3>Start an underwrite</h3>
+        <p class="small muted">Artist + market + date → full pre-offer buyer brief.</p>
+        <div class="form-row"><label>Artist</label><input id="uwArtist" type="search" placeholder="Search artist…"><div id="uwArtistHits"></div></div>
+        <div class="form-row"><label>Market</label><input id="uwMarket" type="text" placeholder="e.g. chicago-il or Chicago"></div>
+        <div class="form-row"><label>Date</label><input id="uwDate" type="date"></div>
+        <button class="btn primary" id="uwGo">Build buyer brief →</button>
       </div>
     </div>
     <div style="height:14px"></div>
@@ -147,6 +166,53 @@ async function renderHome() {
       });
     }
   } catch (e) { document.getElementById("slBox").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+
+  // Since-your-last-look strip from the monitor baselines.
+  try {
+    const mon = await api("/api/monitor");
+    const box = document.getElementById("monStrip");
+    const rows = (mon.artists || []).filter((a) => a.changes && a.changes.length);
+    if (!rows.length) {
+      const watched = (mon.artists || []).length;
+      box.innerHTML = watched
+        ? `<div class="empty">${watched} watched artist${watched > 1 ? "s" : ""} — no changes since the last look at this generation.</div>`
+        : `<div class="empty">Shortlist artists are watched here. Keep an eye on what changed since you last looked.</div>`;
+    } else {
+      box.innerHTML = rows.map((a) => `
+        <div class="now-row" data-k="${esc(a.artist_key)}">
+          <b>${esc(a.artist_name)}</b>
+          <span class="small">${a.changes.map((c) =>
+            `<span class="chip obs">${esc(c.detail)}</span>`).join(" ")}</span>
+        </div>`).join("");
+      box.querySelectorAll(".now-row[data-k]").forEach((el) => {
+        el.onclick = () => location.hash = "#/monitor";
+      });
+    }
+  } catch (e) { document.getElementById("monStrip").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+
+  // Underwrite launcher wiring.
+  const uwArtist = document.getElementById("uwArtist");
+  let uwKey = "";
+  uwArtist.addEventListener("input", async () => {
+    const q = uwArtist.value.trim();
+    const hits = document.getElementById("uwArtistHits");
+    if (q.length < 2) { hits.innerHTML = ""; return; }
+    try {
+      const res = await api("/api/search?q=" + encodeURIComponent(q) + "&limit=6");
+      hits.innerHTML = res.map((h) =>
+        `<div class="result" data-k="${esc(h.entity_id)}" data-name="${esc(h.name)}"><b>${esc(h.name)}</b></div>`
+      ).join("");
+      hits.querySelectorAll(".result").forEach((el) => {
+        el.onclick = () => { uwKey = el.dataset.k; uwArtist.value = el.dataset.name; hits.innerHTML = ""; };
+      });
+    } catch (e) { hits.innerHTML = `<span class="empty">${esc(e.message)}</span>`; }
+  });
+  document.getElementById("uwGo").onclick = () => {
+    if (!uwKey.trim()) { toast("Pick an artist from search first."); return; }
+    const m = document.getElementById("uwMarket").value.trim();
+    const d = document.getElementById("uwDate").value;
+    location.hash = "#/underwrite?a=" + encodeURIComponent(uwKey) + (m ? "&m=" + encodeURIComponent(m) : "") + (d ? "&d=" + encodeURIComponent(d) : "");
+  };
 
   try {
     const demo = await api("/api/demo");
@@ -245,6 +311,7 @@ async function renderArtist(key) {
     ${statusChip(cov.identity)}
     <button class="btn" id="shortlistBtn">＋ Shortlist</button>
     <button class="btn" id="compareBtn">Compare with…</button>
+    <button class="btn primary" id="underwriteBtn">Underwrite…</button>
   </div>
   <p class="muted small">${esc(a.musicbrainz_id || "")}${a.artist_type ? " · " + esc(a.artist_type) : ""}${a.area ? " · " + esc(a.area) : ""}${a.primary_genre ? " · " + esc(a.primary_genre) : ""}</p>
   <p class="small muted">${esc(a.evidence_coverage || "")} · ${esc(a.freshness || "")}</p>
@@ -279,6 +346,11 @@ async function renderArtist(key) {
   <div class="panel"><h3>Evidence summary</h3><div id="evidenceBox"></div></div>`;
 
   document.getElementById("shortlistBtn").onclick = () => quickShortlist(a, p);
+  document.getElementById("underwriteBtn").onclick = () => {
+    const topMarket = (p.markets && p.markets.items && p.markets.items[0]);
+    const m = topMarket ? (topMarket.market || topMarket.market_name || topMarket.market_key || "") : "";
+    location.hash = "#/underwrite?a=" + encodeURIComponent(a.artist_key) + (m ? "&m=" + encodeURIComponent(m) : "");
+  };
   document.getElementById("compareBtn").onclick = () => {
     compareDraft = [a.artist_key];
     location.hash = "#/compare";
@@ -734,6 +806,551 @@ async function renderDemo() {
       el.onclick = () => location.hash = "#/artist/" + encodeURIComponent(demo[i].artist_key);
     });
   } catch (e) { document.getElementById("demoGrid").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+
+/* ── monitor ─────────────────────────────────────────────── */
+async function renderMonitor() {
+  setNav("monitor");
+  view.innerHTML = `<h1>Monitor</h1>
+    <p class="muted">What changed for your watchlist since the last time you looked at this evidence generation.</p>
+    <div class="grid cols2">
+      <div class="panel"><h3>Watchlist changes</h3><div id="monBox" class="empty">loading…</div></div>
+      <div class="panel"><h3>Private outcome vault</h3><div id="vaultBox" class="empty">loading…</div></div>
+    </div>
+    <div style="height:14px"></div>
+    <div class="panel"><h3>Model readiness — nothing trained yet</h3><div id="readyBox" class="empty">loading…</div></div>`;
+  try {
+    const mon = await api("/api/monitor");
+    const box = document.getElementById("monBox");
+    if (!mon.artists || !mon.artists.length) {
+      box.innerHTML = `<div class="empty">No watched artists. Add artists to your shortlist — they are watched automatically.</div>`;
+    } else {
+      box.innerHTML = mon.artists.map((a) => `
+        <div class="alt-card">
+          <b>${esc(a.artist_name)}</b>
+          <div class="small muted">future ${a.current.future_events} · markets ${a.current.markets} · festivals ${a.current.festivals} · attention ${a.current.attention}</div>
+          ${(a.changes.length ? a.changes.map((c) =>
+            `<span class="chip obs">${esc(c.detail)}</span>`).join(" ") : `<span class="small muted">no changes since last look</span>`)}
+        </div>`).join("");
+    }
+  } catch (e) { document.getElementById("monBox").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  try {
+    const v = await api("/api/vault");
+    document.getElementById("vaultBox").innerHTML =
+      `<table><tbody>
+         <tr><td class="muted">Private outcome entries</td><td><b>${esc(v.entries)}</b></td></tr>
+         <tr><td class="muted">Hidden (not yet revealed)</td><td><b>${esc(v.hidden)}</b></td></tr>
+       </tbody></table>
+       <p class="note">${esc(v.privacy)}</p>`;
+  } catch (e) { document.getElementById("vaultBox").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  try {
+    const r = await api("/api/readiness");
+    document.getElementById("readyBox").innerHTML =
+      `<table><tbody>
+         ${[["Private settled shows", r.private_settled_shows], ["With booking/announcement/on-sale cutoff", r.with_booking_cutoff],
+           ["With leakage-safe PIT reconstruction", r.with_valid_pit_reconstruction], ["PIT insufficient", r.pit_insufficient], ["With tickets sold", r.with_tickets_sold],
+           ["With gross", r.with_gross], ["With guarantee", r.with_guarantee], ["With expenses", r.with_expenses],
+           ["With profit/contribution", r.with_profit_or_contribution], ["Markets", r.markets], ["Venues", r.venues],
+           ["Artists", r.artists], ["Eligible OOS rows", r.eligible_oos_rows]].map(([k, v]) =>
+           `<tr><td class="muted">${esc(k)}</td><td><b>${v == null ? "—" : esc(v)}</b></td></tr>`).join("")}
+       </tbody></table>
+       <p class="note">${esc(r.note)} · progression: ${Object.entries(r.progression || {}).map(([k, v]) => `${esc(k)} → ${esc(v)}`).join(" · ")}</p>`;
+  } catch (e) { document.getElementById("readyBox").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+
+/* ── underwrite ──────────────────────────────────────────── */
+let uwKey = "";
+
+// BLANK = UNKNOWN. Explicit "0" = assumed zero. No hidden defaults.
+const uwInputs = {
+  usable_capacity: "", sellable_capacity: "", average_ticket_price: "",
+  sell_through: "", sell_through_down: "", sell_through_up: "",
+  guarantee: "", backend_percentage: "", artist_expenses: "",
+  deal_type: "",
+  cost_marketing: "", cost_production: "", cost_venue: "", cost_labor: "",
+  cost_insurance: "", cost_other: "", tax_rate: "", ticketing_deduction: "",
+  ancillary_revenue: "", sponsorship: "",
+  template: "", accept_template: "",
+};
+
+async function renderUnderwrite() {
+  setNav("underwrite");
+  const qp = new URLSearchParams(location.hash.split("?")[1] || "");
+  const aKey = qp.get("a") || "";
+  const mKey = qp.get("m") || "";
+  const dDate = qp.get("d") || "";
+  uwInputs.event_date = dDate;
+  // Shareable assumption presets: cap, sell, atp, st, bk, gt, mkt, prod, venue.
+  const pre = (k, d) => { const v = qp.get(k); return v != null && v !== "" ? v : d; };
+  uwInputs.usable_capacity = pre("cap", uwInputs.usable_capacity);
+  uwInputs.sellable_capacity = pre("sell", uwInputs.sellable_capacity);
+  uwInputs.average_ticket_price = pre("atp", uwInputs.average_ticket_price);
+  uwInputs.guarantee = pre("gt", uwInputs.guarantee);
+  uwInputs.sell_through = pre("st", uwInputs.sell_through);
+  uwInputs.backend_percentage = pre("bk", uwInputs.backend_percentage);
+  uwInputs.cost_marketing = pre("mkt", uwInputs.cost_marketing);
+  uwInputs.cost_production = pre("prod", uwInputs.cost_production);
+  uwInputs.cost_venue = pre("venue", uwInputs.cost_venue);
+
+  let artistName = aKey ? "(loading…)" : "";
+  view.innerHTML = `<h1>Underwrite</h1>
+    <p class="muted">Pre-offer buyer brief — artist + market + your assumptions → deterministic scenario math. No BOOK/PASS, no invented guarantees.</p>
+    <div class="grid cols2">
+      <div class="panel"><h3>1 · What are we pricing?</h3>
+        <div class="form-row"><label>Artist</label><input id="uwA" type="search" placeholder="Search artist…" value="${esc(artistName)}"><div id="uwAHits"></div></div>
+        <div class="form-row"><label>Market</label><input id="uwM" type="text" placeholder="e.g. chicago-il or Chicago" value="${esc(mKey)}"></div>
+        <div class="form-row"><label>Venue (optional)</label><input id="uwV" type="text" placeholder="e.g. The Vic Theatre"></div>
+        <div class="form-row"><label>Event date</label><input id="uwD" type="date" value="${esc(dDate)}"></div>
+      </div>
+      <div class="panel"><h3>2 · Your assumptions <span class="chip unk">USER ASSUMPTION</span></h3>
+        <div class="form-row"><label>Usable capacity</label><input id="uwUsable" type="number" placeholder="0" value="${esc(uwInputs.usable_capacity)}"></div>
+        <div class="form-row"><label>Sellable capacity</label><input id="uwSellable" type="number" placeholder="default = usable" value="${esc(uwInputs.sellable_capacity)}"></div>
+        <div class="form-row"><label>Average ticket price ($)</label><input id="uwAtp" type="number" placeholder="0" value="${esc(uwInputs.average_ticket_price)}"></div>
+        <div class="form-row"><label>Base sell-through (0–1)</label><input id="uwSt" type="number" step="0.01" min="0" max="1" placeholder="blank = UNKNOWN" value="${esc(uwInputs.sell_through)}"></div>
+        <div class="form-row"><label>Downside sell-through (0–1)</label><input id="uwStDown" type="number" step="0.01" min="0" max="1" placeholder="optional" value="${esc(uwInputs.sell_through_down)}"></div>
+        <div class="form-row"><label>Upside sell-through (0–1)</label><input id="uwStUp" type="number" step="0.01" min="0" max="1" placeholder="optional" value="${esc(uwInputs.sell_through_up)}"></div>
+        <div class="form-row"><label>Scenario template</label>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            ${Object.entries({ CONSERVATIVE: "25/45/65", MODERATE: "35/55/75", AGGRESSIVE: "45/65/85" }).map(([name, rates]) =>
+              `<button class="btn small" data-tpl="${name}">${name} ${rates}</button>`).join("")}
+          </div>
+          <p class="small muted">Templates fill sell-through as <b>SYSTEM_TEMPLATE_ASSUMPTION</b>. Build the brief to accept; edit a field to override it with your own USER_ASSUMPTION.</p>
+        </div>
+      </div>
+    </div>
+    <div style="height:12px"></div>
+    <div class="grid cols2">
+      <div class="panel"><h3>3 · Proposed deal</h3>
+        <div class="form-row"><label>Guarantee ($)</label><input id="uwGuarantee" type="number" placeholder="0" value="${esc(uwInputs.guarantee)}"></div>
+        <div class="form-row"><label>Backend % (0–1)</label><input id="uwBackend" type="number" step="0.01" min="0" max="1" value="${esc(uwInputs.backend_percentage)}"></div>
+        <div class="form-row"><label>Artist expense allowance ($)</label><input id="uwArtistExp" type="number" value="${esc(uwInputs.artist_expenses)}"></div>
+        <div class="form-row"><label>Deal type</label><select id="uwDeal">${["", "GUARANTEE_VS_PERCENTAGE", "FLAT_GUARANTEE", "PERCENTAGE_OF_DEFINED_BASE"].map((t) =>
+          `<option value="${t}" ${t === uwInputs.deal_type ? "selected" : ""}>${t || "(blank = UNKNOWN)"}</option>`).join("")}</select></div>
+      </div>
+      <div class="panel"><h3>4 · Expenses & revenue (blank = UNKNOWN, 0 = assumed zero)</h3>
+        <div class="form-row"><label>Marketing</label><input id="uwMkt" type="number" value="${esc(uwInputs.cost_marketing)}"></div>
+        <div class="form-row"><label>Production</label><input id="uwProd" type="number" value="${esc(uwInputs.cost_production)}"></div>
+        <div class="form-row"><label>Venue rental</label><input id="uwVenue" type="number" value="${esc(uwInputs.cost_venue)}"></div>
+        <div class="form-row"><label>Labor / insurance / other</label><input id="uwOther" type="text" placeholder="0,0,0" value="${esc(uwInputs.cost_labor)},${esc(uwInputs.cost_insurance)},${esc(uwInputs.cost_other)}"></div>
+        <div class="form-row"><label>Ancillary revenue</label><input id="uwAnc" type="number" placeholder="blank = UNKNOWN" value="${esc(uwInputs.ancillary_revenue)}"></div>
+        <div class="form-row"><label>Tax rate (0–1) · ticket deduction</label><input id="uwTaxDed" type="text" placeholder="blank,blank = UNKNOWN" value="${esc(uwInputs.tax_rate)},${esc(uwInputs.ticketing_deduction)}"></div>
+      </div>
+    </div>
+    <div style="height:12px"></div>
+    <button class="btn primary" id="uwRun">Build buyer brief →</button>
+    <div style="height:14px"></div>
+    <div id="briefOut" class="empty">Fill in what you know, then build the brief. Missing numbers stay UNKNOWN — never silently zeroed.</div>
+    <div style="height:14px"></div>
+    <div class="panel"><h3>Saved decisions</h3><div id="decList" class="empty">loading…</div></div>`;
+
+  // Artist picker
+  uwKey = aKey;
+  const uwA = document.getElementById("uwA");
+  if (aKey) {
+    try {
+      const p = await api("/api/artist-security/" + encodeURIComponent(aKey));
+      uwA.value = (p.artist || {}).name || aKey;
+    } catch (e) { /* keep key */ }
+  }
+  // Scenario template buttons (SYSTEM_TEMPLATE_ASSUMPTION until accepted).
+  // Delegated so innerHTML rebuilds can never orphan the handlers.
+  view.addEventListener("click", (ev) => {
+    const btn = ev.target.closest && ev.target.closest("[data-tpl]");
+    if (!btn) return;
+    const rates = { CONSERVATIVE: ["0.25", "0.45", "0.65"], MODERATE: ["0.35", "0.55", "0.75"], AGGRESSIVE: ["0.45", "0.65", "0.85"] }[btn.dataset.tpl];
+    if (!rates) return;
+    document.getElementById("uwStDown").value = rates[0];
+    document.getElementById("uwSt").value = rates[1];
+    document.getElementById("uwStUp").value = rates[2];
+    uwInputs.template = btn.dataset.tpl;
+    uwInputs.accept_template = "accept";
+    toast(`Template ${btn.dataset.tpl} applied — SYSTEM_TEMPLATE_ASSUMPTION. Build the brief to accept.`);
+  });
+
+  uwA.addEventListener("input", async () => {
+    const q = uwA.value.trim();
+    const hits = document.getElementById("uwAHits");
+    if (q.length < 2) { hits.innerHTML = ""; return; }
+    try {
+      const res = await api("/api/search?q=" + encodeURIComponent(q) + "&limit=6");
+      hits.innerHTML = res.map((h) =>
+        `<div class="result" data-k="${esc(h.entity_id)}" data-name="${esc(h.name)}"><b>${esc(h.name)}</b></div>`).join("");
+      hits.querySelectorAll(".result").forEach((el) => {
+        el.onclick = () => { uwKey = el.dataset.k; uwA.value = el.dataset.name; hits.innerHTML = ""; };
+      });
+    } catch (e) { hits.innerHTML = `<span class="empty">${esc(e.message)}</span>`; }
+  });
+
+  // A deep link with a key but no fetch hit still needs uwKey set (pickup from earlier).
+
+  document.getElementById("uwRun").onclick = runUnderwrite;
+  document.getElementById("uwSt").addEventListener("keydown", (ev) => { if (ev.key === "Enter") runUnderwrite(); });
+  loadDecisions();
+
+  // Shareable one-click brief: #/underwrite?a=…&m=…&d=…&auto=1 builds immediately.
+  if (qp.get("auto") === "1" && aKey) runUnderwrite();
+}
+
+function collectUwInputs() {
+  const other = (document.getElementById("uwOther").value || "").split(",");
+  const taxDed = (document.getElementById("uwTaxDed").value || "").split(",");
+  const g = (el) => (document.getElementById(el) || {}).value ?? "";
+  uwInputs.usable_capacity = g("uwUsable");
+  uwInputs.sellable_capacity = g("uwSellable");
+  uwInputs.average_ticket_price = g("uwAtp");
+  uwInputs.sell_through = g("uwSt");
+  uwInputs.sell_through_down = g("uwStDown");
+  uwInputs.sell_through_up = g("uwStUp");
+  uwInputs.guarantee = g("uwGuarantee");
+  uwInputs.backend_percentage = g("uwBackend");
+  uwInputs.deal_type = g("uwDeal");
+  uwInputs.cost_marketing = g("uwMkt");
+  uwInputs.cost_production = g("uwProd");
+  uwInputs.cost_venue = g("uwVenue");
+  uwInputs.cost_labor = (other[0] || "").trim();
+  uwInputs.cost_insurance = (other[1] || "").trim();
+  uwInputs.cost_other = (other[2] || "").trim();
+  uwInputs.artist_expenses = g("uwArtistExp");
+  uwInputs.ancillary_revenue = g("uwAnc");
+  uwInputs.tax_rate = (taxDed[0] || "").trim();
+  uwInputs.ticketing_deduction = (taxDed[1] || "").trim();
+  uwInputs.event_date = g("uwD");
+  // Template marker travels only when the buyer actually applied it this run.
+  const payload = { ...uwInputs };
+  if (!uwInputs.template) { delete payload.template; delete payload.accept_template; }
+  return {
+    artist_key: uwKey,
+    market_key: g("uwM").trim() || null,
+    inputs: payload,
+  };
+}
+
+async function runUnderwrite() {
+  const req = collectUwInputs();
+  if (!req.artist_key) { toast("Pick an artist from search first."); return; }
+  document.getElementById("briefOut").innerHTML = `<div class="empty">building buyer brief…</div>`;
+  try {
+    const b = await api("/api/underwrite", { method: "POST", body: JSON.stringify(req) });
+    renderBrief(b);
+  } catch (e) {
+    document.getElementById("briefOut").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+
+function prov(chip) {
+  const label = String(chip || "UNKNOWN");
+  const cls = label === "OBSERVED" || label === "DERIVED" ? "obs" : "unk";
+  return `<span class="chip ${cls}">${esc(label)}</span>`;
+}
+
+function renderBrief(b) {
+  const m = b.market || {};
+  const row = (k, v, provLabel) => `<tr><td class="muted">${esc(k)}</td><td>${v == null || v === "" ? "—" : esc(v)}</td>${provLabel ? `<td>${prov(provLabel)}</td>` : ""}</tr>`;
+  const economicsRows = (label, sc) => {
+    if (sc.error) return `<div class="empty">${esc(sc.error)}</div>`;
+    const o = sc.outputs || {};
+    const gv = (k) => { const v = o[k] || {}; return { value: v.value, status: v.status, reason: v.reason }; };
+    const mon = (x) => x.value == null ? (x.status === "UNKNOWN" ? `<span class="chip unk">UNKNOWN</span>` : `<span class="chip unk">${esc(x.status)}</span>`) : "$" + money(x.value);
+    return `<table><tbody>
+      ${row("Gross potential", mon(gv("gross_potential")), "DERIVED")}
+      ${row("Gross ticket revenue", mon(gv("gross_ticket_revenue")), "DERIVED")}
+      ${row("Paid tickets @ assumed sell-through", gv("paid_tickets").value, "USER ASSUMPTION")}
+      ${row("Artist settlement", mon(gv("artist_settlement")), "DERIVED")}
+      ${row("Promoter contribution", mon(gv("promoter_contribution")), "DERIVED")}
+      ${row("Promoter margin", gv("promoter_margin").value != null ? (Number(gv("promoter_margin").value) * 100).toFixed(1) + "%" : null, "DERIVED")}
+      ${row("Break-even paid tickets", gv("break_even_paid_tickets").value, "DERIVED")}
+      ${row("Break-even sell-through", gv("break_even_sell_through").value != null ? (Number(gv("break_even_sell_through").value) * 100).toFixed(0) + "%" : null, "DERIVED")}
+      ${row("Break-even average ticket", mon(gv("break_even_average_ticket_price")), "DERIVED")}
+      ${row("Maximum flat guarantee @ break-even", mon(gv("maximum_flat_guarantee_at_break_even")), "DERIVED")}
+    </tbody></table>`;
+  };
+
+  const scenariosHTML = Object.entries(b.economics || {}).map(([label, sc]) => `
+    <div class="panel">
+      <h3>${esc(label)} <span class="chip unk">USER-DEFINED SCENARIO</span></h3>
+      ${economicsRows(label, sc)}
+    </div>`).join("");
+  const economicsEmpty = !Object.keys(b.economics || {}).length
+    ? `<div class="panel"><h3>E · Scenario math</h3><p class="muted">No scenario sell-through entered — the brief is honest about what it cannot compute. Enter a base sell-through, or apply a template above, to run the deterministic economics.</p></div>`
+    : "";
+  const templateChip = b.economics_template ? ` <span class="chip unk">SYSTEM TEMPLATE ${esc(Object.values(b.economics_template)[0] || "")}</span>` : "";
+  const provRows = Object.entries(b.economics_input_provenance || {}).map(([k, v]) =>
+    `<tr><td class="muted">${esc(k)}</td><td>${v === "UNKNOWN" ? `<span class="chip unk">UNKNOWN</span>` : v === "SYSTEM_TEMPLATE_ASSUMPTION" ? `<span class="chip unk">SYSTEM_TEMPLATE_ASSUMPTION</span>` : prov(v)}</td></tr>`).join("");
+  const provBlock = provRows
+    ? `<div class="panel"><h3>Where did this number come from?</h3><table><tbody>${provRows}</tbody></table>
+       <p class="small muted">BLANK = UNKNOWN · explicit 0 = assumed zero · template fills = SYSTEM_TEMPLATE_ASSUMPTION until you edit or accept.</p></div>`
+    : "";
+
+  const flagsHTML = (b.risk_flags || []).length
+    ? b.risk_flags.map((f) => `<div class="alt-card"><b>${esc(f.label)}</b><div class="small muted">${esc(f.detail)}</div></div>`).join("")
+    : `<div class="empty">No deterministic risk flags raised for these inputs.</div>`;
+
+  const compsHTML = (b.comparables || []).map((c) => `
+    <div class="alt-card">
+      <div style="display:flex;justify-content:space-between"><b>${esc(c.artist_name)}</b>
+      <button class="btn small" data-comp="${esc(c.artist_key)}">Compare →</button></div>
+      <div class="why">${(c.components || []).map((r) => `<span class="whychip">${esc(r)}</span>`).join("")}</div>
+    </div>`).join("");
+
+  const competing = (b.competing_events || []).map((e) =>
+    `<div class="now-row"><b>${esc(e.artist_name)}</b> · <span class="muted">${esc(fmtDate(e.event_date))} · ${esc(e.venue_city || "")}</span></div>`).join("");
+
+  view.innerHTML += `<div id="briefWrap" class="panel hero" style="border-top:3px solid #c9a961">
+    <h2>Buyer decision brief — ${esc(b.artist.name || "")} ${templateChip}<span class="badge">${esc(b.generation || "")}</span></h2>
+    <p class="small muted">Evidence generation frozen here for audit. Every number below is ${prov("OBSERVED")} public evidence, ${prov("USER ASSUMPTION")} buyer input, or ${prov("UNKNOWN")} — never invented.</p>
+    <div class="grid cols2">
+      <div class="panel"><h3>A · Decision header</h3><table><tbody>
+        ${row("Artist", b.artist.name, "OBSERVED")}${row("Tier", b.artist.tier, "OBSERVED")}
+        ${row("Identity", b.artist.identity_status || "UNKNOWN", "OBSERVED")}
+        ${row("Market", m.market_key ? _pretty(m.market_key) : "—")}
+        ${row("Shows observed in market", m.observed_shows, "OBSERVED")}
+        ${row("Last play in market", fmtDate(m.last_play_date), "OBSERVED")}
+        ${row("Event date", fmtDate(uwInputs.event_date), "USER ASSUMPTION")}
+      </tbody></table></div>
+      <div class="panel"><h3>B · Artist state</h3><table><tbody>
+        ${row("Live events", b.artist.historical_events, "OBSERVED")}
+        ${row("Festival appearances", b.artist.festival_appearances, "OBSERVED")}
+        ${row("Markets", b.artist.markets, "OBSERVED")}
+        ${row("Audience peers", b.artist.audience_peers, "OBSERVED")}
+        ${row("Forward events", b.artist.forward_events, "OBSERVED")}
+        ${row("Attention sources", (b.artist.attention_sources || []).join(", ") || "UNKNOWN", "OBSERVED")}
+      </tbody></table></div>
+    </div>
+    <div style="height:12px"></div>
+    <div class="panel"><h3>C · Market state</h3>
+      ${competing ? `<p class="small muted">Provider-listed shows by other artists in this market ±14 days of the planned date:</p>${competing}` : `<div class="empty">No competing forward events detected in this market window.</div>`}
+    </div>
+    <div style="height:12px"></div>
+    ${economicsEmpty || `<div class="grid cols3">${scenariosHTML}</div>`}
+    ${provBlock || ""}
+    <div style="height:12px"></div>
+    <div class="grid cols2">
+      <div class="panel"><h3>F · Risk flags <span class="chip unk">deterministic</span></h3>${flagsHTML}</div>
+      <div class="panel"><h3>D · Comparables <span class="chip unk">EVIDENCE COMPARABLE</span></h3>${compsHTML || `<div class="empty">No explainable comparables found.</div>`}</div>
+    </div>
+    <div style="height:12px"></div>
+    <div class="panel"><h3>G · Alternatives</h3>
+      <div class="why">${(b.alternatives || []).map((a) =>
+        `<a class="whychip link" href="#/artist/${encodeURIComponent(a.artist_key)}">${esc(a.artist_name)}</a>`).join("") || `<span class="muted">none</span>`}</div>
+    </div>
+    <div style="height:12px"></div>
+    <div class="grid cols2">
+      <button class="btn primary" id="uwSave">Save decision snapshot</button>
+      <button class="btn" id="uwCompare">Compare with a comparable</button>
+    </div>
+    <p class="small muted" style="margin-top:8px">${esc((b.evidence || []).length + " evidence panels carried from generation " + (b.generation || "UNKNOWN"))}</p>
+  </div>`;
+  document.getElementById("uwSave").onclick = async () => {
+    try {
+      const snap = await api("/api/underwrite/save", { method: "POST", body: JSON.stringify({
+        artist_key: b.artist_key, artist_name: b.artist.name, market_key: (b.market || {}).market_key,
+        venue: "", event_date: uwInputs.event_date, inputs: uwInputs, brief: b, status: "RESEARCHING",
+      }) });
+      toast("Snapshot saved: " + snap.snapshot_id);
+      loadDecisions();
+    } catch (e) { toast(e.message); }
+  };
+  document.getElementById("uwCompare").onclick = () => {
+    const first = (b.comparables || [])[0];
+    if (!first) { toast("No comparable to compare with."); return; }
+    location.hash = "#/compare?a=" + encodeURIComponent(b.artist_key) + "&b=" + encodeURIComponent(first.artist_key);
+  };
+  document.querySelectorAll("[data-comp]").forEach((el) => {
+    el.onclick = () => location.hash = "#/compare?a=" + encodeURIComponent(b.artist_key) + "&b=" + encodeURIComponent(el.dataset.comp);
+  });
+}
+
+function _pretty(marketKey) {
+  const parts = String(marketKey || "").split("-").filter(Boolean);
+  if (!parts.length) return "";
+  if (parts.length === 1) return parts[0][0].toUpperCase() + parts[0].slice(1);
+  const city = parts.slice(0, -1).map((p) => p[0].toUpperCase() + p.slice(1)).join(" ");
+  return city + ", " + parts[parts.length - 1].toUpperCase();
+}
+
+async function loadDecisions() {
+  const box = document.getElementById("decList");
+  if (!box) return;
+  try {
+    const items = await api("/api/decisions");
+    if (!items.length) { box.innerHTML = `<div class="empty">No saved decisions yet. Save a brief to revisit it later.</div>`; return; }
+    box.innerHTML = `<table><thead><tr><th>Artist</th><th>Market</th><th>Date</th><th>Status</th><th></th><th></th></tr></thead><tbody>
+      ${items.map((d) => `<tr>
+        <td><a href="#/artist/${encodeURIComponent(d.artist_key)}">${esc(d.artist_name)}</a></td>
+        <td>${esc(d.market_key ? _pretty(d.market_key) : "—")}</td>
+        <td>${esc(fmtDate(d.event_date))}</td>
+        <td><select data-status="${esc(d.snapshot_id)}">${DECISION_STATUSES.map((s) => `<option ${s === d.status ? "selected" : ""}>${s}</option>`).join("")}</select></td>
+        <td><button class="btn small" data-close="${esc(d.snapshot_id)}">Close out</button></td>
+        <td><button class="danger" data-del="${esc(d.snapshot_id)}">Del</button></td>
+      </tr>`).join("")}</tbody></table>`;
+    let closeTarget = null;
+    box.querySelectorAll("[data-status]").forEach((el) => {
+      el.onchange = async () => {
+        try { await api("/api/decisions/" + encodeURIComponent(el.dataset.status) + "/status", { method: "POST", body: JSON.stringify({ status: el.value }) }); toast("Status → " + el.value); }
+        catch (e) { toast(e.message); }
+      };
+    });
+    box.querySelectorAll("[data-close]").forEach((el) => {
+      el.onclick = () => {
+        closeTarget = el.dataset.close;
+        const row = el.closest("tr");
+        const name = row ? row.cells[0].textContent : "this show";
+        const actuals = prompt(`Close out ${name} — enter: paid tickets | scanned | gross | artist settlement | contribution (pipe-separated, empty = unknown)`);
+        if (actuals == null) return;
+        const parts = actuals.split("|").map((s) => s.trim());
+        if (!parts.some((p) => p)) { toast("No actuals entered — nothing stored."); return; }
+        api("/api/decisions/" + encodeURIComponent(closeTarget) + "/closeout", { method: "POST", body: JSON.stringify({ actuals: {
+          paid_tickets: parts[0] || "", scanned_attendance: parts[1] || "",
+          ticket_gross: parts[2] || "", settlement_net: parts[3] || "",
+          promoter_contribution: parts[4] || "",
+        } }) }).then((r) => { toast("Close-out stored as OBSERVED_PRIVATE (" + (r.vault_id || "") + ")"); }).catch((e) => toast(e.message));
+      };
+    });
+    box.querySelectorAll("[data-del]").forEach((el) => {
+      el.onclick = async () => {
+        if (!confirm("Delete this decision snapshot?")) return;
+        // no DELETE API — clear the vault ties instead; keep the record honest
+        toast("Snapshots are append-only in this version.");
+      };
+    });
+  } catch (e) { box.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+const DECISION_STATUSES = ["RESEARCHING", "INTEREST", "HOLD", "OFFER_SENT", "PASSED", "CONFIRMED"];
+
+async function renderPIT(showId) {
+  setNav("backtest");
+  view.innerHTML = `<h1>Backtest — show</h1><div class="empty">loading…</div>`;
+  try {
+    const s = await api("/api/backtest/show/" + encodeURIComponent(showId));
+    const pit = s.pit || {};
+    let pitHTML;
+    if (pit.status === "PIT_INSUFFICIENT") {
+      pitHTML = `<div class="empty">${esc(pit.reason || "no decision cutoff")}</div>`;
+    } else {
+      pitHTML = `<table><tbody>
+        <tr><td class="muted">Decision cutoff</td><td>${esc(s.decision_cutoff || "UNKNOWN")}</td></tr>
+        <tr><td class="muted">Public live events before cutoff</td><td>${esc(pit.prior_live_events)}</td></tr>
+        <tr><td class="muted">Markets with play before cutoff</td><td>${esc(pit.prior_markets)}</td></tr>
+        <tr><td class="muted">Festival appearances before cutoff</td><td>${esc(pit.prior_festivals)}</td></tr>
+        <tr><td class="muted">Attention observations @ cutoff</td><td>${esc(pit.prior_attention_observations)}</td></tr>
+      </tbody></table>
+      <p class="note">${esc(pit.note || "")}</p>`;
+    }
+    const outcomeHTML = (s.realized_outcome || []).length
+      ? `<table><thead><tr><th>Field</th><th>Realized</th><th>Provenance</th></tr></thead><tbody>
+         ${s.realized_outcome.map((o) => `<tr><td>${esc(o.label)}</td><td>${esc(o.value)}</td><td>${prov("OBSERVED_PRIVATE")}</td></tr>`).join("")}</tbody></table>`
+      : `<div class="empty">No realized outcomes recorded for this show.</div>`;
+    view.innerHTML = `
+    <h1>Backtest — ${esc(s.artist_name || showId)} <span class="badge">${esc(fmtDate(s.event_date))}</span></h1>
+    <p class="small muted">${esc([s.venue, s.market].filter(Boolean).join(" · ") || "")} · <a href="#/backtest">← back to retrospective</a></p>
+    <div class="grid cols2">
+      <div class="panel"><h3>Decision-time evidence (what was knowable ${s.decision_cutoff ? "before " + esc(s.decision_cutoff) : "—"})</h3>${pitHTML}</div>
+      <div class="panel"><h3>Realized outcome</h3>${outcomeHTML}</div>
+    </div>
+    <p class="note">${esc(s.note || "")}</p>`;
+  } catch (e) { view.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+
+/* ── backtest ────────────────────────────────────────────── */
+async function renderBacktest() {
+  setNav("backtest");
+  view.innerHTML = `<h1>Backtest my shows</h1>
+    <p class="muted">Upload your historical show history (CSV/TSV/XLSX→CSV). Columns are mapped conservatively; buyer-level PII is quarantined and never read. Stays <b>PRIVATE_ONLY</b> in your workspace.</p>
+    <div class="panel">
+      <h3>1 · Upload</h3>
+      <input id="btFile" type="file" accept=".csv,.tsv,.tab,.txt,.xlsx">
+      <p class="small muted">No file handy? Load the bundled design-partner template (download <a href="/static/design_partner_show_history_template.csv" download>template.csv</a>).</p>
+    </div>
+    <div id="btPreview" class="empty">Choose a file to preview column mapping and PII quarantine.</div>
+    <div style="height:14px"></div>
+    <div class="panel"><h3>2 · Retrospective — what your history shows (OBSERVED_PRIVATE)</h3><div id="btRetro" class="empty">Import shows to populate.</div></div>
+    <div style="height:14px"></div>
+    <div class="panel"><h3>3 · Point-in-time drill-down</h3><div id="btPit" class="empty">Pick a show to see decision-time evidence vs realized outcome.</div></div>`;
+
+  document.getElementById("btFile").addEventListener("change", async (ev) => {
+    const file = ev.target.files && ev.target.files[0];
+    if (!file) return;
+    let body = { file_name: file.name };
+    if (file.name.toLowerCase().endsWith(".xlsx")) {
+      const buf = new Uint8Array(await file.arrayBuffer());
+      let binary = "";
+      buf.forEach((b) => { binary += String.fromCharCode(b); });
+      body.content_b64 = btoa(binary);
+    } else {
+      body.content = await file.text();
+    }
+    document.getElementById("btPreview").innerHTML = `<div class="empty">previewing ${esc(file.name)}…</div>`;
+    try {
+      const p = await api("/api/backtest/preview", { method: "POST", body: JSON.stringify(body) });
+      renderBacktestPreview(p, body);
+    } catch (e) { document.getElementById("btPreview").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  });
+  loadRetro();
+}
+
+function renderBacktestPreview(p, contentBody) {
+  const mapRows = (p.mapping || []).map((m) => `
+    <tr>
+      <td>${esc(m.header)}</td>
+      <td><select data-map="${esc(m.header)}">
+        <option value="">(ignore)</option>
+        ${(m.candidates || []).map((c) => `<option ${c === m.canonical_field ? "selected" : ""}>${c}</option>`).join("")}
+        ${m.canonical_field && !(m.candidates || []).includes(m.canonical_field) ? `<option selected>${esc(m.canonical_field)}</option>` : ""}
+      </select></td>
+      <td>${esc(m.status)}</td>
+    </tr>`).join("");
+  const piiList = (p.prohibited_pii || []).map((h) => esc(h)).join(", ") || "none";
+  const piiNote = p.pii_redacted && p.pii_redacted.length
+    ? ` — PII values <b>redacted</b> in this preview and never sent back` : "";
+  const previewTable = `<table><thead><tr>${(p.headers || []).slice(0, 8).map((h) => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>
+    ${(p.preview_rows || []).map((r) => `<tr>${(p.headers || []).slice(0, 8).map((h) => `<td>${esc(String(r[h] ?? "").slice(0, 24))}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+  document.getElementById("btPreview").innerHTML = `
+    <div class="panel" style="margin-top:12px;border-left:3px solid ${(p.prohibited_pii || []).length ? "#e05d57" : "#3da44b"}">
+      <h3>Column mapping — ${p.row_count} rows · ${p.auto_mapped} auto-mapped</h3>
+      <table><thead><tr><th>Header</th><th>Maps to</th><th>Status</th></tr></thead><tbody>${mapRows}</tbody></table>
+      <h3>PII quarantine</h3><p class="small"><b>${esc(piiList || "no PII columns detected")}</b>${piiNote} — prohibited/potential PII columns are never read into analytics.</p>
+      <h3>Preview (first 5 rows, first 8 columns)</h3>${previewTable}
+      <div style="margin-top:10px"><button class="btn primary" id="btCommit">Import ${p.row_count} rows (PRIVATE_ONLY)</button></div>
+    </div>`;
+  document.getElementById("btCommit").onclick = async () => {
+    const forced = {};
+    document.querySelectorAll("[data-map]").forEach((el) => { if (el.value) forced[el.dataset.map] = el.value; });
+    // Commit sends the RAW file; the server re-parses with the robust parser so
+    // preview and commit always agree (quoted commas, multiline, BOM, xlsx).
+    try {
+      const r = await api("/api/backtest/commit", { method: "POST", body: JSON.stringify({
+        file_name: p.file_name, headers: p.headers, content: contentBody.content || "",
+        content_b64: contentBody.content_b64 || "",
+        mapping: p.mapping, forced_mapping: forced,
+      }) });
+      toast(`Imported ${r.rows_imported} shows · ${r.artists_resolved} VERIFIED_EXACT · ${r.identity_review_required || 0} need review`);
+      loadRetro();
+    } catch (e) { toast(e.message); }
+  };
+}
+
+async function loadRetro() {
+  const box = document.getElementById("btRetro");
+  if (!box) return;
+  try {
+    const r = await api("/api/backtest");
+    if (r.status === "NO_PRIVATE_HISTORY") { box.innerHTML = `<div class="empty">No private show history connected — import a file above. Public MVP never requires it.</div>`; document.getElementById("btPit").innerHTML = `<div class="empty">No shows yet.</div>`; return; }
+    const distRow = (name, d) => d.count ? `<tr><td class="muted">${esc(name)}</td><td>${d.count} shows</td><td>${money(d.p25)}</td><td>${money(d.median)}</td><td>${money(d.p75)}</td><td>${money(d.max)}</td></tr>` : `<tr><td class="muted">${esc(name)}</td><td colspan="5">UNKNOWN — no observed private values</td></tr>`;
+    box.innerHTML = `<p class="small muted">Distributions are OBSERVED_PRIVATE only — never mixed with public serving numbers.</p>
+      <table><thead><tr><th>Metric</th><th>n</th><th>p25</th><th>median</th><th>p75</th><th>max</th></tr></thead><tbody>
+        ${distRow("Sell-through", r.distributions.sell_through)}
+        ${distRow("Gross", r.distributions.gross)}
+        ${distRow("Guarantee", r.distributions.guarantee)}
+        ${distRow("Contribution", r.distributions.contribution)}
+      </tbody></table>
+      <div class="grid cols3" style="margin-top:10px">
+        <div><h4>Top artists</h4>${(r.top_artists || []).map(([k, v]) => `<div class="small">${esc(k)} — ${v}</div>`).join("")}</div>
+        <div><h4>Top markets</h4>${(r.top_markets || []).map(([k, v]) => `<div class="small">${esc(k)} — ${v}</div>`).join("")}</div>
+        <div><h4>Top venues</h4>${(r.top_venues || []).map(([k, v]) => `<div class="small">${esc(k)} — ${v}</div>`).join("")}</div>
+      </div>
+      <p class="small muted" style="margin-top:8px">Point-in-time drill-down:</p>
+      ${(r.show_ids || []).length ? r.show_ids.map((id) => `<a class="whychip link" href="#/backtest/show/${encodeURIComponent(id)}">${esc(id)}</a>`).join("") : `<span class="muted">no shows with PIT view yet</span>`}`;
+  } catch (e) { box.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
 }
 
 /* ── wire up ─────────────────────────────────────────────── */

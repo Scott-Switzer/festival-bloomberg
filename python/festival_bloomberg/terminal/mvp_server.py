@@ -34,7 +34,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import duckdb
 
-from . import artist_security
+from . import artist_security, decision_system
 from .storage import WORKSPACE_DEFAULT_DB
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -90,6 +90,7 @@ def open_workspace(path: str = str(SHORTLIST_DB)) -> duckdb.DuckDBPyConnection:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     conn = duckdb.connect(path)
     conn.execute(_SHORTLIST_SCHEMA)
+    conn.execute(decision_system.DECISION_SCHEMA)
     conn.commit()
     return conn
 
@@ -200,6 +201,45 @@ class MvpTerminalApp:
         if path.startswith("/api/shortlist/") and method == "DELETE":
             item_id = path[len("/api/shortlist/"):]
             return self._ok(self._delete_shortlist(item_id))
+
+        # ── buyer decision system routes (handlers return plain payloads) ──
+        if path == "/api/underwrite" and method == "POST":
+            return self._underwrite(body)
+        if path == "/api/underwrite/save" and method == "POST":
+            return self._save_decision(body)
+        if path == "/api/decisions" and method == "GET":
+            return self._ok(decision_system.list_decision_snapshots(self.workspace_conn))
+        if path.startswith("/api/decisions/") and method == "GET":
+            snap = decision_system.get_decision_snapshot(
+                self.workspace_conn, unquote(path[len("/api/decisions/"):])
+            )
+            return self._ok(snap) if snap is not None else self._not_found()
+        if path.startswith("/api/decisions/") and method == "POST":
+            rest = unquote(path[len("/api/decisions/"):])
+            if rest.endswith("/closeout"):
+                snap_id = rest[: -len("/closeout")]
+                return self._closeout_decision(snap_id, body)
+            if rest.endswith("/status"):
+                snap_id = rest[: -len("/status")]
+                return self._update_decision_status(snap_id, body)
+            return self._not_found()
+        if path == "/api/backtest/preview" and method == "POST":
+            return self._backtest_preview(body)
+        if path == "/api/backtest/commit" and method == "POST":
+            return self._backtest_commit(body)
+        if path == "/api/backtest" and method == "GET":
+            return self._ok(decision_system.retrospective(self.workspace_conn, self.conn))
+        if path.startswith("/api/backtest/show/") and method == "GET":
+            show_id = unquote(path[len("/api/backtest/show/"):])
+            result = decision_system.pit_retrospective(self.workspace_conn, self.conn, show_id)
+            return self._ok(result) if result is not None else self._not_found()
+        if path == "/api/monitor" and method == "GET":
+            watch = [r["artist_key"] for r in self._list_shortlist() if r.get("artist_key")]
+            return self._ok(decision_system.monitor_changes(self.conn, self.workspace_conn, watch))
+        if path == "/api/readiness" and method == "GET":
+            return self._ok(decision_system.model_readiness(self.workspace_conn, self.conn))
+        if path == "/api/vault" and method == "GET":
+            return self._ok(decision_system.outcome_vault_summary(self.workspace_conn))
 
         if path.startswith("/api/artist-security/"):
             artist_key = unquote(path[len("/api/artist-security/"):])
@@ -374,6 +414,137 @@ class MvpTerminalApp:
         )
         self.workspace_conn.commit()
         return {"removed": True, "id": item_id}
+
+    # ── buyer decision system handlers ─────────────────────
+
+    def _underwrite(self, body: bytes) -> dict[str, Any]:
+        try:
+            req = json.loads(body.decode("utf-8"))
+        except Exception:
+            return self._bad_request("invalid JSON body")
+        artist_key = str(req.get("artist_key") or "").strip()
+        market_key = str(req.get("market_key") or "").strip() or None
+        inputs = req.get("inputs") or {}
+        if not artist_key:
+            return self._bad_request("artist_key is required")
+        try:
+            brief = decision_system.build_underwrite(
+                self.conn, self.workspace_conn,
+                artist_key=artist_key, market_key=market_key, inputs=inputs,
+                generation=decision_system._serving_generation(self._current_json_path),
+            )
+        except ValueError as exc:
+            return self._bad_request(str(exc))
+        return self._ok(brief)
+
+    def _save_decision(self, body: bytes) -> dict[str, Any]:  # returns dispatch payload
+        # (plain payload; dispatcher wraps)
+        try:
+            req = json.loads(body.decode("utf-8"))
+        except Exception:
+            return self._bad_request("invalid JSON body")
+        artist_key = str(req.get("artist_key") or "").strip()
+        if not artist_key:
+            return self._bad_request("artist_key is required")
+        try:
+            result = decision_system.save_decision_snapshot(
+                self.workspace_conn,
+                artist_key=artist_key,
+                artist_name=str(req.get("artist_name") or ""),
+                market_key=str(req.get("market_key") or "").strip() or None,
+                venue=str(req.get("venue") or "").strip() or None,
+                event_date=str(req.get("event_date") or "").strip() or None,
+                inputs=req.get("inputs") or {},
+                brief=req.get("brief") or {},
+                status=str(req.get("status") or "RESEARCHING"),
+                notes=str(req.get("notes") or ""),
+            )
+        except ValueError as exc:
+            return self._bad_request(str(exc))
+        return self._ok(result)
+
+    def _update_decision_status(self, snapshot_id: str, body: bytes) -> dict[str, Any]:
+        try:
+            req = json.loads(body.decode("utf-8"))
+        except Exception:
+            return self._bad_request("invalid JSON body")
+        try:
+            return self._ok(decision_system.update_decision_status(
+                self.workspace_conn, snapshot_id, str(req.get("status") or "")))
+        except ValueError as exc:
+            return self._bad_request(str(exc))
+
+    def _closeout_decision(self, snapshot_id: str, body: bytes) -> dict[str, Any]:
+        try:
+            req = json.loads(body.decode("utf-8"))
+        except Exception:
+            return self._bad_request("invalid JSON body")
+        try:
+            return self._ok(decision_system.close_out_show(
+                self.workspace_conn, snapshot_id, req.get("actuals") or {}))
+        except ValueError as exc:
+            return self._bad_request(str(exc))
+
+    def _backtest_preview(self, body: bytes) -> dict[str, Any]:
+        try:
+            req = json.loads(body.decode("utf-8"))
+        except Exception:
+            return self._bad_request("invalid JSON body")
+        file_name = str(req.get("file_name") or "show_history.csv")
+        content = req.get("content") or ""
+        if req.get("content_b64"):
+            import base64
+            try:
+                content = base64.b64decode(str(req["content_b64"]))
+            except Exception as exc:
+                return self._bad_request(f"could not decode file content: {exc}")
+        if not content or (isinstance(content, str) and not content.strip()):
+            return self._bad_request("file content is empty")
+        return self._ok(decision_system.preview_private_file(file_name, content))
+
+    def _backtest_commit(self, body: bytes) -> dict[str, Any]:
+        try:
+            req = json.loads(body.decode("utf-8"))
+        except Exception:
+            return self._bad_request("invalid JSON body")
+        header_data = req.get("headers") or []
+        rows = req.get("rows") or []
+        mapping = req.get("mapping") or []
+        forced = req.get("forced_mapping") or {}
+        file_name = str(req.get("file_name") or "show_history.csv")
+        content = req.get("content") or ""
+        content_b64 = req.get("content_b64") or ""
+        if content_b64:
+            import base64
+            try:
+                content = base64.b64decode(str(content_b64))
+            except Exception as exc:
+                return self._bad_request(f"could not decode file content: {exc}")
+        # Preferred: server re-parses the RAW file (single parser for preview +
+        # commit: quoted commas, multiline, BOM, xlsx). Rows fallback retained.
+        if content:
+            try:
+                parsed_headers, dict_rows = decision_system._parse_tabular(file_name, content)
+            except Exception as exc:
+                return self._bad_request(f"could not parse file: {exc}")
+            header_data = parsed_headers
+            row_payload = dict_rows
+        elif rows and isinstance(rows[0], dict):
+            row_payload = [dict(r) for r in rows]
+        else:
+            row_payload = [[str(c) if c is not None else "" for c in r] for r in rows]
+        if not header_data or not row_payload:
+            return self._bad_request("headers and rows are required")
+        result = decision_system.import_private_shows(
+            self.conn, self.workspace_conn,
+            file_name=file_name,
+            headers=[str(h) for h in header_data],
+            rows=row_payload,
+            mapping=mapping if isinstance(mapping, list) else [],
+            forced_mapping={str(k): str(v) for k, v in (forced or {}).items()},
+            customer_id=str(req.get("customer_id") or "") or None,
+        )
+        return self._ok(result)
 
     # ── helpers ──────────────────────────────────────────────────
 

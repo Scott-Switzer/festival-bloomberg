@@ -1,0 +1,27 @@
+{
+  "generated_at": "2026-09-02T04:51:49.818719+00:00",
+  "data_source": "SYNTHETIC_PRIVATE_FIXTURE (examples/synthetic_private_fixture.csv) \u2014 clearly labeled, automated-test only, never presented as real market evidence",
+  "private_settled_shows": 3,
+  "with_booking_cutoff": 3,
+  "with_valid_pit_reconstruction": 3,
+  "with_tickets_sold": 3,
+  "with_gross": 3,
+  "with_guarantee": 3,
+  "with_expenses": 3,
+  "with_profit_or_contribution": 3,
+  "markets": 2,
+  "venues": 3,
+  "artists": 3,
+  "eligible_oos_rows": 3,
+  "verdict": "no model",
+  "time_span": {
+    "start": "2025-06-14",
+    "end": "2025-11-08"
+  },
+  "progression": {
+    "<200 useful outcomes": "no model",
+    "200\u20131,000": "exploratory baselines only",
+    "1,000+ diverse settled outcomes": "begin serious OOS evaluation"
+  },
+  "note": "no predictive model is trained in this milestone"
+}
