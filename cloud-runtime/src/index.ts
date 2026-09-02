@@ -946,6 +946,46 @@ export default {
         writeQueueEnqueueMetric(env, "fi-structured-api", structuredQueued, runId),
         writeQueueEnqueueMetric(env, "fi-monid", webQueued, runId),
       ]).catch((metricError) => console.error(JSON.stringify({ event: "QUEUE_METRIC_WRITE_ERROR", run_id: runId, error: metricError instanceof Error ? metricError.message : String(metricError) })));
+
+      // ── Serving freshness: nightly compact terminal rebuild ──
+      // One gated trigger per 24h. The materializer moves CURRENT only after
+      // validation + SHA verification, so a failed refresh leaves the previous
+      // generation active. Failures are logged but never break the cron.
+      try {
+        const refreshKey = "control/serving/terminal/LAST_REFRESH.json";
+        const lastObj = await env.BACKUP_BUCKET.get(refreshKey);
+        let lastRunMs: number | null = null;
+        if (lastObj) {
+          try {
+            const lastData = (await lastObj.json()) as { ran_at?: string };
+            if (lastData.ran_at) lastRunMs = new Date(lastData.ran_at).getTime();
+          } catch { /* ignore malformed */ }
+        }
+        const nowMs = Date.now();
+        if (lastRunMs === null || nowMs - lastRunMs > 24 * 3600 * 1000) {
+          const stamp = new Date(nowMs).toISOString().replace(/[-:.TZ]/g, "").slice(0, 8);
+          const jobId = `terminal_serving_build_v1_nightly_${stamp}`;
+          const doId = env.BATCH_CONTAINER.idFromName(jobId);
+          const batchDo = env.BATCH_CONTAINER.get(doId) as any;
+          // Pick up the CURRENT deployed image (long-lived idle containers
+          // keep their original image across deploys).
+          await batchDo.restartContainer("nightly-refresh");
+          const spec = { job_id: jobId, job_type: "terminal_serving_build_v1", params: {} };
+          const started = await batchDo.startJob(spec);
+          await env.BACKUP_BUCKET.put(
+            refreshKey,
+            JSON.stringify({ ran_at: new Date().toISOString(), job_id: started.job_id, status: "TRIGGERED" }),
+            { httpMetadata: { contentType: "application/json" } },
+          );
+          console.log(JSON.stringify({ event: "TERMINAL_REFRESH_TRIGGERED", job_id: started.job_id }));
+        }
+      } catch (refreshError) {
+        console.error(JSON.stringify({
+          event: "TERMINAL_REFRESH_ERROR",
+          error: refreshError instanceof Error ? refreshError.message : String(refreshError),
+        }));
+      }
+
       console.log(JSON.stringify({ event: "CRON_RUN_COMPLETED", ...audit }));
     } catch (e: unknown) {
       const error = e instanceof Error ? e.message : String(e);
