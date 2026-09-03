@@ -2015,8 +2015,11 @@ def run_artist_factor_tape_build(spec: dict, scratch_dir: Path) -> dict:
     lake = _get_lake()
     job_id = spec.get("job_id", "artist_factor_tape_build_v1")
     params = spec.get("params", {})
-    max_ticks = int(params.get("max_ticks") or 200_000)
+    # Default bound keeps the pilot fast; CURRENT is replaced only after
+    # verify, so a later full scan simply supersedes this generation.
+    max_ticks = int(params.get("max_ticks") or 25_000)
     max_artists = int(params.get("max_artists") or 25_000)
+    read_concurrency = min(int(params.get("read_concurrency") or 16), 32)
 
     manifest = new_manifest(
         job_type="artist_factor_tape_build_v1",
@@ -2030,36 +2033,69 @@ def run_artist_factor_tape_build(spec: dict, scratch_dir: Path) -> dict:
     work = scratch_dir / "factor_tape"
     work.mkdir(parents=True, exist_ok=True)
 
-    try:
+    def _heartbeat(rows_so_far: int, artists: int, note: str) -> None:
+        """Periodic progress marker so operators can see the job is alive."""
+        try:
+            hb = {
+                "job_id": job_id, "job_type": "artist_factor_tape_build_v1",
+                "status": "RUNNING", "rows": rows_so_far, "artists": artists,
+                "updated_at": now_iso(), "note": note,
+            }
+            lake.put_bytes(
+                lake.config.private_bucket,
+                f"control/jobs/artist_factor_tape_build_v1/{job_id}/progress.json",
+                json.dumps(hb).encode(), content_type="application/json",
+            )
+        except Exception:
+            pass
 
-        # ── 1. Stream staging youtube ticks (bounded) ──
+    try:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        # ── 1. List staging youtube ticks (bounded) and read concurrently ──
         ticks = lake.list_prefix(
-            lake.config.lake_bucket, STAGING_YOUTUBE_PREFIX, limit=max_ticks,
+            lake.config.lake_bucket, STAGING_YOUTUBE_PREFIX, limit=max_ticks * 4,
         )
-        tick_keys = [t["key"] for t in ticks if t["key"].endswith(".json")][:max_ticks]
+        # Keys embed date/hour/minute, so lexicographic order is temporal;
+        # take the NEWEST ticks so the first generation carries the freshest
+        # observations across the widest artist set.
+        tick_keys = [t["key"] for t in ticks if t["key"].endswith(".json")][-max_ticks:]
         rows: list[dict] = []
         artists_seen: set[str] = set()
         skipped = 0
-        for key in tick_keys:
+
+        def _read_one(key: str):
             try:
                 raw = lake.get_bytes(lake.config.lake_bucket, key)
-            except Exception:
-                skipped += 1
-                continue
-            manifest.r2_read_bytes += len(raw)
-            try:
-                tick = json.loads(raw)
-            except (ValueError, TypeError):
-                skipped += 1
-                continue
-            normalized = _normalize_youtube_tick(tick)
-            for row in normalized:
-                if row["artist_key"] in artists_seen and len(artists_seen) >= max_artists:
+                return key, raw, None
+            except Exception as exc:  # noqa: BLE001
+                return key, b"", str(exc)
+
+        with ThreadPoolExecutor(max_workers=read_concurrency) as pool:
+            futures = [pool.submit(_read_one, k) for k in tick_keys]
+            done = 0
+            for future in as_completed(futures):
+                key, raw, err = future.result()
+                done += 1
+                if err:
+                    skipped += 1
                     continue
-                rows.append(row)
-                artists_seen.add(row["artist_key"])
-            if len(rows) >= max_ticks * 3:
-                break
+                manifest.r2_read_bytes += len(raw)
+                try:
+                    tick = json.loads(raw)
+                except (ValueError, TypeError):
+                    skipped += 1
+                    continue
+                normalized = _normalize_youtube_tick(tick)
+                for row in normalized:
+                    if row["artist_key"] in artists_seen and len(artists_seen) >= max_artists:
+                        continue
+                    rows.append(row)
+                    artists_seen.add(row["artist_key"])
+                if len(rows) >= max_ticks * 3:
+                    break
+                if done % 4000 == 0:
+                    _heartbeat(len(rows), len(artists_seen), f"read {done}/{len(tick_keys)} ticks")
         if not rows:
             raise RuntimeError(
                 "FACTOR_TAPE_EMPTY: no youtube ticks found under "
