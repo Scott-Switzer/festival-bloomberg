@@ -75,6 +75,42 @@ def observation_key(
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:40]
 
 
+COMPARABILITY_FIELDS = (
+    "measurement_basis",
+    "measurement_window",
+    "population_scope",
+    "geographic_scope",
+    "methodology_version",
+    "coverage_generation",
+)
+
+
+def comparability_of(previous: dict[str, Any], latest: dict[str, Any]) -> tuple[bool, str | None]:
+    """Decide whether two observations are like-for-like enough for a delta.
+
+    A percentage change is a financial-grade claim: it is allowed only when the
+    factor identity (name/platform/unit) AND the measurement context (basis,
+    window, population, geography, methodology, coverage generation) match.
+    Otherwise the comparison is ``NOT_COMPARABLE`` and no delta is produced.
+    """
+    def field(row: dict[str, Any], name: str) -> Any:
+        if row.get(name) is not None:
+            return row.get(name)
+        evidence = row.get("evidence_json")
+        if isinstance(evidence, dict):
+            return evidence.get(name)
+        return None
+
+    for name in COMPARABILITY_FIELDS:
+        old_v = field(previous, name)
+        new_v = field(latest, name)
+        if old_v is None or new_v is None:
+            return False, f"{name} missing (old={old_v!r}, new={new_v!r})"
+        if str(old_v) != str(new_v):
+            return False, f"{name} differs (old={old_v!r}, new={new_v!r})"
+    return True, None
+
+
 def build_factor_observation(
     *,
     artist_key: str,
@@ -94,6 +130,12 @@ def build_factor_observation(
     commercial_use_status: str = "PROTOTYPE_ONLY",
     quality_status: str | None = None,
     generation: str = DEFAULT_GENERATION,
+    measurement_basis: str | None = None,
+    measurement_window: Any = None,
+    population_scope: str | None = None,
+    geographic_scope: str | None = None,
+    methodology_version: str | None = None,
+    coverage_generation: str | None = None,
 ) -> dict[str, Any]:
     """Build the canonical row used by migration 049.
 
@@ -121,6 +163,18 @@ def build_factor_observation(
         as_of = observation_iso[:10]
     except Exception as exc:
         raise ValueError("observation_time must contain a date") from exc
+    comparability_meta = {
+        name: value
+        for name, value in (
+            ("measurement_basis", measurement_basis),
+            ("measurement_window", measurement_window),
+            ("population_scope", population_scope),
+            ("geographic_scope", geographic_scope),
+            ("methodology_version", methodology_version),
+            ("coverage_generation", coverage_generation),
+        )
+        if value is not None
+    }
     return {
         "factor_observation_key": key,
         "artist_key": artist_key,
@@ -139,7 +193,7 @@ def build_factor_observation(
         "rights_status": rights_status,
         "commercial_use_status": commercial_use_status,
         "confidence": None,
-        "evidence_json": None,
+        "evidence_json": comparability_meta or None,
         "platform": platform,
         "unit": unit,
         "observation_time": observation_iso,
@@ -149,6 +203,12 @@ def build_factor_observation(
         "source_scope": source_scope,
         "quality_status": quality_status or ("UNKNOWN" if value is None else "OBSERVED"),
         "generation": generation,
+        "measurement_basis": measurement_basis,
+        "measurement_window": _iso(measurement_window) if measurement_window else None,
+        "population_scope": population_scope,
+        "geographic_scope": geographic_scope,
+        "methodology_version": methodology_version,
+        "coverage_generation": coverage_generation,
     }
 
 
@@ -182,6 +242,12 @@ def insert_factor_observation(conn: Any, row: dict[str, Any]) -> int:
         "source_scope",
         "quality_status",
         "generation",
+        "measurement_basis",
+        "measurement_window",
+        "population_scope",
+        "geographic_scope",
+        "methodology_version",
+        "coverage_generation",
     )
     values = [row.get(column) for column in columns]
     placeholders = ", ".join("?" for _ in columns)
@@ -201,7 +267,13 @@ def insert_factor_observation(conn: Any, row: dict[str, Any]) -> int:
 def comparable_delta(
     observations: Iterable[dict[str, Any]],
 ) -> dict[str, Any] | None:
-    """Compare the two latest observations only when their units align."""
+    """Compare the two latest observations only when fully like-for-like.
+
+    The comparison requires identical unit AND identical measurement context
+    (basis, window, population, geography, methodology, coverage generation).
+    Otherwise ``None`` is returned: a mathematically computed percentage from
+    unlike observations would be economically meaningless.
+    """
     rows = sorted(
         (row for row in observations if row.get("value") is not None),
         key=lambda row: str(row.get("observation_time") or row.get("as_of") or ""),
@@ -213,6 +285,9 @@ def comparable_delta(
         "value_unit"
     ):
         return None
+    comparable, reason = comparability_of(previous, latest)
+    if not comparable:
+        return None
     old = float(previous["value"])
     new = float(latest["value"])
     result: dict[str, Any] = {
@@ -223,6 +298,7 @@ def comparable_delta(
         "observation_time": latest.get("observation_time") or latest.get("as_of"),
         "source": latest.get("source") or latest.get("source_system"),
         "generation": latest.get("generation") or latest.get("source_version"),
+        "comparability": "COMPARABLE",
     }
     if old != 0:
         result["delta_pct"] = (new - old) / abs(old) * 100.0

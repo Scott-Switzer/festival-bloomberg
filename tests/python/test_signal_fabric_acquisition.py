@@ -6,10 +6,8 @@ No test makes a network or paid call: every provider uses the scripted
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 import pytest
-
+from conftest import FakeTransport, make_request
 from festival_bloomberg.acquisition.contracts import (
     AcquisitionRequest,
     AcquisitionResult,
@@ -33,8 +31,6 @@ from festival_bloomberg.governance.policy import (
 )
 from festival_bloomberg.social.normalize import normalize_monid_record
 
-from conftest import FakeTransport, make_request
-
 
 # ---------------------------------------------------------------------------
 # Monid
@@ -47,18 +43,61 @@ class TestMonidProvider:
         assert result.records == ()
         assert result.error_category == "credentials_missing"
 
-    def test_full_flow_discover_inspect_run_poll(self):
+    def test_full_flow_discover_inspect_run_poll_current_contract(self):
         transport = FakeTransport(
             [
-                (200, {"endpoints": [{"id": "ep-1", "name": "youtube-search"}]}),
-                (200, {"pricing": {"cost_per_call_usd": 0.05}}),
-                (200, {"run_id": "run-1", "status": "queued"}),
                 (
                     200,
                     {
-                        "run_id": "run-1",
-                        "status": "completed",
-                        "data": [
+                        "results": [
+                            {
+                                "provider": "apify",
+                                "providerName": "Apify",
+                                "endpoint": "/apidojo/tiktok-profile-scraper",
+                                "description": "Scrape TikTok user profiles",
+                                "price": {
+                                    "type": "PER_RESULT",
+                                    "amount": {"value": 0.00045, "currency": "USD"},
+                                },
+                            }
+                        ],
+                        "query": "tiktok profile stats",
+                        "count": 1,
+                    },
+                ),
+                (
+                    200,
+                    {
+                        "id": "apify:/apidojo/tiktok-profile-scraper",
+                        "provider": "apify",
+                        "endpoint": "/apidojo/tiktok-profile-scraper",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "username": {"type": "string"},
+                                "maxItems": {"type": "number"},
+                            },
+                        },
+                        "price": {"type": "PER_RESULT", "amount": 0.00045, "currency": "USD"},
+                    },
+                ),
+                (
+                    202,
+                    {
+                        "runId": "run-1",
+                        "provider": "apify",
+                        "endpoint": "/apidojo/tiktok-profile-scraper",
+                        "status": "RUNNING",
+                    },
+                ),
+                (
+                    200,
+                    {
+                        "runId": "run-1",
+                        "provider": "apify",
+                        "endpoint": "/apidojo/tiktok-profile-scraper",
+                        "status": "COMPLETED",
+                        "output": [
                             {
                                 "id": "vid-1",
                                 "text": "amazing live set",
@@ -67,6 +106,10 @@ class TestMonidProvider:
                                 "published_at": "2026-07-15T00:00:00Z",
                             }
                         ],
+                        "providerResponse": {"httpStatus": 200},
+                        "billing": {
+                            "calculatedCost": {"value": 450, "unit": "MICRO_DOLLAR", "currency": "USD"}
+                        },
                     },
                 ),
             ]
@@ -79,13 +122,22 @@ class TestMonidProvider:
         result = provider.acquire(make_request())
         assert result.status == AcquisitionStatus.SUCCESS
         assert result.record_count == 1
-        assert result.cost_usd == 0.05
+        # billing.calculatedCost is MICRO_DOLLAR -> USD
+        assert result.cost_usd == 0.00045
         assert result.provider_metadata["run_id"] == "run-1"
-        assert result.provider_metadata["polls"] == 1
+        assert result.provider_metadata["endpoint"] == "/apidojo/tiktok-profile-scraper"
+        assert result.provider_metadata["schema_used"] == "inspected_inputSchema"
         assert result.records[0]["platform_object_id"] == "vid-1"
         # discover -> inspect -> run -> poll
         methods = [req["method"] for req in transport.requests]
         assert methods == ["POST", "POST", "POST", "GET"]
+        # /v1/run body uses the CURRENT contract: provider + endpoint + input
+        run_body = transport.requests[2]["body"]
+        assert run_body["provider"] == "apify"
+        assert run_body["endpoint"] == "/apidojo/tiktok-profile-scraper"
+        assert run_body["input"]["username"] == "radiohead"
+        assert run_body["input"]["maxItems"] == 10
+        assert "endpoint_id" not in run_body and "params" not in run_body
         # secrets must never leak into results or telemetry, only the header
         assert "test-key" not in str(result.provider_metadata)
         assert "test-key" not in str(result.records)
@@ -93,10 +145,10 @@ class TestMonidProvider:
     def test_run_failure_is_provider_error_not_empty_success(self):
         transport = FakeTransport(
             [
-                (200, {"endpoints": [{"id": "ep-1"}]}),
-                (200, {}),
-                (200, {"run_id": "run-1", "status": "running"}),
-                (200, {"status": "failed"}),
+                (200, {"results": [{"provider": "apify", "endpoint": "/x", "price": {}}]}),
+                (200, {"inputSchema": {"properties": {"username": {"type": "string"}}}, "price": {}}),
+                (202, {"runId": "run-1", "status": "RUNNING"}),
+                (200, {"runId": "run-1", "status": "FAILED"}),
             ]
         )
         provider = MonidProvider(
@@ -108,6 +160,41 @@ class TestMonidProvider:
         result = provider.acquire(make_request())
         assert result.status == AcquisitionStatus.PROVIDER_ERROR
         assert result.error_category == "run_failed"
+
+    def test_unknown_schema_refuses_to_run(self):
+        # No inputSchema from inspect and endpoint not pinned -> refuse.
+        transport = FakeTransport(
+            [
+                (200, {"results": [{"provider": "apify", "endpoint": "/mystery-actor", "price": {}}]}),
+                (200, {"inputSchema": None, "price": {}}),
+            ]
+        )
+        provider = MonidProvider(transport=transport, env={"MONID_API_KEY": "k"})
+        result = provider.acquire(make_request())
+        assert result.status == AcquisitionStatus.SCHEMA_INVALID
+        assert result.error_category == "input_schema_unknown"
+        assert len(transport.requests) == 2  # never reached /v1/run
+
+    def test_provider_http_error_is_not_silent_success(self):
+        transport = FakeTransport(
+            [
+                (200, {"results": [{"provider": "apify", "endpoint": "/x", "price": {}}]}),
+                (200, {"inputSchema": {"properties": {"username": {"type": "string"}}}, "price": {}}),
+                (
+                    200,
+                    {
+                        "runId": "run-1",
+                        "status": "COMPLETED",
+                        "output": None,
+                        "providerResponse": {"httpStatus": 404, "error": {"message": "no match"}},
+                    },
+                ),
+            ]
+        )
+        provider = MonidProvider(transport=transport, env={"MONID_API_KEY": "k"})
+        result = provider.acquire(make_request())
+        assert result.status == AcquisitionStatus.PROVIDER_ERROR
+        assert result.error_category == "not_found"
 
     def test_rate_limited_is_explicit(self):
         transport = FakeTransport([(429, {})])
@@ -153,16 +240,40 @@ class TestApifyProvider:
         provider = ApifyProvider(
             transport=transport,
             env={"APIFY_TOKEN": "tok"},
-            actor_id="actor-1",
+            actor_id="clockworks~tiktok-scraper",
             poll_interval_seconds=0,
         )
-        result = provider.acquire(make_request(platform="x"))
+        result = provider.acquire(make_request(platform="x", operation="SOCIAL_PROFILE"))
         assert result.status == AcquisitionStatus.SUCCESS
         assert result.record_count == 1
         assert result.provider_metadata["run_id"] == "run-1"
         assert result.records[0]["platform_object_id"] == "p1"
         # no poll needed when run completes synchronously
         assert len(transport.requests) == 2
+        # per-actor input uses the actor's real schema, not a generic body
+        run_url = transport.requests[0]["url"]
+        assert "/acts/clockworks~tiktok-scraper/runs" in run_url
+        assert "clockworks/tiktok-scraper" not in run_url
+        run_body = transport.requests[0]["body"]
+        assert run_body["input"]["profiles"] == ["https://www.tiktok.com/@radiohead"]
+        assert run_body["input"]["maxPostsPerProfile"] == 10
+        assert "operation" not in run_body["input"]
+
+    def test_unknown_actor_refuses_generic_body(self):
+        provider = ApifyProvider(
+            transport=FakeTransport([]),
+            env={"APIFY_TOKEN": "tok"},
+            actor_id="unknown~actor",
+        )
+        result = provider.acquire(make_request(platform="x"))
+        assert result.status == AcquisitionStatus.SCHEMA_INVALID
+        assert result.error_category == "actor_input_unknown"
+
+    def test_estimate_uses_store_list_price(self):
+        provider = ApifyProvider(env={"APIFY_TOKEN": "tok"}, actor_id="clockworks~tiktok-scraper")
+        estimate = provider.estimate(make_request(platform="tiktok", max_records=100))
+        assert estimate.estimated_cost_usd == pytest.approx(0.17)
+        assert estimate.source == "apify_store_list_price"
 
 
 # ---------------------------------------------------------------------------

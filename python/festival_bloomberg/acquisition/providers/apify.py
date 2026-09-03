@@ -1,8 +1,27 @@
 """Apify Actor provider for the Festival Signal Fabric.
 
-Runs a specific, approved Apify Actor by ID and reads its default dataset.
+Runs a specific, approved Apify Actor by its canonical API identifier
+``owner~actor-name`` (verified live via ``GET /v2/acts/{id}`` — e.g.
+``clockworks~tiktok-scraper`` resolves, ``clockworks/tiktok-scraper`` is not
+the API form) and reads its default dataset.
+
+Each actor receives an explicit input body built from its published input
+schema — never one generic body shared across actors:
+
+* ``clockworks~tiktok-scraper``        ``{profiles|search, maxPostsPerProfile|maxPostsPerSearch}``
+* ``streamers~youtube-scraper``        ``{searchKeywords, maxResults}``
+* ``apify~instagram-api-scraper``      ``{username, searchType, resultsLimit}``
+
+Actor pricing comes from the Apify store pages (per-1,000-result list prices)
+and is used for bounded cost accounting:
+
+* TikTok scraper          ≈ $1.70 / 1,000 results
+* YouTube scraper         ≈ $2.40 / 1,000 videos
+* Instagram API scraper   ≈ $1.40 / 1,000 results
+
 The originating information source is the *underlying platform*, never
-"Apify" itself; Apify is only the acquisition provider.
+"Apify" itself; Apify is only the acquisition provider. Rights remain
+``TERMS_REVIEW_REQUIRED`` until reviewed.
 
 Credentials come from ``APIFY_TOKEN``. No token means ``NOT_CONFIGURED``,
 never placeholder success. No paid calls are made by tests or CI.
@@ -27,16 +46,73 @@ from ..transport import TransportError
 
 DEFAULT_BASE_URL = "https://api.apify.com/v2"
 
-# Actor defaults are intentionally explicit and bounded. They are secondary
-# acquisition rails; known YouTube channel IDs should continue through the
-# official API first.
+#: Canonical API actor identifiers — ``owner~actor`` form, not ``owner/actor``.
 DEFAULT_ACTORS = {
-    "youtube": "streamers/youtube-scraper",
-    "tiktok": "clockworks/tiktok-scraper",
-    "instagram": "apify/instagram-api-scraper",
+    "youtube": "streamers~youtube-scraper",
+    "tiktok": "clockworks~tiktok-scraper",
+    "instagram": "apify~instagram-api-scraper",
 }
+
+#: List prices from the Apify store pages (USD per result), used only for
+#: bounded cost accounting before a run. Actual billing is per actor.
+ACTOR_PRICING_USD_PER_RESULT = {
+    "clockworks~tiktok-scraper": 0.0017,
+    "streamers~youtube-scraper": 0.0024,
+    "apify~instagram-api-scraper": 0.0014,
+}
+
 ACTOR_RIGHTS_STATUS = "TERMS_REVIEW_REQUIRED"
 ACTOR_COMMERCIAL_USE_STATUS = "TERMS_REVIEW_REQUIRED"
+
+#: Per-actor input builders sourced from each actor's published input schema.
+#: The builder only sets fields that schema documents for that actor.
+def _input_for(
+    actor_id: str, request: AcquisitionRequest, operation: str
+) -> dict[str, Any]:
+    handle = str(request.entity_id or "").strip() or str(request.query or "").strip()
+    query = str(request.query or "").strip() or handle
+    max_records = int(request.max_records or 10)
+    start_url = (
+        getattr(request, "canonical_url", None)
+        or f"https://www.tiktok.com/@{handle}"
+    )
+    if actor_id == "clockworks~tiktok-scraper":
+        # Documented input (clockworks/tiktok-scraper Input tab): profiles,
+        # hashtags, search, maxProfilesPerSearch, maxPostsPerProfile,
+        # maxPostsPerHashtag, resultsPerPage, ...
+        if operation in {"SOCIAL_PROFILE", "SOCIAL_POSTS"} and handle:
+            return {
+                "profiles": [start_url],
+                "maxPostsPerProfile": max_records,
+            }
+        return {
+            "search": [query],
+            "maxPostsPerSearch": max_records,
+        }
+    if actor_id == "streamers~youtube-scraper":
+        # Documented input (streamers/youtube-scraper Input tab): searchKeywords
+        # (array), maxResults, language, region, ...
+        return {
+            "searchKeywords": [query],
+            "maxResults": max_records,
+        }
+    if actor_id == "apify~instagram-api-scraper":
+        # Documented input (apify/instagram-api-scraper Input tab): username,
+        # searchType (user|hashtag|location|comments|following|followers|stories),
+        # searchLimit, resultsLimit, ...
+        if operation in {"SOCIAL_PROFILE", "SOCIAL_POSTS"} and handle:
+            return {
+                "username": handle,
+                "searchType": "user",
+                "resultsLimit": max_records,
+            }
+        return {
+            "username": query,
+            "searchType": "hashtag",
+            "searchLimit": max_records,
+        }
+    # Unknown actor: refuse rather than send a guessed generic body.
+    return {}
 
 
 class ApifyProvider(BaseProvider):
@@ -49,8 +125,8 @@ class ApifyProvider(BaseProvider):
         *,
         actor_id: str | None = None,
         base_url: str | None = None,
-        max_polls: int = 20,
-        poll_interval_seconds: float = 1.0,
+        max_polls: int = 30,
+        poll_interval_seconds: float = 2.0,
     ) -> None:
         super().__init__(transport=transport, env=env)
         #: Actor selection: explicit, env override, or per-platform default.
@@ -80,9 +156,18 @@ class ApifyProvider(BaseProvider):
         return ProviderHealth(provider=self.name, healthy=True)
 
     def estimate(self, request: AcquisitionRequest) -> CostEstimate:
-        # Apify does not expose a per-run price without a prior run; the
-        # caller's budget gate still applies ($0.00 default).
-        return CostEstimate(provider=self.name, estimated_cost_usd=None)
+        if self.actor_id is None:
+            return CostEstimate(provider=self.name, estimated_cost_usd=None)
+        per_result = ACTOR_PRICING_USD_PER_RESULT.get(self.actor_id)
+        if per_result is None:
+            return CostEstimate(provider=self.name, estimated_cost_usd=None)
+        count = int(request.max_records or 10)
+        return CostEstimate(
+            provider=self.name,
+            estimated_cost_usd=round(per_result * count, 6),
+            currency="USD",
+            source="apify_store_list_price",
+        )
 
     def acquire(self, request: AcquisitionRequest) -> AcquisitionResult:
         token = self.secret("APIFY_TOKEN")
@@ -96,20 +181,16 @@ class ApifyProvider(BaseProvider):
         endpoint = f"{self.base_url}/acts/{self.actor_id}/runs"
 
         operation = str(request.operation or "PLATFORM_DISCOVERY").strip().upper()
-        body: dict[str, Any] = {
-            "input": {
-                "query": request.query,
-                "platform": request.platform,
-                "operation": operation,
-                "maxItems": request.max_records,
-            }
-        }
-        if request.start_time is not None:
-            body["input"]["startTime"] = request.start_time.isoformat()
-        if request.end_time is not None:
-            body["input"]["endTime"] = request.end_time.isoformat()
-        if request.market_id is not None:
-            body["input"]["marketId"] = request.market_id
+        actor_input = _input_for(self.actor_id, request, operation)
+        if not actor_input:
+            return self._fail(
+                request,
+                started,
+                AcquisitionStatus.SCHEMA_INVALID,
+                "actor_input_unknown",
+                f"actor {self.actor_id} has no explicit input builder",
+            )
+        body: dict[str, Any] = {"input": actor_input}
 
         try:
             run = self.transport.request(
@@ -229,6 +310,7 @@ class ApifyProvider(BaseProvider):
                     "polls": polls,
                     "dataset_id": dataset_id,
                     "operation": operation,
+                    "input": actor_input,
                     "rights_status": ACTOR_RIGHTS_STATUS,
                     "commercial_use_status": ACTOR_COMMERCIAL_USE_STATUS,
                 },
@@ -250,6 +332,7 @@ class ApifyProvider(BaseProvider):
                 "state": state,
                 "polls": polls,
                 "operation": operation,
+                "input": actor_input,
                 "rights_status": ACTOR_RIGHTS_STATUS,
                 "commercial_use_status": ACTOR_COMMERCIAL_USE_STATUS,
             },

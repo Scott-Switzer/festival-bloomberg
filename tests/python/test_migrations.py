@@ -22,7 +22,7 @@ def test_apply_pending_migrations_is_idempotent(tmp_path: Path):
 
     connection = duckdb.connect(str(db_path))
     try:
-        assert apply_pending_migrations(connection) == 49
+        assert apply_pending_migrations(connection) == 50
         assert apply_pending_migrations(connection) == 0
         versions = [
             row[0]

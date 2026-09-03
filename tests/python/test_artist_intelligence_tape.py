@@ -34,37 +34,35 @@ T0 = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
 
 
 def test_factor_rows_are_temporal_and_generation_scoped():
-    first = build_factor_observation(
-        artist_key="mbid::alpha",
-        factor_family="DEMAND",
-        factor_name="MONTHLY_LISTENERS",
-        platform="spotify",
-        value=1000,
-        unit="listeners",
-        observation_time="2026-08-19",
-        retrieved_at=T0,
-        source="soundcharts",
-        source_scope="LICENSED_HISTORICAL",
-        generation="generation-a",
-    )
-    second = build_factor_observation(
-        artist_key="mbid::alpha",
-        factor_family="DEMAND",
-        factor_name="MONTHLY_LISTENERS",
-        platform="spotify",
-        value=1100,
-        unit="listeners",
-        observation_time="2026-08-20",
-        retrieved_at=T0,
-        source="soundcharts",
-        source_scope="LICENSED_HISTORICAL",
-        generation="generation-b",
-    )
+    def _obs(value, day, generation):
+        return build_factor_observation(
+            artist_key="mbid::alpha",
+            factor_family="DEMAND",
+            factor_name="MONTHLY_LISTENERS",
+            platform="spotify",
+            value=value,
+            unit="listeners",
+            observation_time=day,
+            retrieved_at=T0,
+            source="soundcharts",
+            source_scope="LICENSED_HISTORICAL",
+            generation=generation,
+            measurement_basis="MONTHLY_ACTIVE_LISTENERS",
+            measurement_window="2026-07-20..2026-08-19",
+            population_scope="ALL_LISTENERS_ON_PLATFORM",
+            geographic_scope="GLOBAL",
+            methodology_version="soundcharts-licensed-v2",
+            coverage_generation="generation-a",
+        )
+
+    first = _obs(1000, "2026-08-19", "generation-a")
+    second = _obs(1100, "2026-08-20", "generation-b")
 
     assert first["observation_time"] == "2026-08-19"
     assert first["knowledge_time"] == T0.isoformat()
     assert first["source_scope"] == "LICENSED_HISTORICAL"
     assert first["generation"] == "generation-a"
+    assert first["measurement_basis"] == "MONTHLY_ACTIVE_LISTENERS"
     assert first["factor_observation_key"] != second["factor_observation_key"]
     assert comparable_delta([first]) is None
     delta = comparable_delta([first, second])
@@ -72,6 +70,22 @@ def test_factor_rows_are_temporal_and_generation_scoped():
     assert delta["delta"] == 100
     assert delta["delta_pct"] == 10
     assert what_changed([first, second])[0]["factor_name"] == "MONTHLY_LISTENERS"
+    # The financial-grade guard: without measurement context, even two rows
+    # with the same name/platform/unit must not produce a percentage change.
+    bare_first = dict(first)
+    bare_second = dict(second)
+    for row in (bare_first, bare_second):
+        for field in (
+            "measurement_basis",
+            "measurement_window",
+            "population_scope",
+            "geographic_scope",
+            "methodology_version",
+            "coverage_generation",
+        ):
+            row[field] = None
+        row["evidence_json"] = None
+    assert comparable_delta([bare_first, bare_second]) is None
 
 
 def test_sentiment_deduplicates_cross_posts_but_not_different_artists():

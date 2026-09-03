@@ -55,7 +55,13 @@ def _factor_ddl() -> str:
         commercial_use_status VARCHAR,
         quality_status VARCHAR,
         generation VARCHAR,
-        evidence_json JSON
+        evidence_json JSON,
+        measurement_basis VARCHAR,
+        measurement_window VARCHAR,
+        population_scope VARCHAR,
+        geographic_scope VARCHAR,
+        methodology_version VARCHAR,
+        coverage_generation VARCHAR
     );
 
     CREATE TABLE IF NOT EXISTS artist_sentiment_observations (
@@ -115,7 +121,7 @@ def build_demo_generation(
         rights_case = "CASE " + " ".join(
             f"WHEN source_system = '{name}' THEN '{label}'"
             for name, label in rights.items()
-        ) + " ELSE 'SOURCE_LICENSE_REVIEWED' END"
+        ) + " ELSE 'RIGHTS_REVIEW_REQUIRED' END"
         conn.execute(
             f"""
             INSERT INTO artist_factor_observations (
@@ -123,7 +129,9 @@ def build_demo_generation(
                 platform, value, unit, observation_time, available_at,
                 knowledge_time, retrieved_at, period_start, period_end, source,
                 evidence_ref, source_scope, rights_status,
-                commercial_use_status, quality_status, generation, evidence_json
+                commercial_use_status, quality_status, generation, evidence_json,
+                measurement_basis, measurement_window, population_scope,
+                geographic_scope, methodology_version, coverage_generation
             )
             SELECT
                 lower(hex(sha256(concat_ws('|',
@@ -160,7 +168,38 @@ def build_demo_generation(
                 'PROTOTYPE_ONLY',
                 CASE WHEN o.value IS NULL THEN 'UNKNOWN' ELSE 'OBSERVED' END,
                 '{generation}',
-                NULL
+                json_object(
+                    'measurement_basis',
+                    CASE
+                        WHEN o.metric_kind IN ('LISTENBRAINZ_LISTENER_COUNT', 'LISTENBRAINZ_LISTEN_COUNT')
+                        THEN 'TOTAL_WITHIN_WINDOW'
+                        ELSE 'TOTAL_ALL_TIME'
+                    END,
+                    'measurement_window',
+                    CASE
+                        WHEN o.period_start IS NOT NULL AND o.period_end IS NOT NULL
+                        THEN json_object('start', CAST(o.period_start AS VARCHAR), 'end', CAST(o.period_end AS VARCHAR))
+                        ELSE NULL
+                    END,
+                    'population_scope', 'ALL_LISTENBRAINZ_USERS',
+                    'geographic_scope', 'GLOBAL',
+                    'methodology_version', 'listenbrainz_external_stats_v1',
+                    'coverage_generation', '{generation}'
+                ),
+                CASE
+                    WHEN o.metric_kind IN ('LISTENBRAINZ_LISTENER_COUNT', 'LISTENBRAINZ_LISTEN_COUNT')
+                    THEN 'TOTAL_WITHIN_WINDOW'
+                    ELSE 'TOTAL_ALL_TIME'
+                END,
+                CASE
+                    WHEN o.period_start IS NOT NULL AND o.period_end IS NOT NULL
+                    THEN CAST(o.period_start AS VARCHAR) || '..' || CAST(o.period_end AS VARCHAR)
+                    ELSE NULL
+                END,
+                'ALL_LISTENBRAINZ_USERS',
+                'GLOBAL',
+                'listenbrainz_external_stats_v1',
+                '{generation}'
             FROM attention_observations o
             """
         )

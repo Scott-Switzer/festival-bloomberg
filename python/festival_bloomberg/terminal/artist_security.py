@@ -394,6 +394,38 @@ def _json_object(value: Any) -> dict[str, Any]:
     return {}
 
 
+def _factor_comparability(previous: dict[str, Any], latest: dict[str, Any]) -> tuple[bool, str | None]:
+    """Financial-grade delta gate: only like-for-like observations compare.
+
+    Fields are read from first-class columns when present (migration 050) with
+    an evidence_json fallback for older rows. Missing or mismatched context
+    means NOT_COMPARABLE — no percentage change is produced.
+    """
+    fields = (
+        "measurement_basis",
+        "measurement_window",
+        "population_scope",
+        "geographic_scope",
+        "methodology_version",
+        "coverage_generation",
+    )
+
+    def field(row: dict[str, Any], name: str) -> Any:
+        if row.get(name) is not None:
+            return row.get(name)
+        evidence = _json_object(row.get("evidence_json"))
+        return evidence.get(name)
+
+    for name in fields:
+        old_v = field(previous, name)
+        new_v = field(latest, name)
+        if old_v is None or new_v is None:
+            return False, f"{name} missing (old={old_v!r}, new={new_v!r})"
+        if str(old_v) != str(new_v):
+            return False, f"{name} differs (old={old_v!r}, new={new_v!r})"
+    return True, None
+
+
 def _artist_factor_tape(conn, artist_key: str) -> dict[str, Any]:
     """Read the compact append-only factor tape when the artifact has it."""
     if not _table_exists(conn, "artist_factor_observations"):
@@ -481,6 +513,13 @@ def _artist_factor_tape(conn, artist_key: str) -> dict[str, Any]:
             "sample_size": latest.get("sample_size"),
             "freshness": latest.get("freshness"),
         }
+        comparable, incomparable_reason = _factor_comparability(previous, latest)
+        if not comparable:
+            item["comparability"] = "NOT_COMPARABLE"
+            item["comparability_reason"] = incomparable_reason or "measurement context differs"
+            changes.append(item)
+            continue
+        item["comparability"] = "COMPARABLE"
         if float(old) != 0:
             item["delta_pct"] = change / abs(float(old)) * 100.0
         changes.append(item)
