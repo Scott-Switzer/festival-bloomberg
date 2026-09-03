@@ -60,3 +60,5 @@ cloud-runtime/worker-configuration.d.ts
 # macOS
 .DS_Store
 .pytest-tmp/
+# Atomic UAT scratch (regenerated per run)
+artifacts/*.duckdb
