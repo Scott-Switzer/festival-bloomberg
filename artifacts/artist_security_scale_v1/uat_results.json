@@ -1,0 +1,124 @@
+{
+  "artists_checked": [
+    {
+      "factor_rows": 250,
+      "key": "mbid::003ecf7a-01f6-4dda-a041-e71366e70c42",
+      "sentiment_rows": 1
+    }
+  ],
+  "checks": {
+    "api_status_generation_matches": {
+      "detail": "served terminal_v1_20260903T183135Z == expected terminal_v1_20260903T183135Z",
+      "ok": true
+    },
+    "artifact_sha_matches_current": {
+      "detail": "local 0becc45719376a38\u2026 vs CURRENT 0becc45719376a38\u2026",
+      "ok": true
+    },
+    "artist_no_js_exceptions": {
+      "detail": "no console errors on artist page",
+      "ok": true
+    },
+    "artist_page_loads": {
+      "detail": "dom length 34953",
+      "ok": true
+    },
+    "artist_security_http_200": {
+      "detail": "HTTP 200",
+      "ok": true
+    },
+    "expected_generation_served": {
+      "detail": "generation asserted above",
+      "ok": true
+    },
+    "factor_tape_has_real_values": {
+      "detail": "250 non-empty values e.g. [('channel_view_count', 55283635.0), ('subscriber_count', 205000.0), ('video_count', 159.0)]",
+      "ok": true
+    },
+    "factor_tape_provenance_visible": {
+      "detail": "source=YOUTUBE_API, rights=PROVIDER_TERMS_REVIEW_REQUIRED",
+      "ok": true
+    },
+    "factor_tape_status_observed": {
+      "detail": "status=OBSERVED, items=250",
+      "ok": true
+    },
+    "factor_tape_visible_in_dom": {
+      "detail": "real youtube factor names present in DOM",
+      "ok": true
+    },
+    "home_dom_loads": {
+      "detail": "dom length 12180",
+      "ok": true
+    },
+    "home_no_js_exceptions": {
+      "detail": "no console errors on home",
+      "ok": true
+    },
+    "provenance_in_dom": {
+      "detail": "source/rights provenance present in DOM",
+      "ok": true
+    },
+    "screenshot_01_home.png": {
+      "detail": "01_home.png -> 291379 bytes",
+      "ok": true
+    },
+    "screenshot_02_artist_factor_tape.png": {
+      "detail": "02_artist_factor_tape.png -> 560287 bytes",
+      "ok": true
+    },
+    "screenshot_03_artist_sentiment.png": {
+      "detail": "03_artist_sentiment.png -> 795835 bytes",
+      "ok": true
+    },
+    "search_http_200": {
+      "detail": "HTTP 200",
+      "ok": true
+    },
+    "sentiment_has_rows": {
+      "detail": "status=OBSERVED, items=1",
+      "ok": true
+    },
+    "sentiment_model_version_preserved": {
+      "detail": "vader@VADER_3.3.2, analyzed=40",
+      "ok": true
+    },
+    "sentiment_visible_in_dom": {
+      "detail": "sentiment section + model present in DOM",
+      "ok": true
+    },
+    "underwrite_link_works": {
+      "detail": "underwrite action present on artist page",
+      "ok": true
+    }
+  },
+  "console_errors": [],
+  "expected_generation": "terminal_v1_20260903T183135Z",
+  "finished_at": "2026-09-03T18:41:17Z",
+  "notes": [
+    "underwrite panel state: n/a"
+  ],
+  "passed": true,
+  "screenshots": [
+    {
+      "bytes": 291379,
+      "file": "01_home.png",
+      "ok": true
+    },
+    {
+      "bytes": 560287,
+      "file": "02_artist_factor_tape.png",
+      "ok": true
+    },
+    {
+      "bytes": 795835,
+      "file": "03_artist_sentiment.png",
+      "ok": true
+    }
+  ],
+  "serving_db": "artifacts/artist_security_scale_v1/terminal.duckdb",
+  "target_artist": {
+    "key": "mbid::003ecf7a-01f6-4dda-a041-e71366e70c42",
+    "name": "Burgerkill"
+  }
+}

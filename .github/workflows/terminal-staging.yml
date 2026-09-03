@@ -1,0 +1,58 @@
+name: Terminal Staging Deploy (guarded)
+
+# Deploys the serving terminal as a separate Cloudflare project/env.
+#
+# Guarded: this workflow only runs when the dedicated staging secrets exist
+# (CF_TERMINAL_STAGING_API_TOKEN / CF_TERMINAL_STAGING_ACCOUNT_ID), so it can
+# never break the main CI path before staging infra is provisioned.
+# Until then the job records ACCESS_SETUP_REQUIRED and exits 0.
+#
+# Staging contract (from RELEASE #62 + DATA SCALE V1):
+#   - start product container
+#   - read R2 CURRENT metadata
+#   - fetch compact serving DuckDB, SHA verify, open READ_ONLY
+#   - serve static terminal assets
+#   - NO raw warehouse, NO gold rebuild, NO interactive provider fan-out,
+#     NO admin acquisition endpoints exposed
+# Security: Cloudflare Access (email/OTP) for humans, Access service token
+# (CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET) for automated browser CI.
+
+on:
+  workflow_dispatch:
+    inputs:
+      generation:
+        description: "Optional pinned serving generation (defaults to CURRENT)"
+        required: false
+        type: string
+
+jobs:
+  staging:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check staging credentials
+        id: creds
+        env:
+          TOKEN: ${{ secrets.CF_TERMINAL_STAGING_API_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "ACCESS_SETUP_REQUIRED — CF_TERMINAL_STAGING_API_TOKEN not configured"
+            echo "provisioned=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "provisioned=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Provision staging terminal (skipped until credentials exist)
+        if: steps.creds.outputs.provisioned == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_TERMINAL_STAGING_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_TERMINAL_STAGING_ACCOUNT_ID }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+          PINNED_GENERATION: ${{ inputs.generation }}
+        working-directory: cloud-runtime
+        run: |
+          npx wrangler deploy --env staging
+          echo "STAGING_URL=https://terminal-staging.<worker-subdomain>.workers.dev"
+          echo "Deployed pinned generation: ${PINNED_GENERATION:-CURRENT}"

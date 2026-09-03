@@ -405,7 +405,7 @@ export default {
       // daily aggregate. No live social scraping in browser pages — this is
       // asynchronous acquisition, materialized serving.
       try {
-        const body = await request.json() as { max_artists?: number; max_comments_per_video?: number };
+        const body = await request.json() as { max_artists?: number; max_comments_per_video?: number; offset?: number };
         const universe = await loadV2Universe(env);
         const identities = (universe.youtube_channels || [])
           .filter((c) => c.artist_key && c.youtube_channel_id && c.status !== "QUARANTINED")
@@ -415,6 +415,7 @@ export default {
         }
         const { collectYouTubeCommentSamples } = await import("./youtube-sentiment");
         const result = await collectYouTubeCommentSamples(env, identities, {
+          start: body.offset ?? 0,
           maxArtists: body.max_artists ?? 20,
           maxCommentsPerVideo: body.max_comments_per_video ?? 20,
         });
