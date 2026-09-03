@@ -2289,12 +2289,15 @@ def run_artist_sentiment_build(spec: dict, scratch_dir: Path) -> dict:
             }
 
         # ── Aggregate with VADER (per artist×platform×date) ──
+        # P10: deduplicate repeated/cross-posted text — an identical comment
+        # collected again (same artist/platform/day) counts once, never twice.
         agg: dict[tuple, dict] = defaultdict(lambda: {
             "mention_count": 0, "analyzed_count": 0, "sentiment_sum": 0.0,
             "engagement_sum": 0.0, "weighted_sum": 0.0,
             "positive": 0, "neutral": 0, "negative": 0, "langs": set(),
             "rights": {}, "commercial": {}, "sources": {}, "last_observed": "",
         })
+        seen_texts: dict[tuple, set] = defaultdict(set)
         skipped = 0
         for key in sample_keys:
             try:
@@ -2318,6 +2321,11 @@ def run_artist_sentiment_build(spec: dict, scratch_dir: Path) -> dict:
                 continue
             day = obs[:10]
             bucket = (artist_key, platform, day)
+            norm = " ".join(text.lower().split())
+            if norm in seen_texts[bucket]:
+                skipped += 1
+                continue
+            seen_texts[bucket].add(norm)
             a = agg[bucket]
             a["mention_count"] += 1
             a["analyzed_count"] += 1

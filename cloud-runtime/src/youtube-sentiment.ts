@@ -38,7 +38,7 @@ async function sha256Hex(text: string): Promise<string> {
 export async function collectYouTubeCommentSamples(
   env: SentimentPilotEnv,
   identities: Array<{ artist_key: string; youtube_channel_id: string }>,
-  opts: { now?: Date; maxArtists?: number; maxCommentsPerVideo?: number } = {},
+  opts: { now?: Date; maxArtists?: number; maxCommentsPerVideo?: number; start?: number } = {},
 ): Promise<{
   status: string;
   artists_requested: number;
@@ -49,7 +49,10 @@ export async function collectYouTubeCommentSamples(
   errors: number;
 }> {
   const now = opts.now || new Date();
-  const selected = identities.slice(0, opts.maxArtists ?? 20);
+  // `start` allows bounded slices across the channel universe so scale runs
+  // cover artists beyond the first N without resampling the same channels.
+  const start = Math.max(0, opts.start ?? 0);
+  const selected = identities.slice(start, start + (opts.maxArtists ?? 20));
   const maxComments = opts.maxCommentsPerVideo ?? 20;
   const out = {
     status: "COMPLETE", artists_requested: selected.length, artists_resolved: 0,
