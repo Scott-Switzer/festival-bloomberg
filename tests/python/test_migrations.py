@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from festival_bloomberg.migrations import apply_pending_migrations
 from festival_bloomberg.schema_paths import load_schema_sql, resolve_schema_root
 

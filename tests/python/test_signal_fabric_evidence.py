@@ -8,17 +8,16 @@ spread regression guard.
 
 from __future__ import annotations
 
-import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
-
+from conftest import FakeTransport, make_request
 from festival_bloomberg.acquisition.contracts import (
     AcquisitionResult,
     AcquisitionStatus,
     utc_now,
 )
-from festival_bloomberg.acquisition.providers import MonidProvider, YouTubeProvider
+from festival_bloomberg.acquisition.providers import YouTubeProvider
 from festival_bloomberg.evidence.dedup import (
     canonical_key,
     resolve_canonical,
@@ -34,9 +33,7 @@ from festival_bloomberg.social import features as feature_builder
 from festival_bloomberg.social.sentiment import infer_sentiment
 from festival_bloomberg.warehouse.repository import FestivalRepository
 
-from conftest import FakeTransport, make_request
-
-T0 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+T0 = datetime(2024, 1, 1, tzinfo=UTC)
 
 
 def _result(
@@ -332,8 +329,8 @@ class TestPIT:
             "text": "after cutoff",
             "published_at": "2024-02-01T00:00:00Z",
         }
-        past_retrieved = datetime(2023, 12, 20, tzinfo=timezone.utc)
-        future_retrieved = datetime(2024, 2, 1, tzinfo=timezone.utc)
+        past_retrieved = datetime(2023, 12, 20, tzinfo=UTC)
+        future_retrieved = datetime(2024, 2, 1, tzinfo=UTC)
         evidence_repo.ingest(
             request,
             _result(request, provider="youtube", records=[past], completed_at=past_retrieved),
@@ -343,7 +340,7 @@ class TestPIT:
             _result(request, provider="youtube", records=[future], completed_at=future_retrieved),
         )
 
-        cutoff = datetime(2024, 1, 15, tzinfo=timezone.utc)
+        cutoff = datetime(2024, 1, 15, tzinfo=UTC)
         at_cutoff = evidence_repo.query_observations(artist_id="radiohead", cutoff=cutoff)
         assert [o["platform_object_id"] for o in at_cutoff] == ["vid-past"]
 
@@ -367,10 +364,10 @@ class TestPIT:
                         "published_at": "2024-01-01T00:00:00Z",
                     }
                 ],
-                completed_at=datetime(2024, 3, 1, tzinfo=timezone.utc),
+                completed_at=datetime(2024, 3, 1, tzinfo=UTC),
             ),
         )
-        cutoff = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        cutoff = datetime(2024, 6, 1, tzinfo=UTC)
         obs = evidence_repo.query_observations(artist_id="radiohead", cutoff=cutoff)
         assert len(obs) == 1
         assert obs[0]["platform_object_id"] == "c1"
@@ -402,7 +399,7 @@ class TestPIT:
                 request,
                 provider="youtube",
                 records=[records[0]],
-                completed_at=datetime(2024, 1, 5, tzinfo=timezone.utc),
+                completed_at=datetime(2024, 1, 5, tzinfo=UTC),
             ),
         )
         evidence_repo.ingest(
@@ -411,15 +408,15 @@ class TestPIT:
                 request,
                 provider="youtube",
                 records=[records[1]],
-                completed_at=datetime(2024, 5, 20, tzinfo=timezone.utc),
+                completed_at=datetime(2024, 5, 20, tzinfo=UTC),
             ),
         )
 
         early = feature_builder.build_artist_market_features(
-            evidence_repo, "radiohead", cutoff=datetime(2024, 1, 15, tzinfo=timezone.utc)
+            evidence_repo, "radiohead", cutoff=datetime(2024, 1, 15, tzinfo=UTC)
         )
         late = feature_builder.build_artist_market_features(
-            evidence_repo, "radiohead", cutoff=datetime(2024, 6, 1, tzinfo=timezone.utc)
+            evidence_repo, "radiohead", cutoff=datetime(2024, 6, 1, tzinfo=UTC)
         )
         assert early.mention_count == 1
         assert late.mention_count == 2
@@ -489,7 +486,7 @@ class TestFeatures:
                 request,
                 provider="youtube",
                 records=records[:2],
-                completed_at=datetime(2024, 1, 10, tzinfo=timezone.utc),
+                completed_at=datetime(2024, 1, 10, tzinfo=UTC),
             ),
         )
         # second provider for the same x object via monid-shaped records
@@ -500,7 +497,7 @@ class TestFeatures:
                 request2,
                 provider="monid",
                 records=[records[2]],
-                completed_at=datetime(2024, 1, 10, tzinfo=timezone.utc),
+                completed_at=datetime(2024, 1, 10, tzinfo=UTC),
             ),
         )
 
@@ -515,7 +512,7 @@ class TestFeatures:
                 model_version=inference.model_version,
                 label=inference.label,
                 probabilities=inference.probabilities,
-                knowledge_cutoff=datetime(2024, 6, 1, tzinfo=timezone.utc),
+                knowledge_cutoff=datetime(2024, 6, 1, tzinfo=UTC),
                 input_text=text,
             )
 
@@ -523,7 +520,7 @@ class TestFeatures:
             evidence_repo,
             "radiohead",
             market_id="chi",
-            cutoff=datetime(2024, 6, 1, tzinfo=timezone.utc),
+            cutoff=datetime(2024, 6, 1, tzinfo=UTC),
         )
         assert features.mention_count == 3
         assert features.platform_count == 2
@@ -550,17 +547,17 @@ class TestSyntheticQuarantine:
 # ---------------------------------------------------------------------------
 class TestProvenance:
     def test_knowledge_time_uses_publication_when_defensible(self):
-        retrieved = datetime(2024, 1, 10, tzinfo=timezone.utc)
+        retrieved = datetime(2024, 1, 10, tzinfo=UTC)
         kt = knowledge_time_for("2024-01-05T00:00:00Z", retrieved)
-        assert kt == datetime(2024, 1, 5, tzinfo=timezone.utc)
+        assert kt == datetime(2024, 1, 5, tzinfo=UTC)
 
     def test_knowledge_time_falls_back_to_retrieval(self):
-        retrieved = datetime(2024, 1, 10, tzinfo=timezone.utc)
+        retrieved = datetime(2024, 1, 10, tzinfo=UTC)
         kt = knowledge_time_for(None, retrieved)
         assert kt == retrieved
 
     def test_knowledge_time_never_invents_earlier_than_retrieval(self):
-        retrieved = datetime(2024, 1, 10, tzinfo=timezone.utc)
+        retrieved = datetime(2024, 1, 10, tzinfo=UTC)
         kt = knowledge_time_for("2026-01-01T00:00:00Z", retrieved)
         assert kt == retrieved
 
@@ -578,13 +575,13 @@ class TestTicketSpreadRegression:
             "currency": "USD",
             "total_primary_price_minor": 10000,
             "fee_components_minor": 1000,
-            "created_at": dt(2026, 8, 10, tzinfo=timezone.utc),
+            "created_at": dt(2026, 8, 10, tzinfo=UTC),
         }
         secondary = {
             "currency": "USD",
             "total_buyer_price_minor": 14000,
             "fee_components_minor": 2000,
-            "retrieved_at": dt(2026, 8, 10, 1, tzinfo=timezone.utc),
+            "retrieved_at": dt(2026, 8, 10, 1, tzinfo=UTC),
         }
         result = calculate_spread(primary, secondary, fx=FXTable({}))
         assert result.absolute_spread_minor == 4000

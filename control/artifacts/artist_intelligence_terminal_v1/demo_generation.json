@@ -1,0 +1,15 @@
+{
+  "artists": 25000,
+  "factor_artists": 25000,
+  "factor_rows": 50886,
+  "families": {
+    "LISTENERSHIP": 50000,
+    "STREAMING": 886
+  },
+  "generation": "artist_factor_tape_demo_v1_20260903T003545Z",
+  "published_to_r2": false,
+  "sentiment_note": "PROVIDER_READY: no raw social text exists in serving snapshots; daily aggregates arrive only from the acquisition boundary.",
+  "sentiment_rows": 0,
+  "series_artists": 296,
+  "status": "PASS"
+}

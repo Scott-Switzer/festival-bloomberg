@@ -9,22 +9,19 @@ read-only HTTP dispatcher, and the live OA driver end-to-end. No network.
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 import duckdb
 import pytest
-
 from festival_bloomberg.intelligence.ask import answer, run_tool
 from festival_bloomberg.intelligence.providers import (
     ALL_PROVIDERS,
     AUTH_MISSING,
-    NOT_IMPLEMENTED,
     OPERATIONAL,
     PUBLIC_NO_AUTH,
     provider_statuses,
 )
 from festival_bloomberg.intelligence.readmodels import (
-    entity_key,
     get_artist,
     get_event,
     get_market,
@@ -117,8 +114,8 @@ def test_tape_activity_types_closed():
     with pytest.raises(ValueError):
         build_tape_row(
             activity_type="NOT_A_REAL_TYPE", entity_type="EVENT", entity_id="x",
-            observed_at=datetime.now(timezone.utc), source_provider="p",
-            source_record_id="r", knowledge_time=datetime.now(timezone.utc),
+            observed_at=datetime.now(UTC), source_provider="p",
+            source_record_id="r", knowledge_time=datetime.now(UTC),
             rights_status="R",
         )
 

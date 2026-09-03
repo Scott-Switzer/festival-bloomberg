@@ -7,7 +7,6 @@ from datetime import datetime
 from pathlib import Path
 
 import duckdb
-
 from festival_bloomberg.migrations import apply_pending_migrations
 
 

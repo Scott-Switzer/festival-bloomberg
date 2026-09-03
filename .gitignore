@@ -59,3 +59,4 @@ cloud-runtime/worker-configuration.d.ts
 
 # macOS
 .DS_Store
+.pytest-tmp/

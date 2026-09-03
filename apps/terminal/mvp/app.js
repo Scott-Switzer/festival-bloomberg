@@ -329,6 +329,13 @@ async function renderArtist(key) {
   <div style="height:14px"></div>
   <div class="grid cols2" id="attentionPanels"></div>
   <div style="height:14px"></div>
+  <div class="panel"><h3>Artist factor tape ${statusChip((p.factor_tape && p.factor_tape.status) || "UNKNOWN")}</h3><div id="tapeBox"></div></div>
+  <div style="height:14px"></div>
+  <div class="grid cols2">
+    <div class="panel"><h3>Sentiment ${statusChip((p.sentiment && p.sentiment.status) || "UNKNOWN")}</h3><div id="sentimentBox"></div></div>
+    <div class="panel"><h3>Provider data rails</h3><div id="providersBox"></div></div>
+  </div>
+  <div style="height:14px"></div>
   <div class="grid cols2">
     <div class="panel"><h3>Audience peers ${statusChip(p.peers.status)}</h3><div id="peersBox"></div><p class="note">${esc(p.peers.note || "")}</p></div>
     <div class="panel"><h3>Alternatives ${statusChip(p.alternatives.status)}</h3><div id="altsBox" data-subject="${esc(a.artist_key)}"></div><p class="note">${esc(p.alternatives.note || "")}</p></div>
@@ -358,6 +365,9 @@ async function renderArtist(key) {
   };
 
   renderAttention(p.attention || {});
+  renderTape((p.factor_tape || {}), (p.what_changed || []));
+  renderSentiment(p.sentiment || {});
+  renderProviders(p.provider_readiness || {});
   renderPeers(p.peers);
   renderAlts(p.alternatives);
   renderArtistMarkets(p.markets);
@@ -397,6 +407,77 @@ function renderAttention(attention) {
       }).join("")}
       <p class="note">${esc(block.note || "")}</p></div>`;
   }).join("");
+}
+
+function fmtDelta(d) {
+  const n = Number(d);
+  if (!Number.isFinite(n)) return "";
+  return (n >= 0 ? "+" : "") + n.toLocaleString(undefined, { maximumFractionDigits: 1 });
+}
+
+function renderTape(tape, changes) {
+  const box = document.getElementById("tapeBox");
+  if (!box) return;
+  const items = (tape.items || []);
+  if (!items.length) {
+    box.innerHTML = `<div class="empty">${esc(tape.note || "No temporal factor observations in this serving generation.")}</div>`;
+    return;
+  }
+  const changed = (changes || []);
+  const changeHtml = changed.length
+    ? `<div style="margin-bottom:8px">${changed.slice(0, 12).map((c) => {
+        const pct = c.delta_pct != null ? ` (${(Number(c.delta_pct) >= 0 ? "+" : "")}${Number(c.delta_pct).toFixed(1)}%)` : "";
+        return `<span class="chip" style="margin:1px 6px 1px 0" title="${esc((c.period && (c.period.from + " → " + c.period.to)) || "")} · ${esc(c.source || "")} · ${esc(c.generation || "")}">${esc(c.factor_name)} ${fmtDelta(c.delta)}${pct}</span>`;
+      }).join("")}</div><div class="small muted">what changed — deltas only from comparable observations</div>`
+    : `<p class="note">No comparable-pair delta yet: UNKNOWN is distinct from zero and history is never reconstructed from a current snapshot.</p>`;
+  const seriesHtml = (tape.series || []).map((s) => {
+    const vals = (s.points || []).map((pt) => Number(pt.v) || 0);
+    const max = Math.max(...vals, 1);
+    return `<div style="margin-top:8px"><div class="small">${esc(s.label)} · <span class="muted">source ${esc(s.source || "")}${s.sample_size ? " · sample " + esc(s.sample_size) : ""}</span></div>
+      <div class="spark">${vals.slice(-90).map((v) => `<span style="height:${Math.max(8, (v / max) * 100)}%"></span>`).join("")}</div>
+      <div class="small muted">${esc((s.period && s.period.start) || "")} → ${esc((s.period && s.period.end) || "")} · freshness ${esc(s.freshness || "")}</div></div>`;
+  }).join("");
+  box.innerHTML = `<p class="note">${esc(tape.note || "")}</p>
+    ${changeHtml}
+    <table><thead><tr><th>Factor</th><th>Platform</th><th>Value</th><th>Period</th><th>Source</th><th>Freshness</th></tr></thead><tbody>
+    ${items.slice(0, 60).map((r) => `<tr>
+      <td>${esc(r.factor_name)}</td><td>${esc(r.platform || r.source || "")}</td>
+      <td>${r.value == null ? "UNKNOWN" : esc(money(r.value)) + " " + esc(r.unit || "")}</td>
+      <td class="small muted">${esc(fmtDate(r.observation_time || r.as_of))}</td>
+      <td class="small muted">${esc(r.source || r.source_system || "")}</td>
+      <td class="small muted">${esc(fmtDate(r.freshness || r.retrieved_at))}</td></tr>`).join("")}
+    </tbody></table>
+    ${seriesHtml ? `<div style="margin-top:10px"><div class="small">Time series (≥2 observations)</div>${seriesHtml}</div>` : ""}`;
+}
+
+function renderSentiment(sentiment) {
+  const box = document.getElementById("sentimentBox");
+  if (!box) return;
+  const items = (sentiment.items || []);
+  if (!items.length) {
+    box.innerHTML = `<div class="empty">${esc(sentiment.note || "No daily aggregate yet — raw identities are never served.")}</div>`;
+    return;
+  }
+  const latest = items.slice(0, 5);
+  box.innerHTML = `<p class="note">${esc(sentiment.note || "")}</p>
+    <table><thead><tr><th>Day</th><th>Platform</th><th>Mean</th><th>+ / = / −</th><th>Analyzed</th><th>Model</th></tr></thead><tbody>
+    ${latest.map((r) => `<tr><td>${esc(fmtDate(r.date))}</td><td>${esc(r.platform)}</td><td>${r.sentiment_mean == null ? "UNKNOWN" : Number(r.sentiment_mean).toFixed(3)}</td>
+      <td class="small">${r.positive_share == null ? "—" : (Number(r.positive_share) * 100).toFixed(0) + " / " + (Number(r.neutral_share) * 100).toFixed(0) + " / " + (Number(r.negative_share) * 100).toFixed(0)}</td>
+      <td class="small muted">${esc(r.analyzed_count)} / ${esc(r.mention_count)} mentions</td>
+      <td class="small muted">${esc(r.model_name)}@${esc(r.model_version)}</td></tr>`).join("")}</tbody></table>`;
+}
+
+function renderProviders(providers) {
+  const box = document.getElementById("providersBox");
+  if (!box) return;
+  const entries = Object.entries(providers || {});
+  if (!entries.length) {
+    box.innerHTML = `<div class="empty">No provider readiness published for this generation.</div>`;
+    return;
+  }
+  box.innerHTML = entries.map(([name, r]) => `<div style="margin-bottom:8px">
+    <div class="small"><b>${esc(name)}</b> ${statusChip(r.status)} ${r.historical_strategy ? `<span class="muted">· ${esc(r.historical_strategy)}</span>` : ""}</div>
+    <div class="small muted">${esc(r.note || "")}</div></div>`).join("");
 }
 
 function renderPeers(peers) {

@@ -20,8 +20,8 @@ from .nws import NwsProvider
 from .openstreetmap import OpenStreetMapProvider
 from .scrapling import ScraplingProvider
 from .seatgeek import SeatGeekProvider
-from .soundcharts import SoundchartsProvider
 from .setlistfm import SetlistFmProvider
+from .soundcharts import SoundchartsProvider
 from .spotify import SpotifyProvider
 from .ticketmaster import TicketmasterProvider
 from .wikidata import WikidataProvider

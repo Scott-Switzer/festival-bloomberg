@@ -21,8 +21,8 @@ import math
 import time
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
-from functools import partial
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 

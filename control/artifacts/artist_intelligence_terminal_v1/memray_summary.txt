@@ -1,0 +1,48 @@
+
+⚠  This capture file is large and may take a long time to process  ⚠
+
+Next time, consider using the `--aggregate` option to `memray run` to reduce the
+size of the file.
+Check https://bloomberg.github.io/memray/run.html#aggregated-capture-files for 
+more information.
+
+
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━┳━━━━━━━┳━━━━━━━┳━━━━━━━┓
+┃                                     ┃        ┃ Total ┃       ┃   Own ┃       ┃
+┃                                     ┃ <Total ┃ Memo… ┃   Own ┃ Memo… ┃ Allo… ┃
+┃ Location                            ┃ Memor… ┃     % ┃ Memo… ┃     % ┃ Count ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━╇━━━━━━━╇━━━━━━━╇━━━━━━━┩
+│ run_path at <frozen runpy>          │ 67.45… │ 53.3… │ 0.00… │ 0.00% │ 74778 │
+│ _run_tracker at                     │ 67.45… │ 53.3… │ 0.00… │ 0.00% │ 74778 │
+│ /Users/scottthomasswitzer/CascadeP… │        │       │       │       │       │
+│ <module> at /tmp/memray_prof.py     │ 66.38… │ 52.5… │ 352.… │ 0.00% │ 74758 │
+│ _run_code at <frozen runpy>         │ 66.38… │ 52.5… │ 0.00… │ 0.00% │ 74758 │
+│ _run_module_code at <frozen runpy>  │ 66.38… │ 52.5… │ 0.00… │ 0.00% │ 74758 │
+│ ??? at ???                          │ 54.41… │ 43.0… │ 54.4… │ 43.0… │ 20918 │
+│ make_app at                         │ 45.44… │ 35.9… │ 0.00… │ 0.00% │ 51195 │
+│ /Users/scottthomasswitzer/CascadeP… │        │       │       │       │       │
+│ _find_and_load_unlocked at <frozen  │ 43.89… │ 34.7… │ 19.8… │ 0.02% │ 39282 │
+│ importlib._bootstrap>               │        │       │       │       │       │
+│ _find_and_load at <frozen           │ 43.89… │ 34.7… │ 0.00… │ 0.00% │ 39282 │
+│ importlib._bootstrap>               │        │       │       │       │       │
+│ exec_module at <frozen              │ 43.89… │ 34.7… │ 0.00… │ 0.00% │ 39278 │
+│ importlib._bootstrap_external>      │        │       │       │       │       │
+│ _load_unlocked at <frozen           │ 43.89… │ 34.7… │ 51.9… │ 0.04% │ 39278 │
+│ importlib._bootstrap>               │        │       │       │       │       │
+│ _call_with_frames_removed at        │ 43.82… │ 34.6… │ 10.5… │ 8.33% │ 39216 │
+│ <frozen importlib._bootstrap>       │        │       │       │       │       │
+│ open_product_db at                  │ 39.71… │ 31.4… │ 4.16… │ 3.30% │ 37041 │
+│ /Users/scottthomasswitzer/CascadeP… │        │       │       │       │       │
+│ _table_exists at                    │ 35.26… │ 27.8… │ 272.… │ 0.00% │ 20298 │
+│ /Users/scottthomasswitzer/CascadeP… │        │       │       │       │       │
+│ <module> at                         │ 35.25… │ 27.8… │ 4.17… │ 0.00% │ 20294 │
+│ /Users/scottthomasswitzer/CascadeP… │        │       │       │       │       │
+│ <module> at                         │ 19.91… │ 15.7… │ 1.52… │ 0.00% │ 15195 │
+│ /Users/scottthomasswitzer/CascadeP… │        │       │       │       │       │
+│ get_code at <frozen                 │ 19.52… │ 15.4… │ 0.00… │ 0.00% │  5438 │
+│ importlib._bootstrap_external>      │        │       │       │       │       │
+│ _compile_bytecode at <frozen        │ 19.51… │ 15.4… │ 19.5… │ 15.4… │  5431 │
+│ importlib._bootstrap_external>      │        │       │       │       │       │
+│ _rows at                            │ 16.17… │ 12.7… │ 290.… │ 0.23% │  5572 │
+│ /Users/scottthomasswitzer/CascadeP… │        │       │       │       │       │
+└─────────────────────────────────────┴────────┴───────┴───────┴───────┴───────┘

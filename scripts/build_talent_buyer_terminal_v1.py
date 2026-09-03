@@ -30,12 +30,11 @@ import json
 import os
 import shutil
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import duckdb
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REPORT = PROJECT_ROOT / "reports" / "artist_security_25000_estate_v1.json"
@@ -1063,7 +1062,7 @@ def build(
             [
                 "TALENT_BUYER_TERMINAL_V1",
                 "artist_security_terminal_v1",
-                datetime.now(timezone.utc).replace(tzinfo=None),
+                datetime.now(UTC).replace(tzinfo=None),
                 str(source.resolve()),
                 str(report_path.resolve()),
                 str(affinity_parquet.resolve()) if affinity_parquet else None,

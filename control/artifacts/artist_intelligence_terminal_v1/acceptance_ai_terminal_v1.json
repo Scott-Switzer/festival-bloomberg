@@ -1,0 +1,71 @@
+{
+  "acceptance": "ARTIST_INTELLIGENCE_TERMINAL_V1",
+  "checks": {
+    "artist_identity": {
+      "detail": "Alice Cooper",
+      "pass": true
+    },
+    "compare_no_winner": {
+      "detail": "no_winner contract",
+      "pass": true
+    },
+    "coverage_state": {
+      "detail": "{\"identity\": \"OBSERVED\", \"attention_sources\": 1, \"audience_peers\": \"OBSERVED\", \"markets\": \"OBSERVED\", \"live_history\": \"OBSERVED\", \"festival_history\": \"OBSERVED\", \"future\": \"OBSERVED\", \"factor_tape\": \"OBSERVED\", \"sentiment\": \"PROVIDER_READY\"}",
+      "pass": true
+    },
+    "factor_tape_contract": {
+      "detail": "status=OBSERVED items=8",
+      "pass": true
+    },
+    "factor_tape_fields": {
+      "detail": "factor_name=LISTENBRAINZ_TOTAL_LISTEN_COUNT, platform=listenbrainz, value=6125431.0, unit=listens, observation_time=2026-08-15 20:10:04.540285, retrieved_at=2026-08-15 20:10:04.540285",
+      "pass": true
+    },
+    "market": {
+      "detail": "200",
+      "pass": true
+    },
+    "monitor": {
+      "detail": "200",
+      "pass": true
+    },
+    "pace": {
+      "detail": "200",
+      "pass": true
+    },
+    "portfolio": {
+      "detail": "200",
+      "pass": true
+    },
+    "provider_rails": {
+      "detail": "{\"spotify\": \"AUTH_REQUIRED\", \"soundcharts\": \"PROVIDER_READY / AUTH_REQUIRED\", \"chartmetric\": \"PROVIDER_READY / AUTH_REQUIRED\", \"google_trends\": \"WAITLIST / AUTH_REQUIRED\", \"social\": \"PROVIDER_READY / AUTH_REQUIRED\"}",
+      "pass": true
+    },
+    "search": {
+      "detail": "2 hits",
+      "pass": true
+    },
+    "sentiment_boundary": {
+      "detail": "no aggregate present",
+      "pass": true
+    },
+    "sentiment_no_raw_identities": {
+      "detail": "clean",
+      "pass": true
+    },
+    "status": {
+      "detail": "200",
+      "pass": true
+    },
+    "underwrite": {
+      "detail": "buyer brief returned",
+      "pass": true
+    },
+    "what_changed_deltas": {
+      "detail": "2 deltas",
+      "pass": true
+    }
+  },
+  "failures": [],
+  "pass": true
+}

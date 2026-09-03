@@ -25,8 +25,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import date, datetime, timedelta, timezone
-from typing import Any, Iterable
+from datetime import UTC, date, datetime, timedelta
+from typing import Any
 
 from ..identity.spotify import normalize_name
 
@@ -251,7 +251,7 @@ def derive_demand_and_momentum_factors(
 
     Never interprets attention as ticket demand. UNKNOWN stays NULL.
     """
-    retrieved_at = retrieved_at or datetime.now(timezone.utc).isoformat()
+    retrieved_at = retrieved_at or datetime.now(UTC).isoformat()
     as_of = as_of or date.today()
     summary: dict[str, Any] = {
         "status": "RUNNING",
@@ -406,9 +406,9 @@ def _append_wiki_window_factors(
         return round(sum(vals), 4) if vals else None
 
     w1 = window_sum(1)
-    w7 = window_sum(7)
+    _w7 = window_sum(7)  # noqa: F841 - computed alongside the windows actually used
     w28 = window_sum(28)
-    w90 = window_sum(90)
+    _w90 = window_sum(90)  # noqa: F841 - computed alongside the windows actually used
     if w1 is not None:
         rows.append(_attention_level_observation(
             artist_key=artist_key, artist_name=artist_name, factor_name="WIKI_VIEWS_1D",
@@ -518,7 +518,7 @@ def derive_youtube_snapshot_factors(
     Deltas are computed ONLY from two real snapshots in a later pass — never
     reconstructed here.
     """
-    retrieved_at = retrieved_at or datetime.now(timezone.utc).isoformat()
+    retrieved_at = retrieved_at or datetime.now(UTC).isoformat()
     as_of = as_of or date.today()
     summary: dict[str, Any] = {
         "status": "RUNNING",
@@ -541,7 +541,7 @@ def derive_youtube_snapshot_factors(
             [artist_key],
         ).fetchall()
         seen: set[str] = set()
-        for metric_kind, value, period_end, prov in snaps:
+        for metric_kind, value, period_end, _prov in snaps:
             if metric_kind in seen:
                 continue
             seen.add(metric_kind)
@@ -587,7 +587,7 @@ def derive_live_statistics(
     Event dates come from raw.musicbrainz_event.begin_date (EVENT_TIME).
     ``as_of`` is the observation date — never the retrieval time.
     """
-    retrieved_at = retrieved_at or datetime.now(timezone.utc).isoformat()
+    retrieved_at = retrieved_at or datetime.now(UTC).isoformat()
     as_of = as_of or date.today()
     summary: dict[str, Any] = {
         "status": "RUNNING",
@@ -680,7 +680,7 @@ def derive_catalog_statistics(
     RELEASES_12M/36M, DAYS_SINCE_LAST_RELEASE, CATALOG_DEPTH.
     Releases with no date are excluded from recency but count toward depth.
     """
-    retrieved_at = retrieved_at or datetime.now(timezone.utc).isoformat()
+    retrieved_at = retrieved_at or datetime.now(UTC).isoformat()
     as_of = as_of or date.today()
     summary: dict[str, Any] = {
         "status": "RUNNING",
@@ -759,7 +759,7 @@ def derive_peer_edges(
     Strength = number of co-billed events. This is a COMPARABLE universe for
     relative value — it is never a demand or booking recommendation.
     """
-    knowledge_time = knowledge_time or datetime.now(timezone.utc).isoformat()
+    knowledge_time = knowledge_time or datetime.now(UTC).isoformat()
     mbid_to_key = {a.get("mbid"): a["artist_key"] for a in universe if a.get("mbid")}
     summary: dict[str, Any] = {
         "status": "RUNNING",
@@ -841,7 +841,7 @@ def build_security_snapshots(
     number traceable back to a factor observation row.
     """
     snapshot_date = snapshot_date or date.today()
-    calculated_at = calculated_at or datetime.now(timezone.utc).isoformat()
+    calculated_at = calculated_at or datetime.now(UTC).isoformat()
     summary: dict[str, Any] = {
         "status": "RUNNING",
         "artists_in_universe": len(universe),
@@ -923,7 +923,7 @@ def run_security_master(
 ) -> dict[str, Any]:
     """Run the full Artist Security Master pass (universe → factors → stats → snapshots)."""
     as_of = as_of or date.today()
-    retrieved_at = retrieved_at or datetime.now(timezone.utc).isoformat()
+    retrieved_at = retrieved_at or datetime.now(UTC).isoformat()
     universe = select_security_universe(conn, limit=universe_limit)
 
     factors, factor_summary = derive_demand_and_momentum_factors(
@@ -943,7 +943,7 @@ def run_security_master(
     peers, peer_summary = derive_peer_edges(conn, universe=universe, knowledge_time=retrieved_at)
 
     factor_written = sum(_insert_ignore(conn, "metrics.artist_factor_observations", list(f.keys()), f) for f in factors)
-    live_written = sum(_insert_ignore(conn, "metrics.artist_live_statistics", list(l.keys()), l) for l in live)
+    live_written = sum(_insert_ignore(conn, "metrics.artist_live_statistics", list(r.keys()), r) for r in live)
     catalog_written = sum(_insert_ignore(conn, "metrics.artist_catalog_statistics", list(c.keys()), c) for c in catalog)
     peer_written = sum(_insert_ignore(conn, "core.artist_peer_edges", list(p.keys()), p) for p in peers)
 
@@ -958,7 +958,7 @@ def run_security_master(
     # Upsert the security master rows. (DuckDB parses CURRENT_TIMESTAMP in the
     # DO UPDATE SET clause as a column reference, so the timestamp is passed as
     # a parameter instead — matching the repository.py upsert convention.)
-    now_ts = datetime.now(timezone.utc).isoformat()
+    now_ts = datetime.now(UTC).isoformat()
     for artist in universe:
         conn.execute(
             """
