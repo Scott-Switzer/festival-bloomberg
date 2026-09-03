@@ -18,12 +18,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import shutil
 import sys
 import time
 import traceback
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -31,18 +30,24 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "python"))
 
-from festival_bloomberg.cloud.r2_lake import R2Lake, R2LakeConfig
 from festival_bloomberg.cloud.job_manifest import (
-    JobManifest, new_manifest, manifest_key,
-    STATUS_BUILD_COMPLETE, STATUS_VERIFIED, STATUS_PUBLISHED, STATUS_FAILED,
-    STATUS_SUPERSEDED, now_iso,
+    STATUS_BUILD_COMPLETE,
+    STATUS_FAILED,
+    STATUS_PUBLISHED,
+    STATUS_SUPERSEDED,
+    STATUS_VERIFIED,
+    JobManifest,
+    manifest_key,
+    new_manifest,
+    now_iso,
 )
 from festival_bloomberg.cloud.listener_key import (
-    ListenerKeyContract, derive_listener_key_and_partition,
-    derive_listener_keys_batch, get_secret, get_secret_version,
-    canonical_input, validate_contract_compatibility,
+    ListenerKeyContract,
+    derive_listener_key_and_partition,
+    get_secret,
+    validate_contract_compatibility,
 )
-
+from festival_bloomberg.cloud.r2_lake import R2Lake, R2LakeConfig
 
 # ── Fixed machine-readable error codes (P1 V1B) ───────────────────
 # Internal exceptions are NEVER exposed raw. The status API and manifest
@@ -284,8 +289,11 @@ def run_identity_graph_v2(spec: dict, scratch_dir: Path) -> dict:
 
         # ── 4. Run the Identity Graph V2 builder ──
         from festival_bloomberg.identity.graph_v2 import (
-            build_graph, jsonable, read_estate_json, read_wikidata_parquets,
-            rows_from_connection, write_graph_tables,
+            build_graph,
+            read_estate_json,
+            read_wikidata_parquets,
+            rows_from_connection,
+            write_graph_tables,
         )
 
         conn = duckdb.connect(str(source_db_path), read_only=True)
@@ -297,7 +305,7 @@ def run_identity_graph_v2(spec: dict, scratch_dir: Path) -> dict:
         )
         conn.close()
 
-        as_of = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00Z")
+        as_of = datetime.now(UTC).strftime("%Y-%m-%dT00:00:00Z")
         result = build_graph(
             artists=artists,
             external_ids=external_ids,
@@ -507,7 +515,7 @@ def run_cloud_smoke(spec: dict, scratch_dir: Path) -> dict:
 
         # ── 1. Python package imports ──
         from festival_bloomberg.cloud.listener_key import (
-            derive_listener_key, ListenerKeyContract,
+            derive_listener_key,
         )
         manifest.rows_read = 1  # import succeeded
 
@@ -919,7 +927,9 @@ def _materialize_r2_parquet_terminal(
     the existing schema. UNKNOWN stays UNKNOWN (never zero).
     """
     from build_talent_buyer_terminal_v1 import (
-        _create_schema, _create_selected_table, _create_indexes,
+        _create_indexes,
+        _create_schema,
+        _create_selected_table,
         _materialize_markets,
     )
     _create_schema(conn)
@@ -1442,7 +1452,7 @@ def _materialize_r2_parquet_terminal(
         [
             "TALENT_BUYER_TERMINAL_V1",
             "artist_security_terminal_v1",
-            datetime.now(timezone.utc).replace(tzinfo=None),
+            datetime.now(UTC).replace(tzinfo=None),
             "r2-lake-serving-assets",
             str(estate_path.resolve()) or "r2-lake-estate",
             str(parquets.get("affinity", Path("r2-lake-affinity"))),
@@ -1581,6 +1591,22 @@ def run_terminal_serving_build(spec: dict, scratch_dir: Path) -> dict:
             conn.close()
         manifest.rows_written = sum(int(v) for v in counts.values())
 
+        # ── 2b. Fold gold artist-intelligence products into the serving DB ──
+        # P17/P18: the compact artifact carries the factor tape + sentiment so
+        # the Artist page serves fully materialized (no live fan-out). The
+        # gold products are optional inputs: a missing CURRENT leaves the
+        # serving DB without those tables rather than failing the build.
+        gold_counts = _fold_gold_artist_intelligence(
+            lake, work,
+            factor_tape_current=(
+                f"{GOLD_FACTOR_TAPE_PREFIX}/CURRENT.json"
+            ),
+            sentiment_current=f"{GOLD_SENTIMENT_PREFIX}/CURRENT.json",
+            manifest=manifest,
+        )
+        counts.update(gold_counts)
+        manifest.rows_written = sum(int(v) for v in counts.values())
+
         # ── 3. Demo artists (Phase 4): persisted inside the artifact ──
         demo_artists = _compute_demo_artists(output_path)
 
@@ -1600,7 +1626,7 @@ def run_terminal_serving_build(spec: dict, scratch_dir: Path) -> dict:
                 f"max_artifact_bytes={max_artifact_bytes}; tighten row bounds and retry"
             )
         db_sha = _streaming_sha256(output_path)
-        generation = "terminal_v1_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        generation = "terminal_v1_" + datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
         # ── 6. Upload generation object (streaming multipart upload) ──
         db_key = f"{TERMINAL_SERVING_PREFIX}/generations/{generation}/terminal.duckdb"
@@ -1710,6 +1736,677 @@ def run_terminal_serving_build(spec: dict, scratch_dir: Path) -> dict:
             manifest.error_code = ERR_JOB_EXEC_FAILED
         manifest.status = STATUS_FAILED
         manifest.error = str(e)
+        manifest.error_detail = traceback.format_exc()
+        manifest.completed_at = now_iso()
+        manifest.runtime_seconds = round(time.time() - start, 2)
+        try:
+            lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
+        except Exception:
+            pass
+        raise
+
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+# ════════════════════════════════════════════════════════════════
+# ARTIST FACTOR TAPE (gold) + SENTIMENT (gold) materializers
+# ════════════════════════════════════════════════════════════════
+
+#: Prefixes for the gold artist-intelligence data products (P17).
+GOLD_FACTOR_TAPE_PREFIX = "gold/artist_factor_tape"
+GOLD_SENTIMENT_PREFIX = "gold/artist_sentiment"
+
+#: Staging prefix where the Worker writes official-API ticks.
+STAGING_YOUTUBE_PREFIX = "staging/youtube/"
+STAGING_SENTIMENT_PREFIX = "staging/sentiment_samples/"
+
+#: Only these tick keys carry measurable values; everything else is metadata.
+_YOUTUBE_VALUE_FACTORS = {
+    "subscriber_count": ("count", "POINT_IN_TIME", "CHANNEL"),
+    "channel_view_count": ("count", "POINT_IN_TIME", "CHANNEL"),
+    "video_count": ("count", "POINT_IN_TIME", "CHANNEL"),
+}
+
+
+def _normalize_youtube_tick(tick: dict) -> list[dict]:
+    """Normalize one official-API youtube tick into factor observations.
+
+    Every observation carries the full comparability contract (migration
+    050): measurement_basis, measurement_window, population_scope,
+    geographic_scope, methodology_version, coverage_generation. A factor
+    delta is only ever computed between rows that share all of these.
+    """
+    rows: list[dict] = []
+    artist_key = tick.get("artist_key") or ""
+    channel_id = tick.get("youtube_channel_id") or ""
+    observed_at = tick.get("observed_at") or tick.get("knowledge_time") or ""
+    retrieved_at = tick.get("retrieved_at") or observed_at
+    knowledge_time = tick.get("knowledge_time") or observed_at
+    evidence_ref = tick.get("raw_evidence_ref") or ""
+    rights = tick.get("rights_status") or "RIGHTS_REVIEW_REQUIRED"
+    commercial = tick.get("commercial_use_status") or "TERMS_REVIEW_REQUIRED"
+    precision = tick.get("subscriber_precision") or "UNKNOWN"
+    tick_gen = tick.get("schema_version") or "youtube_channel_tick_v1"
+    if not artist_key or not channel_id or not observed_at:
+        return rows
+    for factor_name, (unit, basis, population) in _YOUTUBE_VALUE_FACTORS.items():
+        value = tick.get(factor_name)
+        if value is None:
+            continue  # UNKNOWN stays UNKNOWN; we do not fabricate 0.
+        rows.append({
+            "factor_observation_key": hashlib.sha256(
+                f"ytick|{artist_key}|{channel_id}|{factor_name}|{observed_at}|{value}".encode()
+            ).hexdigest(),
+            "artist_key": artist_key,
+            "factor_family": "youtube_channel",
+            "factor_name": factor_name,
+            "platform": "youtube",
+            "value": float(value),
+            "unit": unit,
+            "observation_time": observed_at,
+            "available_at": observed_at,
+            "knowledge_time": knowledge_time,
+            "retrieved_at": retrieved_at,
+            "source": "YOUTUBE_API",
+            "evidence_ref": evidence_ref,
+            "source_scope": "OFFICIAL_API_CHANNEL_STATISTICS",
+            "rights_status": rights,
+            "commercial_use_status": commercial,
+            "quality_status": precision,
+            "generation": tick_gen,
+            "measurement_basis": basis,
+            "measurement_window": None,
+            "population_scope": population,
+            "geographic_scope": None,
+            "methodology_version": "youtube-data-api-v3-channels",
+            "coverage_generation": tick_gen,
+        })
+    return rows
+
+
+def _fold_gold_artist_intelligence(
+    lake, work: Path,
+    *, factor_tape_current: str, sentiment_current: str,
+    manifest: JobManifest,
+) -> dict[str, int]:
+    """Fold gold artist-intelligence products into the compact serving DB.
+
+    Opens its own connection to the artifact under construction, reads the
+    CURRENT pointers for gold/artist_factor_tape and gold/artist_sentiment
+    (if published), streams the parquet to scratch, and materializes the
+    ``artist_factor_observations`` and ``artist_sentiment_observations``
+    tables into the serving artifact.
+
+    Missing gold products are tolerated (counts stay 0) — the base terminal
+    still builds. Any object present but corrupt fails the build closed.
+    """
+    import duckdb
+
+    q = _qp
+    conn = duckdb.connect(str(work / "terminal.duckdb"))
+    conn.execute("PRAGMA threads=2")
+    out: dict[str, int] = {"artist_factor_observations": 0, "artist_sentiment_observations": 0}
+
+    # ── Factor tape ──
+    current = lake.read_checkpoint(lake.config.lake_bucket, factor_tape_current)
+    if current and current.get("object_key"):
+        tape_key = str(current["object_key"])
+        tape_path = work / "gold_artist_factor_tape.parquet"
+        size = _download_to_scratch(lake, lake.config.lake_bucket, tape_key, tape_path)
+        manifest.source_paths.append(f"r2://{lake.config.lake_bucket}/{tape_key}")
+        manifest.r2_read_bytes += size
+        # Immutable rows only: a new snapshot is a new row, never an update.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS artist_factor_observations (
+                factor_observation_key VARCHAR PRIMARY KEY,
+                artist_key VARCHAR NOT NULL,
+                factor_family VARCHAR NOT NULL,
+                factor_name VARCHAR NOT NULL,
+                platform VARCHAR,
+                value DOUBLE,
+                unit VARCHAR,
+                observation_time TIMESTAMP,
+                available_at TIMESTAMP,
+                knowledge_time TIMESTAMP,
+                retrieved_at TIMESTAMP,
+                period_start DATE,
+                period_end DATE,
+                source VARCHAR,
+                evidence_ref VARCHAR,
+                source_scope VARCHAR,
+                rights_status VARCHAR,
+                commercial_use_status VARCHAR,
+                quality_status VARCHAR,
+                generation VARCHAR,
+                evidence_json JSON,
+                measurement_basis VARCHAR,
+                measurement_window VARCHAR,
+                population_scope VARCHAR,
+                geographic_scope VARCHAR,
+                methodology_version VARCHAR,
+                coverage_generation VARCHAR
+            )
+            """
+        )
+        conn.execute(
+            f"""
+            INSERT INTO artist_factor_observations (
+                factor_observation_key, artist_key, factor_family,
+                factor_name, platform, value, unit, observation_time,
+                available_at, knowledge_time, retrieved_at,
+                source, evidence_ref, source_scope, rights_status,
+                commercial_use_status, quality_status, generation,
+                measurement_basis, measurement_window, population_scope,
+                geographic_scope, methodology_version, coverage_generation
+            )
+            SELECT
+                factor_observation_key, artist_key, factor_family,
+                factor_name, platform, value, unit,
+                CAST(observation_time AS TIMESTAMP),
+                CAST(available_at AS TIMESTAMP),
+                CAST(knowledge_time AS TIMESTAMP),
+                CAST(retrieved_at AS TIMESTAMP),
+                source, evidence_ref, source_scope, rights_status,
+                commercial_use_status, quality_status, generation,
+                measurement_basis, measurement_window, population_scope,
+                geographic_scope, methodology_version, coverage_generation
+            FROM read_parquet({q(tape_path)})
+            ON CONFLICT (factor_observation_key) DO NOTHING
+            """
+        )
+        out["artist_factor_observations"] = int(
+            conn.execute("SELECT COUNT(*) FROM artist_factor_observations").fetchone()[0]
+        )
+
+    # ── Sentiment ──
+    current = lake.read_checkpoint(lake.config.lake_bucket, sentiment_current)
+    if current and current.get("object_key"):
+        sent_key = str(current["object_key"])
+        sent_path = work / "gold_artist_sentiment.parquet"
+        size = _download_to_scratch(lake, lake.config.lake_bucket, sent_key, sent_path)
+        manifest.source_paths.append(f"r2://{lake.config.lake_bucket}/{sent_key}")
+        manifest.r2_read_bytes += size
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS artist_sentiment_observations (
+                observation_key VARCHAR PRIMARY KEY,
+                artist_key VARCHAR NOT NULL,
+                platform VARCHAR NOT NULL,
+                "date" DATE NOT NULL,
+                mention_count BIGINT NOT NULL,
+                analyzed_count BIGINT NOT NULL,
+                positive_share DOUBLE,
+                neutral_share DOUBLE,
+                negative_share DOUBLE,
+                sentiment_mean DOUBLE,
+                engagement_weighted_sentiment DOUBLE,
+                engagement_total BIGINT,
+                topic_distribution JSON,
+                language_distribution JSON,
+                sample_quality VARCHAR NOT NULL,
+                source_generation VARCHAR NOT NULL,
+                model_name VARCHAR NOT NULL,
+                model_version VARCHAR NOT NULL,
+                deduplicated_count BIGINT,
+                spam_filtered_count BIGINT,
+                source VARCHAR NOT NULL,
+                evidence_ref VARCHAR,
+                source_scope VARCHAR NOT NULL,
+                rights_status VARCHAR NOT NULL,
+                commercial_use_status VARCHAR NOT NULL,
+                quality_status VARCHAR NOT NULL,
+                retrieved_at TIMESTAMP NOT NULL,
+                knowledge_time TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            f"""
+            INSERT INTO artist_sentiment_observations (
+                observation_key, artist_key, platform, "date",
+                mention_count, analyzed_count, positive_share,
+                neutral_share, negative_share, sentiment_mean,
+                engagement_weighted_sentiment, engagement_total,
+                topic_distribution, sample_quality, source_generation,
+                model_name, model_version, source, evidence_ref,
+                source_scope, rights_status, commercial_use_status,
+                quality_status, retrieved_at, knowledge_time
+            )
+            SELECT
+                observation_key, artist, platform, CAST("date" AS DATE),
+                mention_count, analyzed_count, positive_share,
+                neutral_share, negative_share, sentiment_mean,
+                engagement_weighted_sentiment, engagement_total,
+                topic_distribution::JSON, sample_quality, source_generation,
+                'vader', 'VADER_3.3.2', 'YOUTUBE_API', NULL,
+                'OFFICIAL_API_COMMENT_SAMPLE', rights_status::VARCHAR,
+                commercial_use_status::VARCHAR, 'OBSERVED',
+                CAST(now() AS TIMESTAMP), CAST("date" AS TIMESTAMP)
+            FROM read_parquet({q(sent_path)})
+            ON CONFLICT (observation_key) DO NOTHING
+            """
+        )
+        out["artist_sentiment_observations"] = int(
+            conn.execute("SELECT COUNT(*) FROM artist_sentiment_observations").fetchone()[0]
+        )
+
+    conn.close()
+    return out
+
+
+def run_artist_factor_tape_build(spec: dict, scratch_dir: Path) -> dict:
+    """Materialize the gold artist factor tape from real R2 staging ticks.
+
+    Reads (LAKE):
+        - staging/youtube/...json — official-API channel ticks written by the
+          Worker's youtube rail (immutable per observation)
+
+    Writes (LAKE):
+        - gold/artist_factor_tape/<generation>/artist_factor_tape.parquet
+        - gold/artist_factor_tape/CURRENT.json  (only after verify)
+        - manifest under control/jobs/
+
+    No provider keys are needed: this job is pure materialization from data
+    the Worker already collected. Rows are immutable snapshots; a new
+    collection is a new row, never an update.
+    """
+    lake = _get_lake()
+    job_id = spec.get("job_id", "artist_factor_tape_build_v1")
+    params = spec.get("params", {})
+    max_ticks = int(params.get("max_ticks") or 200_000)
+    max_artists = int(params.get("max_artists") or 25_000)
+
+    manifest = new_manifest(
+        job_type="artist_factor_tape_build_v1",
+        job_id=job_id,
+        code_commit=_git_commit(),
+        container_image="festival-bloomberg-batch:latest",
+        params=params,
+    )
+    manifest_key_path = manifest_key("artist_factor_tape_build_v1", job_id)
+    start = time.time()
+    work = scratch_dir / "factor_tape"
+    work.mkdir(parents=True, exist_ok=True)
+
+    try:
+
+        # ── 1. Stream staging youtube ticks (bounded) ──
+        ticks = lake.list_prefix(
+            lake.config.lake_bucket, STAGING_YOUTUBE_PREFIX, limit=max_ticks,
+        )
+        tick_keys = [t["key"] for t in ticks if t["key"].endswith(".json")][:max_ticks]
+        rows: list[dict] = []
+        artists_seen: set[str] = set()
+        skipped = 0
+        for key in tick_keys:
+            try:
+                raw = lake.get_bytes(lake.config.lake_bucket, key)
+            except Exception:
+                skipped += 1
+                continue
+            manifest.r2_read_bytes += len(raw)
+            try:
+                tick = json.loads(raw)
+            except (ValueError, TypeError):
+                skipped += 1
+                continue
+            normalized = _normalize_youtube_tick(tick)
+            for row in normalized:
+                if row["artist_key"] in artists_seen and len(artists_seen) >= max_artists:
+                    continue
+                rows.append(row)
+                artists_seen.add(row["artist_key"])
+            if len(rows) >= max_ticks * 3:
+                break
+        if not rows:
+            raise RuntimeError(
+                "FACTOR_TAPE_EMPTY: no youtube ticks found under "
+                f"{STAGING_YOUTUBE_PREFIX}; Worker collection has not run yet"
+            )
+
+        # ── 2. Write normalized rows to a deterministic parquet ──
+        columns = [
+            "factor_observation_key", "artist_key", "factor_family",
+            "factor_name", "platform", "value", "unit", "observation_time",
+            "available_at", "knowledge_time", "retrieved_at", "source",
+            "evidence_ref", "source_scope", "rights_status",
+            "commercial_use_status", "quality_status", "generation",
+            "measurement_basis", "measurement_window", "population_scope",
+            "geographic_scope", "methodology_version", "coverage_generation",
+        ]
+        tape_path = work / "artist_factor_tape.parquet"
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        table = pa.table(
+            {col: [r.get(col) for r in rows] for col in columns},
+            schema=pa.schema(
+                [pa.field(c, pa.float64() if c == "value" else pa.string()) for c in columns]
+            ),
+        )
+        pq.write_table(table, tape_path)
+
+        generation = "artist_factor_tape_v1_" + datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        tape_key = f"{GOLD_FACTOR_TAPE_PREFIX}/{generation}/artist_factor_tape.parquet"
+        lake._s3.upload_file(
+            str(tape_path), lake.config.lake_bucket, tape_key,
+            ExtraArgs={
+                "ContentType": "application/octet-stream",
+                "Metadata": {
+                    "job_id": job_id, "generation": generation,
+                    "artifact": GOLD_FACTOR_TAPE_PREFIX,
+                },
+            },
+        )
+        manifest.output_paths.append(f"r2://{lake.config.lake_bucket}/{tape_key}")
+        tape_sha = _streaming_sha256(tape_path)
+        manifest.output_hashes[tape_key] = tape_sha
+        manifest.r2_write_bytes += tape_path.stat().st_size
+        manifest.rows_written = len(rows)
+
+        # ── 3. VERIFY before CURRENT ──
+        verify_outputs(
+            lake,
+            bucket=lake.config.lake_bucket,
+            output_hashes={tape_key: tape_sha},
+            manifest=manifest,
+            manifest_key_path=manifest_key_path,
+        )
+
+        # ── 4. Publish CURRENT (immutable generation → verify → CURRENT) ──
+        current_payload = {
+            "artifact": GOLD_FACTOR_TAPE_PREFIX,
+            "contract_version": "artist_factor_tape_v1",
+            "generation": generation,
+            "object_key": tape_key,
+            "sha256": tape_sha,
+            "bytes": tape_path.stat().st_size,
+            "created_at": now_iso(),
+            "source_prefix": STAGING_YOUTUBE_PREFIX,
+            "tick_rows_read": len(tick_keys),
+            "factor_rows": len(rows),
+            "artists": len(artists_seen),
+            "skipped": skipped,
+            "code_commit": _git_commit(),
+        }
+        current_bytes = json.dumps(current_payload, indent=2, sort_keys=True, default=str).encode()
+        current_key = f"{GOLD_FACTOR_TAPE_PREFIX}/CURRENT.json"
+        lake.put_bytes(
+            lake.config.lake_bucket, current_key, current_bytes,
+            content_type="application/json",
+            metadata={"job_id": job_id, "generation": generation},
+        )
+        manifest.output_paths.append(f"r2://{lake.config.lake_bucket}/{current_key}")
+        manifest.status = STATUS_PUBLISHED
+        manifest.publication_state = STATUS_PUBLISHED
+        manifest.completed_at = now_iso()
+        manifest.runtime_seconds = round(time.time() - start, 2)
+        lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
+
+        return {
+            "status": "COMPLETED",
+            "generation": generation,
+            "tape_key": tape_key,
+            "current_key": current_key,
+            "factor_rows": len(rows),
+            "artists": len(artists_seen),
+            "tick_rows_read": len(tick_keys),
+            "skipped": skipped,
+            "manifest_key": manifest_key_path,
+        }
+
+    except Exception as e:
+        if manifest.error_code is None:
+            manifest.error_code = ERR_JOB_EXEC_FAILED
+        manifest.status = STATUS_FAILED
+        manifest.error = str(e)[:300]
+        manifest.error_detail = traceback.format_exc()
+        manifest.completed_at = now_iso()
+        manifest.runtime_seconds = round(time.time() - start, 2)
+        try:
+            lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
+        except Exception:
+            pass
+        raise
+
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def run_artist_sentiment_build(spec: dict, scratch_dir: Path) -> dict:
+    """Materialize the gold artist sentiment daily aggregate.
+
+    Reads (LAKE): staging/sentiment_samples/...json — bounded comment/social
+    samples the Worker collected. Each sample carries the raw text, artist_key,
+    platform, and observation time; no usernames or user IDs.
+
+    Aggregates per artist×platform×date with the VADER baseline:
+        mention_count, analyzed_count, positive/neutral/negative share,
+        sentiment_mean, engagement_weighted_sentiment, sample_quality,
+        source_generation. Raw identities never enter the gold product.
+
+    Writes (LAKE):
+        - gold/artist_sentiment/<generation>/artist_sentiment.parquet
+        - gold/artist_sentiment/CURRENT.json
+    """
+    lake = _get_lake()
+    job_id = spec.get("job_id", "artist_sentiment_build_v1")
+    params = spec.get("params", {})
+    max_samples = int(params.get("max_samples") or 100_000)
+
+    manifest = new_manifest(
+        job_type="artist_sentiment_build_v1",
+        job_id=job_id,
+        code_commit=_git_commit(),
+        container_image="festival-bloomberg-batch:latest",
+        params=params,
+    )
+    manifest_key_path = manifest_key("artist_sentiment_build_v1", job_id)
+    start = time.time()
+    work = scratch_dir / "sentiment"
+    work.mkdir(parents=True, exist_ok=True)
+
+    try:
+        from collections import defaultdict
+
+        from festival_bloomberg.vader_sentiment import score_text
+
+        samples = lake.list_prefix(
+            lake.config.lake_bucket, STAGING_SENTIMENT_PREFIX, limit=max_samples,
+        )
+        sample_keys = [s["key"] for s in samples if s["key"].endswith(".json")][:max_samples]
+        if not sample_keys:
+            # No real samples yet: publish an HONEST empty generation with a
+            # clear status instead of fabricating rows (UNKNOWN != 0).
+            current_payload = {
+                "artifact": GOLD_SENTIMENT_PREFIX,
+                "contract_version": "artist_sentiment_v1",
+                "generation": "artist_sentiment_v1_" + datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ"),
+                "object_key": None,
+                "sha256": None,
+                "bytes": 0,
+                "rows": 0,
+                "created_at": now_iso(),
+                "status": "NO_SAMPLES_YET",
+                "source_prefix": STAGING_SENTIMENT_PREFIX,
+            }
+            current_key = f"{GOLD_SENTIMENT_PREFIX}/CURRENT.json"
+            lake.put_bytes(
+                lake.config.lake_bucket, current_key,
+                json.dumps(current_payload, indent=2, sort_keys=True).encode(),
+                content_type="application/json",
+                metadata={"job_id": job_id, "generation": current_payload["generation"]},
+            )
+            manifest.status = STATUS_PUBLISHED
+            manifest.publication_state = STATUS_PUBLISHED
+            manifest.completed_at = now_iso()
+            manifest.runtime_seconds = round(time.time() - start, 2)
+            lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
+            return {
+                "status": "COMPLETED",
+                "generation": current_payload["generation"],
+                "rows": 0,
+                "note": "NO_SAMPLES_YET — no staging sentiment samples; honest empty generation",
+                "manifest_key": manifest_key_path,
+            }
+
+        # ── Aggregate with VADER (per artist×platform×date) ──
+        agg: dict[tuple, dict] = defaultdict(lambda: {
+            "mention_count": 0, "analyzed_count": 0, "sentiment_sum": 0.0,
+            "engagement_sum": 0.0, "weighted_sum": 0.0,
+            "positive": 0, "neutral": 0, "negative": 0, "langs": set(),
+        })
+        skipped = 0
+        for key in sample_keys:
+            try:
+                raw = lake.get_bytes(lake.config.lake_bucket, key)
+            except Exception:
+                skipped += 1
+                continue
+            manifest.r2_read_bytes += len(raw)
+            try:
+                s = json.loads(raw)
+            except (ValueError, TypeError):
+                skipped += 1
+                continue
+            artist_key = s.get("artist_key") or ""
+            platform = s.get("platform") or "unknown"
+            text = s.get("text") or ""
+            obs = s.get("observed_at") or ""
+            engagement = float(s.get("engagement") or 0)
+            if not artist_key or not text or not obs:
+                skipped += 1
+                continue
+            day = obs[:10]
+            bucket = (artist_key, platform, day)
+            a = agg[bucket]
+            a["mention_count"] += 1
+            a["analyzed_count"] += 1
+            score = float(score_text(text).compound)
+            a["sentiment_sum"] += score
+            a["engagement_sum"] += engagement
+            a["weighted_sum"] += score * (1 + engagement)
+            if score >= 0.05:
+                a["positive"] += 1
+            elif score <= -0.05:
+                a["negative"] += 1
+            else:
+                a["neutral"] += 1
+            lang = s.get("language") or "unknown"
+            a["langs"].add(lang)
+
+        rows_out: list[dict] = []
+        for (artist_key, platform, day), a in agg.items():
+            total = a["analyzed_count"]
+            rows_out.append({
+                "observation_key": hashlib.sha256(
+                    f"sent|{artist_key}|{platform}|{day}".encode()
+                ).hexdigest(),
+                "artist": artist_key,
+                "platform": platform,
+                "date": day,
+                "mention_count": a["mention_count"],
+                "analyzed_count": a["analyzed_count"],
+                "positive_share": round(a["positive"] / total, 4) if total else 0.0,
+                "neutral_share": round(a["neutral"] / total, 4) if total else 0.0,
+                "negative_share": round(a["negative"] / total, 4) if total else 0.0,
+                "sentiment_mean": round(a["sentiment_sum"] / total, 4) if total else 0.0,
+                "engagement_weighted_sentiment": round(
+                    a["weighted_sum"] / (a["engagement_sum"] + total), 4
+                ) if total else 0.0,
+                "engagement_total": round(a["engagement_sum"], 2),
+                "topic_distribution": "{}",
+                "sample_quality": "VADER_BASELINE",
+                "source_generation": "artist_sentiment_v1",
+                "languages": json.dumps(sorted(a["langs"])),
+            })
+
+        columns = [
+            "observation_key", "artist", "platform", "date", "mention_count",
+            "analyzed_count", "positive_share", "neutral_share", "negative_share",
+            "sentiment_mean", "engagement_weighted_sentiment", "engagement_total",
+            "topic_distribution", "sample_quality", "source_generation", "languages",
+        ]
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        out_path = work / "artist_sentiment.parquet"
+        table = pa.table(
+            {col: [r.get(col) for r in rows_out] for col in columns},
+            schema=pa.schema([pa.field(c, pa.string() if c in ("topic_distribution", "languages", "sample_quality", "source_generation") else pa.float64() if c in ("positive_share", "neutral_share", "negative_share", "sentiment_mean", "engagement_weighted_sentiment", "engagement_total") else pa.int64() if c in ("mention_count", "analyzed_count") else pa.string()) for c in columns]),
+        )
+        pq.write_table(table, out_path)
+
+        generation = "artist_sentiment_v1_" + datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        out_key = f"{GOLD_SENTIMENT_PREFIX}/{generation}/artist_sentiment.parquet"
+        lake._s3.upload_file(
+            str(out_path), lake.config.lake_bucket, out_key,
+            ExtraArgs={
+                "ContentType": "application/octet-stream",
+                "Metadata": {"job_id": job_id, "generation": generation, "artifact": GOLD_SENTIMENT_PREFIX},
+            },
+        )
+        manifest.output_paths.append(f"r2://{lake.config.lake_bucket}/{out_key}")
+        out_sha = _streaming_sha256(out_path)
+        manifest.output_hashes[out_key] = out_sha
+        manifest.r2_write_bytes += out_path.stat().st_size
+        manifest.rows_written = len(rows_out)
+
+        verify_outputs(
+            lake,
+            bucket=lake.config.lake_bucket,
+            output_hashes={out_key: out_sha},
+            manifest=manifest,
+            manifest_key_path=manifest_key_path,
+        )
+
+        current_payload = {
+            "artifact": GOLD_SENTIMENT_PREFIX,
+            "contract_version": "artist_sentiment_v1",
+            "generation": generation,
+            "object_key": out_key,
+            "sha256": out_sha,
+            "bytes": out_path.stat().st_size,
+            "rows": len(rows_out),
+            "artists": len({r["artist"] for r in rows_out}),
+            "created_at": now_iso(),
+            "source_prefix": STAGING_SENTIMENT_PREFIX,
+            "samples_read": len(sample_keys),
+            "skipped": skipped,
+            "model": {"name": "vader", "version": "VADER_3.3.2"},
+        }
+        current_key = f"{GOLD_SENTIMENT_PREFIX}/CURRENT.json"
+        lake.put_bytes(
+            lake.config.lake_bucket, current_key,
+            json.dumps(current_payload, indent=2, sort_keys=True, default=str).encode(),
+            content_type="application/json",
+            metadata={"job_id": job_id, "generation": generation},
+        )
+        manifest.output_paths.append(f"r2://{lake.config.lake_bucket}/{current_key}")
+        manifest.status = STATUS_PUBLISHED
+        manifest.publication_state = STATUS_PUBLISHED
+        manifest.completed_at = now_iso()
+        manifest.runtime_seconds = round(time.time() - start, 2)
+        lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
+
+        return {
+            "status": "COMPLETED",
+            "generation": generation,
+            "sentiment_key": out_key,
+            "rows": len(rows_out),
+            "artists": len({r["artist"] for r in rows_out}),
+            "samples_read": len(sample_keys),
+            "skipped": skipped,
+            "manifest_key": manifest_key_path,
+        }
+
+    except Exception as e:
+        if manifest.error_code is None:
+            manifest.error_code = ERR_JOB_EXEC_FAILED
+        manifest.status = STATUS_FAILED
+        manifest.error = str(e)[:300]
         manifest.error_detail = traceback.format_exc()
         manifest.completed_at = now_iso()
         manifest.runtime_seconds = round(time.time() - start, 2)
@@ -1865,7 +2562,7 @@ def run_listenbrainz_map(spec: dict, scratch_dir: Path) -> dict:
             # Durable partials contain ONLY: listener_key, artist_mbid,
             # listen_count, partition.
             # NO raw user_id or user_name is ever written to R2.
-            partitioned = conn.execute(f"""
+            partitioned = conn.execute("""
                 WITH agg AS (
                     SELECT
                         l.user_id,
@@ -1890,6 +2587,7 @@ def run_listenbrainz_map(spec: dict, scratch_dir: Path) -> dict:
             #         listen_count (BIGINT)
             # NO raw listener identity — only the HMAC-derived pseudonym.
             import io
+
             import pyarrow.parquet as pq
 
             for part in range(partitions):
@@ -2009,9 +2707,9 @@ def run_listenbrainz_reduce(spec: dict, scratch_dir: Path) -> dict:
     start = time.time()
 
     try:
+
         import duckdb
         import pyarrow as pa
-        import io
 
         # V1B: Reducer must know WHICH secret generation produced the partials.
         # Missing FI_LISTENER_HMAC_SECRET_VERSION fails closed before any read.
