@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Talent Buyer Terminal — Festival Bloomberg</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-title">Talent Buyer Terminal</span>
+    <span class="brand-sub">Festival Bloomberg · real R2 evidence</span>
+  </div>
+  <form id="searchForm" class="searchbox" autocomplete="off">
+    <input id="searchInput" type="search" placeholder="Search 25,000 artists… (enter to go)">
+  </form>
+  <nav class="nav">
+    <a href="#/home" data-nav="home" class="active">Home</a>
+    <a href="#/monitor" data-nav="monitor">Monitor</a>
+    <a href="#/underwrite" data-nav="underwrite">Underwrite</a>
+    <a href="#/backtest" data-nav="backtest">Backtest</a>
+    <a href="#/portfolio" data-nav="portfolio">Portfolio</a>
+    <a href="#/markets" data-nav="markets">Markets</a>
+    <a href="#/compare" data-nav="compare">Compare</a>
+    <a href="#/shortlist" data-nav="shortlist">Shortlist</a>
+    <a href="#/demo" data-nav="demo">Demo</a>
+  </nav>
+</header>
+<main id="view"><h1>Talent Buyer Terminal</h1>
+    <p class="muted">Real Festival Bloomberg evidence — search an artist, inspect a market, or start the guided demo.</p>
+    <div style="height:12px"></div>
+    <div class="grid cols2">
+      <div class="panel hero">
+        <h3>What is happening now?</h3>
+        <div id="nowBox" class="empty"><div class="small" style="margin-bottom:6px">Upcoming shows (provider-listed, not sales)</div>
+      <div class="now-row" data-k="mbid::adf5ac61-4d7b-4cbc-95ce-ee2dc486f884">
+        <b>Bane</b> · <span class="muted">2026-09-03 · Boston</span>
+        <span class="chip obs">onsale</span>
+      </div>
+      <div class="now-row" data-k="mbid::1801bd47-46ae-49ff-bfcd-6e01b562d880">
+        <b>Black Stone Cherry</b> · <span class="muted">2026-09-03 · Dallas</span>
+        <span class="chip obs">onsale</span>
+      </div>
+      <div class="now-row" data-k="mbid::dbcec54d-49c8-4d61-8512-8025bb37bf8e">
+        <b>Blue Man Group</b> · <span class="muted">2026-09-03 · Las Vegas</span>
+        <span class="chip obs">onsale</span>
+      </div>
+      <div class="now-row" data-k="mbid::822e92ef-72ea-42e0-9af1-b987816b487a">
+        <b>Buckcherry</b> · <span class="muted">2026-09-03 · Dallas</span>
+        <span class="chip obs">onsale</span>
+      </div>
+      <div class="now-row" data-k="mbid::642087d0-75d7-466b-a4e5-92487448e175">
+        <b>COLD GAWD</b> · <span class="muted">2026-09-03 · Los Angeles</span>
+        <span class="chip obs">onsale</span>
+      </div>
+      <div class="now-row" data-k="mbid::373a4c98-a46b-48e4-86ec-f6ca65b4f438">
+        <b>Chance the Rapper</b> · <span class="muted">2026-09-03 · Atlanta</span>
+        <span class="chip obs">onsale</span>
+      </div>
+      <div class="now-row" data-k="mbid::06cbaecf-fb0d-4fa3-aba4-b73e4876a480">
+        <b>Criss Angel</b> · <span class="muted">2026-09-03 · Las Vegas</span>
+        <span class="chip obs">onsale</span>
+      </div>
+      <div class="now-row" data-k="mbid::f912d0c6-52c6-4b0b-8aaa-975a9afdfee3">
+        <b>Dixon</b> · <span class="muted">2026-09-03 · Atlanta</span>
+        <span class="chip obs">onsale</span>
+      </div><div class="small" style="margin:10px 0 6px">Recent observed live activity</div>
+      <div class="now-row" data-k="mbid::af9e8d94-d471-4f91-82c7-250c22545162">
+        <b>Austra</b> · <span class="muted">2028-08-08 · Moby</span>
+      </div>
+      <div class="now-row" data-k="mbid::8970d868-0723-483b-a75b-51088913d3d4">
+        <b>Moby</b> · <span class="muted">2028-08-08 · Moby</span>
+      </div>
+      <div class="now-row" data-k="mbid::b0016af8-3953-47ce-b865-475a770d7b17">
+        <b>Kanonenfieber</b> · <span class="muted">2027-12-11 · Kriegstage 2027 - Budapest</span>
+      </div>
+      <div class="now-row" data-k="mbid::b0016af8-3953-47ce-b865-475a770d7b17">
+        <b>Kanonenfieber</b> · <span class="muted">2027-12-10 · Kriegstage 2027 - Vienna</span>
+      </div>
+      <div class="now-row" data-k="mbid::b0016af8-3953-47ce-b865-475a770d7b17">
+        <b>Kanonenfieber</b> · <span class="muted">2027-12-09 · Kriegstage 2027 - Munich</span>
+      </div>
+      <div class="now-row" data-k="mbid::b0016af8-3953-47ce-b865-475a770d7b17">
+        <b>Kanonenfieber</b> · <span class="muted">2027-12-08 · Kriegstage 2027 - Prague</span>
+      </div>
+      <div class="now-row" data-k="mbid::b0016af8-3953-47ce-b865-475a770d7b17">
+        <b>Kanonenfieber</b> · <span class="muted">2027-12-06 · Kriegstage 2027 - Zürich</span>
+      </div>
+      <div class="now-row" data-k="mbid::b0016af8-3953-47ce-b865-475a770d7b17">
+        <b>Kanonenfieber</b> · <span class="muted">2027-12-05 · Kriegstage 2027 - Stuttgart</span>
+      </div></div>
+      </div>
+      <div class="panel">
+        <h3>What am I evaluating?</h3>
+        <div id="slBox" class="empty"><div class="empty">Nothing yet. Open an artist and hit <b>＋ Shortlist</b>, or <a href="#/shortlist">start a project</a>.</div></div>
+      </div>
+    </div>
+    <div style="height:14px"></div>
+    <div class="grid cols2">
+      <div class="panel">
+        <h3>Since your last look <a class="small" href="#/monitor">monitor →</a></h3>
+        <div id="monStrip" class="empty"><div class="empty">Shortlist artists are watched here. Keep an eye on what changed since you last looked.</div></div>
+      </div>
+      <div class="panel">
+        <h3>Start an underwrite</h3>
+        <p class="small muted">Artist + market + date → full pre-offer buyer brief.</p>
+        <div class="form-row"><label>Artist</label><input id="uwArtist" type="search" placeholder="Search artist…"><div id="uwArtistHits"></div></div>
+        <div class="form-row"><label>Market</label><input id="uwMarket" type="text" placeholder="e.g. chicago-il or Chicago"></div>
+        <div class="form-row"><label>Date</label><input id="uwDate" type="date"></div>
+        <button class="btn primary" id="uwGo">Build buyer brief →</button>
+      </div>
+    </div>
+    <div style="height:14px"></div>
+    <div class="panel">
+      <h3>Start here — artists with the most evidence <a class="small" href="#/demo">all demo artists →</a></h3>
+      <div id="demoStrip" class="demo-grid"><div class="demo-card">
+    <div class="name">Alice Cooper</div>
+    <div class="sub">HOT_1000 · 6/7 evidence families</div>
+    <div class="bars"><div class="bar"><i style="width:100%;" title="Identity"></i></div><div class="bar"><i style="width:100%;" title="Markets"></i></div><div class="bar"><i style="width:100%;" title="Live"></i></div><div class="bar"><i style="width:100%;" title="Festivals"></i></div><div class="bar"><i style="width:100%;" title="Attention"></i></div><div class="bar"><i style="width:100%;" title="Peers"></i></div><div class="bar"><i style="width:100%;" title="Forward"></i></div></div>
+  </div><div class="demo-card">
+    <div class="name">Barry Manilow</div>
+    <div class="sub">HOT_1000 · 6/7 evidence families</div>
+    <div class="bars"><div class="bar"><i style="width:100%;" title="Identity"></i></div><div class="bar"><i style="width:100%;" title="Markets"></i></div><div class="bar"><i style="width:100%;" title="Live"></i></div><div class="bar"><i style="width:100%;" title="Festivals"></i></div><div class="bar"><i style="width:100%;" title="Attention"></i></div><div class="bar"><i style="width:100%;" title="Peers"></i></div><div class="bar"><i style="width:100%;" title="Forward"></i></div></div>
+  </div><div class="demo-card">
+    <div class="name">Pierce the Veil</div>
+    <div class="sub">HOT_1000 · 6/7 evidence families</div>
+    <div class="bars"><div class="bar"><i style="width:100%;" title="Identity"></i></div><div class="bar"><i style="width:100%;" title="Markets"></i></div><div class="bar"><i style="width:100%;" title="Live"></i></div><div class="bar"><i style="width:100%;" title="Festivals"></i></div><div class="bar"><i style="width:100%;" title="Attention"></i></div><div class="bar"><i style="width:100%;" title="Peers"></i></div><div class="bar"><i style="width:100%;" title="Forward"></i></div></div>
+  </div><div class="demo-card">
+    <div class="name">Ed Sheeran</div>
+    <div class="sub">HOT_1000 · 6/7 evidence families</div>
+    <div class="bars"><div class="bar"><i style="width:100%;" title="Identity"></i></div><div class="bar"><i style="width:100%;" title="Markets"></i></div><div class="bar"><i style="width:100%;" title="Live"></i></div><div class="bar"><i style="width:100%;" title="Festivals"></i></div><div class="bar"><i style="width:100%;" title="Attention"></i></div><div class="bar"><i style="width:100%;" title="Peers"></i></div><div class="bar"><i style="width:100%;" title="Forward"></i></div></div>
+  </div><div class="demo-card">
+    <div class="name">Metallica</div>
+    <div class="sub">HOT_1000 · 6/7 evidence families</div>
+    <div class="bars"><div class="bar"><i style="width:100%;" title="Identity"></i></div><div class="bar"><i style="width:100%;" title="Markets"></i></div><div class="bar"><i style="width:100%;" title="Live"></i></div><div class="bar"><i style="width:100%;" title="Festivals"></i></div><div class="bar"><i style="width:100%;" title="Attention"></i></div><div class="bar"><i style="width:100%;" title="Peers"></i></div><div class="bar"><i style="width:100%;" title="Forward"></i></div></div>
+  </div><div class="demo-card">
+    <div class="name">Olivia Rodrigo</div>
+    <div class="sub">HOT_1000 · 6/7 evidence families</div>
+    <div class="bars"><div class="bar"><i style="width:100%;" title="Identity"></i></div><div class="bar"><i style="width:100%;" title="Markets"></i></div><div class="bar"><i style="width:100%;" title="Live"></i></div><div class="bar"><i style="width:100%;" title="Festivals"></i></div><div class="bar"><i style="width:100%;" title="Attention"></i></div><div class="bar"><i style="width:100%;" title="Peers"></i></div><div class="bar"><i style="width:100%;" title="Forward"></i></div></div>
+  </div></div>
+      <p class="small muted">Each card shows which evidence families are observed. Click to open the Artist Security page.</p>
+      <div style="height:6px"></div>
+      <a class="btn primary" href="#/demo">START DEMO</a>
+    </div>
+    <div style="height:14px"></div>
+    <div class="panel"><h3>Browse markets by density <a class="small" href="#/markets">all markets →</a></h3><div id="marketStrip" class="empty">
+      <div class="market-row" data-m="austin-tx">
+        <b>Austin, TX</b><span class="muted">4534 artists · 6884 observed shows</span>
+      </div>
+      <div class="market-row" data-m="toronto-on">
+        <b>Toronto, ON</b><span class="muted">1336 artists · 2137 observed shows</span>
+      </div>
+      <div class="market-row" data-m="manchester-uk">
+        <b>Manchester, UK</b><span class="muted">976 artists · 1503 observed shows</span>
+      </div>
+      <div class="market-row" data-m="chicago-il">
+        <b>Chicago, IL</b><span class="muted">811 artists · 1348 observed shows</span>
+      </div>
+      <div class="market-row" data-m="los-angeles-ca">
+        <b>Los Angeles, CA</b><span class="muted">693 artists · 1214 observed shows</span>
+      </div>
+      <div class="market-row" data-m="paris-fr">
+        <b>Paris, FR</b><span class="muted">797 artists · 1170 observed shows</span>
+      </div>
+      <div class="market-row" data-m="glasgow-uk">
+        <b>Glasgow, UK</b><span class="muted">786 artists · 1100 observed shows</span>
+      </div>
+      <div class="market-row" data-m="cologne-de">
+        <b>Cologne, DE</b><span class="muted">617 artists · 986 observed shows</span>
+      </div></div></div>
+    <div style="height:14px"></div>
+    <div id="freshLine" class="small muted"><span class="badge">terminal_v1_20260903T183135Z</span> 25,000 artists · 134,450 live events · 90,866 audience peer edges · 6,690 forward events · built 2026-09-03 · VERIFIED_COMPACT_BUILD — <span class="muted">UNKNOWN ≠ 0 · audience sample ≠ total fans</span></div></main>
+<div id="toast" class="toast hidden"></div>
+<script src="/static/app.js"></script>
+
+</body></html>

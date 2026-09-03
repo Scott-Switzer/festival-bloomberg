@@ -1,0 +1,197 @@
+{
+  "artifact": "artist_security_terminal_v1",
+  "bytes": 137900032,
+  "contract_version": "artist_security_terminal_v1",
+  "created_at": "2026-09-03T18:31:44.961209+00:00",
+  "demo_artists": [
+    {
+      "artist_key": "mbid::ee58c59f-8e7f-4430-b8ca-236c4d3745ae",
+      "attention_source_count": 1,
+      "completeness": 6,
+      "festival_appearance_count": 11,
+      "future_event_count": 4,
+      "historical_event_count": 1450,
+      "market_count": 57,
+      "name": "Alice Cooper",
+      "peer_count": 12,
+      "tier": "HOT_1000"
+    },
+    {
+      "artist_key": "mbid::7bb60591-46f3-4147-b692-1814a87e832e",
+      "attention_source_count": 1,
+      "completeness": 6,
+      "festival_appearance_count": 2,
+      "future_event_count": 27,
+      "historical_event_count": 3674,
+      "market_count": 53,
+      "name": "Barry Manilow",
+      "peer_count": 12,
+      "tier": "HOT_1000"
+    },
+    {
+      "artist_key": "mbid::8ed919fb-eaee-45a1-ba99-b3ede9ca5f1d",
+      "attention_source_count": 1,
+      "completeness": 6,
+      "festival_appearance_count": 2,
+      "future_event_count": 1,
+      "historical_event_count": 391,
+      "market_count": 48,
+      "name": "Pierce the Veil",
+      "peer_count": 12,
+      "tier": "HOT_1000"
+    },
+    {
+      "artist_key": "mbid::b8a7c51f-362c-4dcb-a259-bc6e0095f0a6",
+      "attention_source_count": 1,
+      "completeness": 6,
+      "festival_appearance_count": 3,
+      "future_event_count": 2,
+      "historical_event_count": 283,
+      "market_count": 48,
+      "name": "Ed Sheeran",
+      "peer_count": 12,
+      "tier": "HOT_1000"
+    },
+    {
+      "artist_key": "mbid::65f4f0c5-ef9e-490c-aee3-909e7ae6b2ab",
+      "attention_source_count": 1,
+      "completeness": 6,
+      "festival_appearance_count": 7,
+      "future_event_count": 60,
+      "historical_event_count": 342,
+      "market_count": 47,
+      "name": "Metallica",
+      "peer_count": 12,
+      "tier": "HOT_1000"
+    },
+    {
+      "artist_key": "mbid::6925db17-f35e-42f3-a4eb-84ee6bf5d4b0",
+      "attention_source_count": 1,
+      "completeness": 6,
+      "festival_appearance_count": 2,
+      "future_event_count": 19,
+      "historical_event_count": 198,
+      "market_count": 44,
+      "name": "Olivia Rodrigo",
+      "peer_count": 12,
+      "tier": "HOT_1000"
+    },
+    {
+      "artist_key": "mbid::26f07661-e115-471d-a930-206f5c89d17c",
+      "attention_source_count": 1,
+      "completeness": 6,
+      "festival_appearance_count": 1,
+      "future_event_count": 2,
+      "historical_event_count": 369,
+      "market_count": 43,
+      "name": "M\u00f6tley Cr\u00fce",
+      "peer_count": 12,
+      "tier": "HOT_1000"
+    },
+    {
+      "artist_key": "mbid::abd506e1-6f2b-4d6f-b937-92c267f6f88b",
+      "attention_source_count": 1,
+      "completeness": 6,
+      "festival_appearance_count": 1,
+      "future_event_count": 14,
+      "historical_event_count": 367,
+      "market_count": 36,
+      "name": "Journey",
+      "peer_count": 12,
+      "tier": "HOT_1000"
+    },
+    {
+      "artist_key": "mbid::ca891d65-d9b0-4258-89f7-e6ba29d83767",
+      "attention_source_count": 1,
+      "completeness": 6,
+      "festival_appearance_count": 9,
+      "future_event_count": 3,
+      "historical_event_count": 266,
+      "market_count": 35,
+      "name": "Iron Maiden",
+      "peer_count": 12,
+      "tier": "HOT_1000"
+    },
+    {
+      "artist_key": "mbid::260b6184-8828-48eb-945c-bc4cb6fc34ca",
+      "attention_source_count": 1,
+      "completeness": 6,
+      "festival_appearance_count": 6,
+      "future_event_count": 12,
+      "historical_event_count": 140,
+      "market_count": 35,
+      "name": "Charli xcx",
+      "peer_count": 12,
+      "tier": "HOT_1000"
+    }
+  ],
+  "generation": "terminal_v1_20260903T183135Z",
+  "object_key": "serving/artist_security_terminal_v1/generations/terminal_v1_20260903T183135Z/terminal.duckdb",
+  "row_counts": {
+    "artist_external_ids": 47602,
+    "artist_factor_observations": 66684,
+    "artist_markets": 27322,
+    "artist_peers": 90866,
+    "artist_search_terms": 40759,
+    "artist_sentiment_observations": 6,
+    "artists": 25000,
+    "attention_observations": 50886,
+    "event_history": 134450,
+    "festival_appearances": 14758,
+    "future_events": 6690
+  },
+  "sha256": "0becc45719376a3826b2d3740a0c4dcc25acb5c67788770b1b52a3f39e6cb160",
+  "source_generations": {
+    "code_commit": "unknown",
+    "estate_bucket": "festival-intelligence-backups",
+    "estate_object": "control/artist_security_25000/v1/estate_20260828T013314Z_f87e5d1d073e.json",
+    "inputs": {
+      "affinity": "gold/listenbrainz_pilot/artist_audience_affinity.parquet",
+      "attention": "metrics/artist_attention_observations/artist_attention_observations.parquet",
+      "event_artist_edges": "silver/events/event_artist_edges.parquet",
+      "event_place_edges": "silver/events/event_place_edges.parquet",
+      "event_series_edges": "silver/events/event_series_edges.parquet",
+      "events": "silver/events/events.parquet",
+      "provider_snapshots": "events/provider_event_snapshots/provider_event_snapshots.parquet",
+      "series": "silver/series/series.parquet",
+      "venues": "silver/venues/venues.parquet"
+    },
+    "wikidata_artist_external_ids": "silver/wikidata/generations/20260902T233716Z-1814/artist_external_ids.parquet"
+  },
+  "validation": {
+    "checks": {
+      "artist_external_ids": 47602,
+      "artist_markets": 27322,
+      "artist_peers": 90866,
+      "artist_search_terms": 40759,
+      "artists": 25000,
+      "attention_observations": 50886,
+      "event_history": 134450,
+      "festival_appearances": 14758,
+      "future_events": 6690
+    },
+    "family_counts": {
+      "artist_external_ids": 47602,
+      "artist_factor_observations": 66684,
+      "artist_markets": 27322,
+      "artist_peers": 90866,
+      "artist_search_terms": 40759,
+      "artist_sentiment_observations": 6,
+      "artists": 25000,
+      "attention_observations": 50886,
+      "event_history": 134450,
+      "festival_appearances": 14758,
+      "future_events": 6690
+    },
+    "latency_ms": {
+      "artist_ms": 4.3,
+      "compare_probe_ms": 1.1,
+      "peers_ms": 6.5,
+      "search_ms": 8.1
+    },
+    "no_composite_score": true,
+    "passed": true,
+    "read_only": true,
+    "unknown_preserved": true
+  }
+}

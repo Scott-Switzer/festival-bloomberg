@@ -1,0 +1,124 @@
+{
+  "artists_checked": [
+    {
+      "factor_rows": 250,
+      "key": "mbid::012151a8-0f9a-44c9-997f-ebd68b5389f9",
+      "sentiment_rows": 1
+    }
+  ],
+  "checks": {
+    "api_status_generation_matches": {
+      "detail": "served terminal_v1_20260903T190113Z == expected terminal_v1_20260903T190113Z",
+      "ok": true
+    },
+    "artifact_sha_matches_current": {
+      "detail": "local 8c22ddb35f6a95bf\u2026 vs CURRENT 8c22ddb35f6a95bf\u2026",
+      "ok": true
+    },
+    "artist_no_js_exceptions": {
+      "detail": "no console errors on artist page",
+      "ok": true
+    },
+    "artist_page_loads": {
+      "detail": "dom length 48015",
+      "ok": true
+    },
+    "artist_security_http_200": {
+      "detail": "HTTP 200",
+      "ok": true
+    },
+    "expected_generation_served": {
+      "detail": "generation asserted above",
+      "ok": true
+    },
+    "factor_tape_has_real_values": {
+      "detail": "250 non-empty values e.g. [('channel_view_count', 17532856799.0), ('subscriber_count', 9350000.0), ('video_count', 303.0)]",
+      "ok": true
+    },
+    "factor_tape_provenance_visible": {
+      "detail": "source=YOUTUBE_API, rights=PROVIDER_TERMS_REVIEW_REQUIRED",
+      "ok": true
+    },
+    "factor_tape_status_observed": {
+      "detail": "status=OBSERVED, items=250",
+      "ok": true
+    },
+    "factor_tape_visible_in_dom": {
+      "detail": "real youtube factor names present in DOM",
+      "ok": true
+    },
+    "home_dom_loads": {
+      "detail": "dom length 12180",
+      "ok": true
+    },
+    "home_no_js_exceptions": {
+      "detail": "no console errors on home",
+      "ok": true
+    },
+    "provenance_in_dom": {
+      "detail": "source/rights provenance present in DOM",
+      "ok": true
+    },
+    "screenshot_01_home.png": {
+      "detail": "01_home.png -> 291315 bytes",
+      "ok": true
+    },
+    "screenshot_02_artist_factor_tape.png": {
+      "detail": "02_artist_factor_tape.png -> 600020 bytes",
+      "ok": true
+    },
+    "screenshot_03_artist_sentiment.png": {
+      "detail": "03_artist_sentiment.png -> 1144705 bytes",
+      "ok": true
+    },
+    "search_http_200": {
+      "detail": "HTTP 200",
+      "ok": true
+    },
+    "sentiment_has_rows": {
+      "detail": "status=OBSERVED, items=1",
+      "ok": true
+    },
+    "sentiment_model_version_preserved": {
+      "detail": "vader@VADER_3.3.2, analyzed=30",
+      "ok": true
+    },
+    "sentiment_visible_in_dom": {
+      "detail": "sentiment section + model present in DOM",
+      "ok": true
+    },
+    "underwrite_link_works": {
+      "detail": "underwrite action present on artist page",
+      "ok": true
+    }
+  },
+  "console_errors": [],
+  "expected_generation": "terminal_v1_20260903T190113Z",
+  "finished_at": "2026-09-03T19:02:24Z",
+  "notes": [
+    "underwrite panel state: n/a"
+  ],
+  "passed": true,
+  "screenshots": [
+    {
+      "bytes": 291315,
+      "file": "01_home.png",
+      "ok": true
+    },
+    {
+      "bytes": 600020,
+      "file": "02_artist_factor_tape.png",
+      "ok": true
+    },
+    {
+      "bytes": 1144705,
+      "file": "03_artist_sentiment.png",
+      "ok": true
+    }
+  ],
+  "serving_db": "artifacts/artist_security_final_v1/terminal.duckdb",
+  "target_artist": {
+    "key": "mbid::012151a8-0f9a-44c9-997f-ebd68b5389f9",
+    "name": "Imagine Dragons"
+  }
+}

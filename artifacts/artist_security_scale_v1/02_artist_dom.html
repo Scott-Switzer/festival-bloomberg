@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Talent Buyer Terminal — Festival Bloomberg</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-title">Talent Buyer Terminal</span>
+    <span class="brand-sub">Festival Bloomberg · real R2 evidence</span>
+  </div>
+  <form id="searchForm" class="searchbox" autocomplete="off">
+    <input id="searchInput" type="search" placeholder="Search 25,000 artists… (enter to go)">
+  </form>
+  <nav class="nav">
+    <a href="#/home" data-nav="home">Home</a>
+    <a href="#/monitor" data-nav="monitor">Monitor</a>
+    <a href="#/underwrite" data-nav="underwrite">Underwrite</a>
+    <a href="#/backtest" data-nav="backtest">Backtest</a>
+    <a href="#/portfolio" data-nav="portfolio">Portfolio</a>
+    <a href="#/markets" data-nav="markets">Markets</a>
+    <a href="#/compare" data-nav="compare">Compare</a>
+    <a href="#/shortlist" data-nav="shortlist">Shortlist</a>
+    <a href="#/demo" data-nav="demo">Demo</a>
+  </nav>
+</header>
+<main id="view">
+  <div class="artist-header">
+    <h1>Burgerkill</h1>
+    <span class="tier">HOT_1000</span>
+    <span class="chip obs">OBSERVED</span>
+    <button class="btn" id="shortlistBtn">＋ Shortlist</button>
+    <button class="btn" id="compareBtn">Compare with…</button>
+    <button class="btn primary" id="underwriteBtn">Underwrite…</button>
+  </div>
+  <p class="muted small">003ecf7a-01f6-4dda-a041-e71366e70c42</p>
+  <p class="small muted">3/9 panels observed · latest knowledge 2026-08-28 01:33:13.567926</p>
+  <div style="height:10px"></div>
+  <div class="quickfacts">
+    <div class="fact"><div class="n">1</div><div class="l">Live events</div></div>
+    <div class="fact"><div class="n">0</div><div class="l">Festival appearances</div></div>
+    <div class="fact"><div class="n">0</div><div class="l">Markets</div></div>
+    <div class="fact"><div class="n">1</div><div class="l">Venues played</div></div>
+    <div class="fact"><div class="n">0</div><div class="l">Forward events</div></div>
+    <div class="fact"><div class="n">0</div><div class="l">Advertised ticket ranges</div></div>
+    <div class="fact"><div class="n">0</div><div class="l">Audience peers</div></div>
+  </div>
+  <div style="height:14px"></div>
+  <div class="grid cols2" id="attentionPanels"><div class="panel"><h3>listenbrainz <span class="chip obs">OBSERVED</span></h3>
+      <div class="small muted">latest  · knowledge 2026-08-15</div>
+      
+      <p class="note">Descriptive attention/consumption evidence only; it is not local demand or ticket-purchase intent.</p></div><div class="panel"><h3>wikimedia <span class="chip unk">UNKNOWN</span></h3><div class="empty">No Wikimedia attention observation is present in this serving generation.</div></div><div class="panel"><h3>youtube <span class="chip unk">UNKNOWN</span></h3><div class="empty">No YouTube channel observation is present in this serving generation.</div></div></div>
+  <div style="height:14px"></div>
+  <div class="panel"><h3>Artist factor tape <span class="chip obs">OBSERVED</span></h3><div id="tapeBox"><p class="note">Append-only temporal observations. UNKNOWN is distinct from zero; no current snapshot is used to reconstruct history.</p>
+    <div style="margin-bottom:8px"><span class="chip" style="margin:1px 6px 1px 0" title="2026-09-03 17:00:10.891000 → 2026-09-03 18:00:10.834000 · YOUTUBE_API · youtube_channel_tick_v1">channel_view_count +0</span><span class="chip" style="margin:1px 6px 1px 0" title="2026-09-03 17:00:10.891000 → 2026-09-03 18:00:10.834000 · YOUTUBE_API · youtube_channel_tick_v1">subscriber_count +0</span><span class="chip" style="margin:1px 6px 1px 0" title="2026-09-03 17:00:10.891000 → 2026-09-03 18:00:10.834000 · YOUTUBE_API · youtube_channel_tick_v1">video_count +0</span></div><div class="small muted">what changed — deltas only from comparable observations</div>
+    <table><thead><tr><th>Factor</th><th>Platform</th><th>Value</th><th>Period</th><th>Source</th><th>Freshness</th></tr></thead><tbody>
+    <tr>
+      <td>channel_view_count</td><td>youtube</td>
+      <td>55,283,635 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>subscriber_count</td><td>youtube</td>
+      <td>205,000 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>video_count</td><td>youtube</td>
+      <td>159 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>channel_view_count</td><td>youtube</td>
+      <td>55,283,635 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>subscriber_count</td><td>youtube</td>
+      <td>205,000 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>video_count</td><td>youtube</td>
+      <td>159 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>channel_view_count</td><td>youtube</td>
+      <td>55,283,635 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>subscriber_count</td><td>youtube</td>
+      <td>205,000 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>video_count</td><td>youtube</td>
+      <td>159 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>channel_view_count</td><td>youtube</td>
+      <td>55,283,635 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>subscriber_count</td><td>youtube</td>
+      <td>205,000 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>video_count</td><td>youtube</td>
+      <td>159 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>channel_view_count</td><td>youtube</td>
+      <td>55,283,635 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>subscriber_count</td><td>youtube</td>
+      <td>205,000 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>video_count</td><td>youtube</td>
+      <td>159 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>channel_view_count</td><td>youtube</td>
+      <td>55,283,635 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>subscriber_count</td><td>youtube</td>
+      <td>205,000 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>video_count</td><td>youtube</td>
+      <td>159 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>channel_view_count</td><td>youtube</td>
+      <td>55,283,635 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>subscriber_count</td><td>youtube</td>
+      <td>205,000 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>video_count</td><td>youtube</td>
+      <td>159 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>channel_view_count</td><td>youtube</td>
+      <td>55,283,635 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>subscriber_count</td><td>youtube</td>
+      <td>205,000 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>video_count</td><td>youtube</td>
+      <td>159 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>channel_view_count</td><td>youtube</td>
+      <td>55,283,635 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>subscriber_count</td><td>youtube</td>
+      <td>205,000 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>video_count</td><td>youtube</td>
+      <td>158 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>channel_view_count</td><td>youtube</td>
+      <td>55,283,635 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>subscriber_count</td><td>youtube</td>
+      <td>205,000 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>video_count</td><td>youtube</td>
+      <td>158 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>channel_view_count</td><td>youtube</td>
+      <td>55,283,635 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>subscriber_count</td><td>youtube</td>
+      <td>205,000 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>video_count</td><td>youtube</td>
+      <td>158 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>channel_view_count</td><td>youtube</td>
+      <td>55,283,635 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>subscriber_count</td><td>youtube</td>
+      <td>205,000 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>video_count</td><td>youtube</td>
+      <td>158 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>channel_view_count</td><td>youtube</td>
+      <td>55,283,635 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>subscriber_count</td><td>youtube</td>
+      <td>205,000 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>video_count</td><td>youtube</td>
+      <td>158 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>channel_view_count</td><td>youtube</td>
+      <td>55,283,635 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>subscriber_count</td><td>youtube</td>
+      <td>205,000 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>video_count</td><td>youtube</td>
+      <td>158 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>channel_view_count</td><td>youtube</td>
+      <td>55,283,635 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>subscriber_count</td><td>youtube</td>
+      <td>205,000 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>video_count</td><td>youtube</td>
+      <td>158 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>channel_view_count</td><td>youtube</td>
+      <td>55,283,635 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>subscriber_count</td><td>youtube</td>
+      <td>205,000 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>video_count</td><td>youtube</td>
+      <td>158 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>channel_view_count</td><td>youtube</td>
+      <td>55,283,635 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>subscriber_count</td><td>youtube</td>
+      <td>205,000 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>video_count</td><td>youtube</td>
+      <td>158 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>channel_view_count</td><td>youtube</td>
+      <td>55,283,635 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>subscriber_count</td><td>youtube</td>
+      <td>205,000 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>video_count</td><td>youtube</td>
+      <td>158 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>channel_view_count</td><td>youtube</td>
+      <td>55,283,635 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>subscriber_count</td><td>youtube</td>
+      <td>205,000 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>video_count</td><td>youtube</td>
+      <td>158 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>channel_view_count</td><td>youtube</td>
+      <td>55,283,635 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>subscriber_count</td><td>youtube</td>
+      <td>205,000 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr><tr>
+      <td>video_count</td><td>youtube</td>
+      <td>158 count</td>
+      <td class="small muted">2026-09-03</td>
+      <td class="small muted">YOUTUBE_API</td>
+      <td class="small muted">2026-09-03</td></tr>
+    </tbody></table>
+    <div style="margin-top:10px"><div class="small">Time series (≥2 observations)</div><div style="margin-top:8px"><div class="small">channel_view_count · youtube · <span class="muted">source YOUTUBE_API</span></div>
+      <div class="spark"><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span></div>
+      <div class="small muted">2026-08-27 22:04:51.121000 → 2026-09-03 18:00:10.834000 · freshness 2026-09-03 18:00:10.834000</div></div><div style="margin-top:8px"><div class="small">subscriber_count · youtube · <span class="muted">source YOUTUBE_API</span></div>
+      <div class="spark"><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span></div>
+      <div class="small muted">2026-08-27 22:04:51.121000 → 2026-09-03 18:00:10.834000 · freshness 2026-09-03 18:00:10.834000</div></div><div style="margin-top:8px"><div class="small">video_count · youtube · <span class="muted">source YOUTUBE_API</span></div>
+      <div class="spark"><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:99.37106918238993%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span><span style="height:100%"></span></div>
+      <div class="small muted">2026-08-27 22:04:51.121000 → 2026-09-03 18:00:10.834000 · freshness 2026-09-03 18:00:10.834000</div></div></div></div></div>
+  <div style="height:14px"></div>
+  <div class="grid cols2">
+    <div class="panel"><h3>Sentiment <span class="chip obs">OBSERVED</span></h3><div id="sentimentBox"><p class="note">Daily aggregate only. Usernames, user IDs, post IDs, and raw text are excluded; sample size, language, and model generation remain visible.</p>
+    <table><thead><tr><th>Day</th><th>Platform</th><th>Mean</th><th>+ / = / −</th><th>Analyzed</th><th>Model</th></tr></thead><tbody>
+    <tr><td>2026-09-03</td><td>youtube</td><td>0.108</td>
+      <td class="small">45 / 33 / 23</td>
+      <td class="small muted">40 / 40 mentions</td>
+      <td class="small muted">vader@VADER_3.3.2</td></tr></tbody></table></div></div>
+    <div class="panel"><h3>Provider data rails</h3><div id="providersBox"><div style="margin-bottom:8px">
+    <div class="small"><b>spotify</b> <span class="chip unk">AUTH_REQUIRED</span> <span class="muted">· LICENSED_HISTORICAL / SELF_OBSERVED_FORWARD</span></div>
+    <div class="small muted">Unofficial Spotify scraping is not a canonical source; licensed history requires Soundcharts or Chartmetric authorization.</div></div><div style="margin-bottom:8px">
+    <div class="small"><b>soundcharts</b> <span class="chip unk">PROVIDER_READY / AUTH_REQUIRED</span> <span class="muted">· LICENSED_HISTORICAL</span></div>
+    <div class="small muted">Licensed audience and streaming history; real backfill is unavailable until account authorization is configured.</div></div><div style="margin-bottom:8px">
+    <div class="small"><b>chartmetric</b> <span class="chip unk">PROVIDER_READY / AUTH_REQUIRED</span> <span class="muted">· LICENSED_HISTORICAL</span></div>
+    <div class="small muted">Alternate licensed historical audience and streaming source; no account data is assumed.</div></div><div style="margin-bottom:8px">
+    <div class="small"><b>google_trends</b> <span class="chip unk">WAITLIST / AUTH_REQUIRED</span> <span class="muted">· SELF_OBSERVED_FORWARD</span></div>
+    <div class="small muted">Official Trends API alpha contract only; UI scraping is disabled.</div></div><div style="margin-bottom:8px">
+    <div class="small"><b>social</b> <span class="chip obs">OBSERVED</span> </div>
+    <div class="small muted">Platform-specific rights and provider lineage remain attached to each observation.</div></div></div></div>
+  </div>
+  <div style="height:14px"></div>
+  <div class="grid cols2">
+    <div class="panel"><h3>Audience peers <span class="chip unk">UNKNOWN</span></h3><div id="peersBox"><div class="empty">No audience peer evidence for this artist.</div></div><p class="note">Shared listening is not local demand, ticket intent, or a booking recommendation.</p></div>
+    <div class="panel"><h3>Alternatives <span class="chip unk">UNKNOWN</span></h3><div id="altsBox" data-subject="mbid::003ecf7a-01f6-4dda-a041-e71366e70c42"><div class="empty">No explainable alternatives yet.</div></div><p class="note">Alternatives are evidence explanations, never a weighted ranking.</p></div>
+  </div>
+  <div style="height:14px"></div>
+  <div class="grid cols2">
+    <div class="panel"><h3>Market footprint <span class="chip unk">UNKNOWN</span></h3><div id="marketsBox"><div class="empty">No market evidence for this artist.</div></div></div>
+    <div class="panel"><h3>Recent live history <span class="chip obs">OBSERVED</span></h3><div id="historyBox"><table><thead><tr><th>Date</th><th>Event</th><th>Venue / city</th><th>Source</th></tr></thead><tbody>
+    <tr>
+      <td>2015-07-31</td>
+      <td>Wacken Open Air 2015, Day 2: Headbangers Stage</td>
+      <td>Headbangers Stage</td>
+      <td class="small muted">musicbrainz</td>
+    </tr></tbody></table></div></div>
+  </div>
+  <div style="height:14px"></div>
+  <div class="grid cols2">
+    <div class="panel"><h3>Festival history <span class="chip unk">UNKNOWN</span></h3><div id="festBox"><div class="empty">No festival history.</div></div></div>
+    <div class="panel"><h3>Forward events <span class="chip unk">UNKNOWN</span></h3><div id="futureBox"><div class="empty">No forward/provider events retained.</div></div></div>
+  </div>
+  <div style="height:14px"></div>
+  <div class="panel"><h3>Evidence summary</h3><div id="evidenceBox"><table><thead><tr><th>Panel</th><th>Source</th><th>Observation time</th><th>Knowledge time</th><th>State</th></tr></thead><tbody>
+    <tr>
+      <td>identity</td>
+      <td class="small muted">artist_security_estate</td>
+      <td class="small"></td>
+      <td class="small">2026-08-28</td>
+      <td><span class="chip obs">OBSERVED</span></td>
+    </tr><tr>
+      <td>attention.wikimedia</td>
+      <td class="small muted">wikimedia</td>
+      <td class="small"></td>
+      <td class="small">—</td>
+      <td><span class="chip unk">UNKNOWN</span></td>
+    </tr><tr>
+      <td>attention.listenbrainz</td>
+      <td class="small muted">listenbrainz</td>
+      <td class="small"></td>
+      <td class="small">2026-08-15</td>
+      <td><span class="chip obs">OBSERVED</span></td>
+    </tr><tr>
+      <td>attention.youtube</td>
+      <td class="small muted">youtube</td>
+      <td class="small"></td>
+      <td class="small">—</td>
+      <td><span class="chip unk">UNKNOWN</span></td>
+    </tr><tr>
+      <td>audience_peers</td>
+      <td class="small muted">—</td>
+      <td class="small"></td>
+      <td class="small">—</td>
+      <td><span class="chip unk">UNKNOWN</span></td>
+    </tr><tr>
+      <td>markets</td>
+      <td class="small muted">—</td>
+      <td class="small"></td>
+      <td class="small">—</td>
+      <td><span class="chip unk">UNKNOWN</span></td>
+    </tr><tr>
+      <td>live_history</td>
+      <td class="small muted">musicbrainz</td>
+      <td class="small">2015-07-31</td>
+      <td class="small">—</td>
+      <td><span class="chip obs">OBSERVED</span></td>
+    </tr><tr>
+      <td>festival_history</td>
+      <td class="small muted">—</td>
+      <td class="small"></td>
+      <td class="small">—</td>
+      <td><span class="chip unk">UNKNOWN</span></td>
+    </tr><tr>
+      <td>future_tickets</td>
+      <td class="small muted">—</td>
+      <td class="small"></td>
+      <td class="small">—</td>
+      <td><span class="chip unk">UNKNOWN</span></td>
+    </tr></tbody></table></div></div></main>
+<div id="toast" class="toast hidden"></div>
+<script src="/static/app.js"></script>
+
+</body></html>
