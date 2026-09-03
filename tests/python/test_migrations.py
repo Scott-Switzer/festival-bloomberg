@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from festival_bloomberg.migrations import apply_pending_migrations
 from festival_bloomberg.schema_paths import load_schema_sql, resolve_schema_root
 
@@ -23,7 +22,7 @@ def test_apply_pending_migrations_is_idempotent(tmp_path: Path):
 
     connection = duckdb.connect(str(db_path))
     try:
-        assert apply_pending_migrations(connection) == 48
+        assert apply_pending_migrations(connection) == 50
         assert apply_pending_migrations(connection) == 0
         versions = [
             row[0]
@@ -31,7 +30,7 @@ def test_apply_pending_migrations_is_idempotent(tmp_path: Path):
                 "SELECT version FROM schema_migrations ORDER BY version"
             ).fetchall()
         ]
-        assert versions == list(range(1, 49))
+        assert versions == list(range(1, 51))
         tables = {
             row[0]
             for row in connection.execute(

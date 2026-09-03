@@ -9,13 +9,12 @@ retains a source/status/time boundary; an absent observation is represented as
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from pathlib import Path
-import re
 from typing import Any
 
 import duckdb
-
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_PRODUCT_DB = str(
@@ -32,7 +31,7 @@ class ArtistSecurityServingError(RuntimeError):
 def _rows(conn, sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
     cur = conn.execute(sql, params or [])
     cols = [column[0] for column in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
+    return [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
 
 
 def _one(conn, sql: str, params: list[Any] | None = None) -> dict[str, Any] | None:
@@ -382,6 +381,246 @@ def _enrich_markets_from_future(
             }
 
 
+def _json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            import json
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except (TypeError, ValueError):
+            return {}
+    return {}
+
+
+def _factor_comparability(previous: dict[str, Any], latest: dict[str, Any]) -> tuple[bool, str | None]:
+    """Financial-grade delta gate: only like-for-like observations compare.
+
+    Fields are read from first-class columns when present (migration 050) with
+    an evidence_json fallback for older rows. Missing or mismatched context
+    means NOT_COMPARABLE — no percentage change is produced.
+    """
+    fields = (
+        "measurement_basis",
+        "measurement_window",
+        "population_scope",
+        "geographic_scope",
+        "methodology_version",
+        "coverage_generation",
+    )
+
+    def field(row: dict[str, Any], name: str) -> Any:
+        if row.get(name) is not None:
+            return row.get(name)
+        evidence = _json_object(row.get("evidence_json"))
+        return evidence.get(name)
+
+    for name in fields:
+        old_v = field(previous, name)
+        new_v = field(latest, name)
+        if old_v is None or new_v is None:
+            return False, f"{name} missing (old={old_v!r}, new={new_v!r})"
+        if str(old_v) != str(new_v):
+            return False, f"{name} differs (old={old_v!r}, new={new_v!r})"
+    return True, None
+
+
+def _artist_factor_tape(conn, artist_key: str) -> dict[str, Any]:
+    """Read the compact append-only factor tape when the artifact has it."""
+    if not _table_exists(conn, "artist_factor_observations"):
+        return {
+            "status": "PROVIDER_READY",
+            "items": [],
+            "series": [],
+            "changes": [],
+            "note": "Factor tape is not present in this serving generation; rebuild from an intelligence snapshot to enable it.",
+        }
+    rows = _rows(conn, """
+        SELECT * FROM artist_factor_observations
+        WHERE artist_key = ?
+        ORDER BY observation_time DESC NULLS LAST, retrieved_at DESC NULLS LAST,
+                 factor_name, platform
+    """, [artist_key])
+    for row in rows:
+        row["sample_size"] = _json_object(row.get("evidence_json")).get("sample_size")
+        row["freshness"] = row.get("retrieved_at") or row.get("knowledge_time")
+    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        value = row.get("value")
+        observed = row.get("observation_time") or row.get("as_of")
+        if value is None or observed is None:
+            continue
+        group = (
+            str(row.get("factor_name") or ""),
+            str(row.get("platform") or row.get("source") or ""),
+            str(row.get("unit") or ""),
+        )
+        groups[group].append(row)
+    series: list[dict[str, Any]] = []
+    for (factor_name, platform, unit), points in groups.items():
+        if len(points) < 2:
+            continue
+        points = sorted(points, key=lambda row: str(row.get("observation_time") or row.get("as_of")))
+        series.append({
+            "factor_name": factor_name,
+            "platform": platform,
+            "unit": unit,
+            "label": f"{factor_name} · {platform}",
+            "source": points[-1].get("source") or points[-1].get("source_system") or platform,
+            "period": {
+                "start": points[0].get("observation_time") or points[0].get("as_of"),
+                "end": points[-1].get("observation_time") or points[-1].get("as_of"),
+            },
+            "sample_size": points[-1].get("sample_size"),
+            "freshness": points[-1].get("freshness"),
+            "points": [
+                {
+                    "t": str(row.get("observation_time") or row.get("as_of"))[:19],
+                    "v": float(row["value"]),
+                    "source": row.get("source") or row.get("source_system") or platform,
+                    "sample_size": row.get("sample_size"),
+                }
+                for row in points[-400:]
+            ],
+        })
+    changes: list[dict[str, Any]] = []
+    for (factor_name, platform, _unit), points in groups.items():
+        points = sorted(points, key=lambda row: str(row.get("observation_time") or row.get("as_of")))
+        if len(points) < 2:
+            continue
+        previous, latest = points[-2], points[-1]
+        old = previous.get("value")
+        new = latest.get("value")
+        if old is None or new is None:
+            continue
+        if (previous.get("unit") or previous.get("value_unit")) != (latest.get("unit") or latest.get("value_unit")):
+            continue
+        change = float(new) - float(old)
+        item = {
+            "factor_name": factor_name,
+            "platform": platform,
+            "old_value": float(old),
+            "new_value": float(new),
+            "delta": change,
+            "unit": latest.get("unit") or latest.get("value_unit"),
+            "period": {
+                "from": previous.get("observation_time") or previous.get("as_of"),
+                "to": latest.get("observation_time") or latest.get("as_of"),
+            },
+            "source": latest.get("source") or latest.get("source_system") or platform,
+            "generation": latest.get("generation") or latest.get("source_version"),
+            "sample_size": latest.get("sample_size"),
+            "freshness": latest.get("freshness"),
+        }
+        comparable, incomparable_reason = _factor_comparability(previous, latest)
+        if not comparable:
+            item["comparability"] = "NOT_COMPARABLE"
+            item["comparability_reason"] = incomparable_reason or "measurement context differs"
+            changes.append(item)
+            continue
+        item["comparability"] = "COMPARABLE"
+        if float(old) != 0:
+            item["delta_pct"] = change / abs(float(old)) * 100.0
+        changes.append(item)
+    return {
+        "status": "OBSERVED" if rows else "PROVIDER_READY",
+        "items": rows[:250],
+        "series": series,
+        "changes": sorted(changes, key=lambda item: (item["factor_name"], item["platform"])),
+        "note": "Append-only temporal observations. UNKNOWN is distinct from zero; no current snapshot is used to reconstruct history.",
+    }
+
+
+def _artist_sentiment(conn, artist_key: str) -> dict[str, Any]:
+    """Read daily aggregate sentiment without exposing raw social identities."""
+    if not _table_exists(conn, "artist_sentiment_observations"):
+        return {
+            "status": "PROVIDER_READY",
+            "items": [],
+            "series": [],
+            "note": "No daily sentiment aggregate is present in this serving generation.",
+        }
+    rows = _rows(conn, """
+        SELECT * FROM artist_sentiment_observations
+        WHERE artist_key = ?
+        ORDER BY date DESC, platform
+    """, [artist_key])
+    series: list[dict[str, Any]] = []
+    by_platform: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        row["sample_size"] = row.get("analyzed_count")
+        row["freshness"] = row.get("retrieved_at") or row.get("knowledge_time")
+        by_platform[str(row.get("platform") or "unknown")].append(row)
+    for platform, platform_rows in by_platform.items():
+        dated = [row for row in platform_rows if row.get("date") is not None and row.get("sentiment_mean") is not None]
+        if len(dated) < 2:
+            continue
+        dated.sort(key=lambda row: str(row["date"]))
+        latest = dated[-1]
+        series.append({
+            "platform": platform,
+            "label": f"Sentiment · {platform}",
+            "source": latest.get("source") or platform,
+            "period": {"start": dated[0]["date"], "end": latest["date"]},
+            "sample_size": latest.get("analyzed_count"),
+            "freshness": latest.get("freshness"),
+            "points": [
+                {
+                    "t": str(row["date"])[:10],
+                    "v": float(row["sentiment_mean"]),
+                    "sample_size": row.get("analyzed_count"),
+                }
+                for row in dated[-400:]
+            ],
+        })
+    return {
+        "status": "OBSERVED" if rows else "PROVIDER_READY",
+        "items": rows[:250],
+        "series": series,
+        "note": "Daily aggregate only. Usernames, user IDs, post IDs, and raw text are excluded; sample size, language, and model generation remain visible.",
+    }
+
+
+def _provider_readiness(factor_tape: dict[str, Any], sentiment: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Expose legal/access boundaries instead of presenting absent values as zero."""
+    factor_platforms = {str(row.get("platform") or "").lower() for row in factor_tape.get("items", [])}
+    sentiment_platforms = {str(row.get("platform") or "").lower() for row in sentiment.get("items", [])}
+    spotify_observed = "spotify" in factor_platforms
+    social_observed = bool({"tiktok", "instagram", "youtube"} & (factor_platforms | sentiment_platforms))
+    return {
+        "spotify": {
+            "status": "OBSERVED" if spotify_observed else "AUTH_REQUIRED",
+            "historical_strategy": "LICENSED_HISTORICAL / SELF_OBSERVED_FORWARD",
+            "commercial_use_status": "TERMS_REVIEW_REQUIRED",
+            "note": "Unofficial Spotify scraping is not a canonical source; licensed history requires Soundcharts or Chartmetric authorization.",
+        },
+        "soundcharts": {
+            "status": "OBSERVED" if spotify_observed else "PROVIDER_READY / AUTH_REQUIRED",
+            "historical_strategy": "LICENSED_HISTORICAL",
+            "commercial_use_status": "LICENSE_REQUIRED",
+            "note": "Licensed audience and streaming history; real backfill is unavailable until account authorization is configured.",
+        },
+        "chartmetric": {
+            "status": "PROVIDER_READY / AUTH_REQUIRED",
+            "historical_strategy": "LICENSED_HISTORICAL",
+            "commercial_use_status": "LICENSE_REQUIRED",
+            "note": "Alternate licensed historical audience and streaming source; no account data is assumed.",
+        },
+        "google_trends": {
+            "status": "OBSERVED" if "google_trends" in factor_platforms else "WAITLIST / AUTH_REQUIRED",
+            "historical_strategy": "SELF_OBSERVED_FORWARD",
+            "commercial_use_status": "LICENSE_REQUIRED",
+            "note": "Official Trends API alpha contract only; UI scraping is disabled.",
+        },
+        "social": {
+            "status": "OBSERVED" if social_observed else "PROVIDER_READY / AUTH_REQUIRED",
+            "commercial_use_status": "TERMS_REVIEW_REQUIRED",
+            "note": "Platform-specific rights and provider lineage remain attached to each observation.",
+        },
+    }
+
+
 def get_artist_security(conn, artist_key: str) -> dict[str, Any] | None:
     """Return the full buyer-facing Artist Security contract."""
     artist = _one(conn, "SELECT * FROM artists WHERE artist_key = ?", [artist_key])
@@ -395,6 +634,9 @@ def get_artist_security(conn, artist_key: str) -> dict[str, Any] | None:
         ORDER BY id_type, source_system, id_value
     """, [artist_key])
     attention = _attention(conn, artist_key)
+    factor_tape = _artist_factor_tape(conn, artist_key)
+    sentiment = _artist_sentiment(conn, artist_key)
+    provider_readiness = _provider_readiness(factor_tape, sentiment)
     peers = _peer_rows(conn, artist_key)
     markets = _rows(conn, """
         SELECT *, observed_shows AS historical_shows,
@@ -495,6 +737,8 @@ def get_artist_security(conn, artist_key: str) -> dict[str, Any] | None:
         "live_history": "OBSERVED" if history else "UNKNOWN",
         "festival_history": festival_status,
         "future": future_status,
+        "factor_tape": factor_tape["status"],
+        "sentiment": sentiment["status"],
     }
     evidence_items = _evidence_items(
         artist, attention, peers, markets, history, festivals, future
@@ -547,6 +791,10 @@ def get_artist_security(conn, artist_key: str) -> dict[str, Any] | None:
                 "they are not transactions, resale prices, attendance, sell-through, or sales."
             ),
         },
+        "factor_tape": factor_tape,
+        "what_changed": factor_tape.get("changes", []),
+        "sentiment": sentiment,
+        "provider_readiness": provider_readiness,
         "alternatives": {
             "status": "OBSERVED" if alternatives else "UNKNOWN",
             "items": alternatives,

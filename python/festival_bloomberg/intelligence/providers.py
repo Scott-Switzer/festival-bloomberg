@@ -261,6 +261,33 @@ class DeepSeekProvider(ProviderScaffold):
     quota_note = "public/sanitized material only; no private settlement data"
 
 
+class SoundchartsProvider(ProviderScaffold):
+    name = "soundcharts"
+    env_keys = ("SOUNDCHARTS_APP_ID", "SOUNDCHARTS_API_KEY")
+    implemented = True  # canonical acquisition.providers.soundcharts.SoundchartsProvider
+    rights_status = "LICENSED_PROVIDER_PENDING_ACCOUNT_REVIEW"
+    commercial_use_status = "LICENSE_REQUIRED"
+    quota_note = "Licensed historical audience/streaming rail; real backfill requires account authorization"
+
+
+class ChartmetricProvider(ProviderScaffold):
+    name = "chartmetric"
+    env_keys = ("CHARTMETRIC_API_KEY",)
+    implemented = False
+    rights_status = "LICENSED_PROVIDER_PENDING_ACCOUNT_REVIEW"
+    commercial_use_status = "LICENSE_REQUIRED"
+    quota_note = "Alternate licensed historical audience/streaming source; contract pending"
+
+
+class GoogleTrendsProvider(ProviderScaffold):
+    name = "google_trends"
+    env_keys = ("GOOGLE_TRENDS_API_KEY", "GOOGLE_TRENDS_ACCESS_TOKEN")
+    implemented = True  # official alpha adapter; access remains waitlisted when absent
+    rights_status = "OFFICIAL_API_PENDING_ACCESS_REVIEW"
+    commercial_use_status = "LICENSE_REQUIRED"
+    quota_note = "WAITLIST / AUTH_REQUIRED; official alpha only, never UI scraping"
+
+
 class SeatGeekProvider(ProviderScaffold):
     name = "seatgeek"
     env_keys = ("SEATGEEK_CLIENT_ID",)
@@ -285,6 +312,9 @@ ALL_PROVIDERS: list[type[ProviderScaffold]] = [
     MusicBrainzProvider,
     WikimediaProvider,
     CommonCrawlProvider,
+    SoundchartsProvider,
+    ChartmetricProvider,
+    GoogleTrendsProvider,
     NvidiaProvider,
     DeepSeekProvider,
     SeatGeekProvider,

@@ -10,12 +10,12 @@ from __future__ import annotations
 import hashlib
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 
 
 def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class AcquisitionStatus(str, Enum):
@@ -32,7 +32,7 @@ class AcquisitionStatus(str, Enum):
 
     #: statuses that indicate the provider was genuinely invoked
     @classmethod
-    def attempted(cls) -> frozenset["AcquisitionStatus"]:
+    def attempted(cls) -> frozenset[AcquisitionStatus]:
         return frozenset(
             {
                 cls.SUCCESS,
@@ -79,6 +79,10 @@ class AcquisitionRequest:
     operation: str | None = None
     external_id: str | None = None
     classification_name: str | None = None
+    #: Target platform whose data a multi-platform provider should return
+    #: (e.g. Soundcharts ``spotify`` vs ``instagram``). Distinct from the
+    #: acquisition ``platform`` (the provider itself).
+    platform_scope: str | None = None
 
     @classmethod
     def new(
@@ -88,7 +92,7 @@ class AcquisitionRequest:
         platform: str,
         query: str,
         **kwargs: object,
-    ) -> "AcquisitionRequest":
+    ) -> AcquisitionRequest:
         return cls(
             request_id=kwargs.pop("request_id", str(uuid.uuid4())),
             entity_id=entity_id,

@@ -133,6 +133,17 @@ def default_policy_profiles() -> dict[str, RightsProfile]:
             derivative=research, redistribution=research, commercial=review,
             notes="per-site terms vary; default research-only",
         ),
+        "soundcharts": profile(
+            "soundcharts", content=conditional, api=conditional, storage=conditional,
+            derivative=conditional, redistribution=conditional,
+            commercial=PolicyStatus.COMMERCIAL_AGREEMENT_REQUIRED,
+            notes="Licensed provider rail; account contract and commercial scope must be verified",
+        ),
+        "google_trends": profile(
+            "google_trends", content=review, api=review, storage=review,
+            derivative=review, redistribution=review, commercial=review,
+            notes="Official Trends API alpha waitlist; no UI scraping fallback",
+        ),
     }
 
 

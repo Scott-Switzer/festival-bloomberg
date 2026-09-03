@@ -1,0 +1,50 @@
+[project]
+name = "festival-bloomberg"
+version = "0.1.0"
+description = "Festival Intelligence evidence and terminal services"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "duckdb>=1.1.0,<2",
+  "pandas>=2.0.0,<4",
+  "pyarrow>=14.0.0,<26",
+  "vaderSentiment>=3.3.2,<4",
+  "openpyxl>=3.1.0,<4",
+  "mwparserfromhell>=0.6.4",
+  "boto3>=1.34.0,<2",
+  "zstandard>=0.22.0,<1",
+]
+
+[dependency-groups]
+test = [
+  "pytest>=8.0.0,<10",
+]
+profiling = [
+  "memray>=1.20.0,<2",
+]
+lint = [
+  "ruff>=0.15.0,<1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]
+pythonpath = ["python"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+include = ["python/**/*.py", "scripts/**/*.py", "tests/python/**/*.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/python/**/*.py" = ["B008", "E402"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.uv]
+default-groups = ["test"]

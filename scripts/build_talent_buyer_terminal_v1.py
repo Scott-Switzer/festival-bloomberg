@@ -30,12 +30,11 @@ import json
 import os
 import shutil
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import duckdb
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REPORT = PROJECT_ROOT / "reports" / "artist_security_25000_estate_v1.json"
@@ -285,8 +284,194 @@ def _create_schema(conn: duckdb.DuckDBPyConnection) -> None:
             status VARCHAR NOT NULL,
             rights_status VARCHAR
         );
+
+        CREATE TABLE artist_factor_observations (
+            factor_observation_key VARCHAR PRIMARY KEY,
+            artist_key VARCHAR NOT NULL,
+            factor_family VARCHAR NOT NULL,
+            factor_name VARCHAR NOT NULL,
+            platform VARCHAR,
+            value DOUBLE,
+            unit VARCHAR,
+            observation_time TIMESTAMP,
+            available_at TIMESTAMP,
+            knowledge_time TIMESTAMP,
+            retrieved_at TIMESTAMP,
+            period_start DATE,
+            period_end DATE,
+            source VARCHAR,
+            evidence_ref VARCHAR,
+            source_scope VARCHAR,
+            rights_status VARCHAR,
+            commercial_use_status VARCHAR,
+            quality_status VARCHAR,
+            generation VARCHAR,
+            evidence_json JSON
+        );
+
+        CREATE TABLE artist_sentiment_observations (
+            observation_key VARCHAR PRIMARY KEY,
+            artist_key VARCHAR NOT NULL,
+            platform VARCHAR NOT NULL,
+            "date" DATE NOT NULL,
+            mention_count BIGINT NOT NULL,
+            analyzed_count BIGINT NOT NULL,
+            positive_share DOUBLE,
+            neutral_share DOUBLE,
+            negative_share DOUBLE,
+            sentiment_mean DOUBLE,
+            engagement_weighted_sentiment DOUBLE,
+            engagement_total BIGINT,
+            topic_distribution JSON,
+            language_distribution JSON,
+            sample_quality VARCHAR NOT NULL,
+            source_generation VARCHAR NOT NULL,
+            model_name VARCHAR NOT NULL,
+            model_version VARCHAR NOT NULL,
+            deduplicated_count BIGINT,
+            spam_filtered_count BIGINT,
+            source VARCHAR NOT NULL,
+            evidence_ref VARCHAR,
+            source_scope VARCHAR NOT NULL,
+            rights_status VARCHAR NOT NULL,
+            commercial_use_status VARCHAR NOT NULL,
+            quality_status VARCHAR NOT NULL,
+            retrieved_at TIMESTAMP NOT NULL,
+            knowledge_time TIMESTAMP
+        );
         """
     )
+
+
+def _source_table_exists(conn: duckdb.DuckDBPyConnection, schema: str, table: str) -> bool:
+    """Return whether an attached immutable source table exists.
+
+    Older serving snapshots predate the artist intelligence migration, so the
+    materializer must branch on schema presence rather than fail the whole
+    build when an optional source product is absent.
+    """
+    try:
+        return bool(conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM duckdb_tables()
+            WHERE database_name = 'src' AND schema_name = ? AND table_name = ?
+            """,
+            [schema, table],
+        ).fetchone()[0])
+    except Exception:
+        return bool(conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM information_schema.tables
+            WHERE table_catalog = 'src' AND table_schema = ? AND table_name = ?
+            """,
+            [schema, table],
+        ).fetchone()[0])
+
+
+def _source_columns(conn: duckdb.DuckDBPyConnection, table: str) -> set[str]:
+    return {
+        row[0] for row in conn.execute(
+            f"DESCRIBE SELECT * FROM {table}"
+        ).fetchall()
+    }
+
+
+def _source_expr(columns: set[str], alias: str, *names: str, default: str = "NULL") -> str:
+    for name in names:
+        if name in columns:
+            return f"{alias}.{name}"
+    return default
+
+
+def _materialize_artist_intelligence(conn: duckdb.DuckDBPyConnection) -> None:
+    """Copy optional artist factor/sentiment products into the compact DB.
+
+    The source snapshot is immutable and the browser reads only these compact
+    projections. Dynamic column expressions keep artifacts from migrations
+    043-048 readable while using the explicit 049 temporal aliases when they
+    exist.
+    """
+    factor_table = "src.metrics.artist_factor_observations"
+    if _source_table_exists(conn, "metrics", "artist_factor_observations"):
+        columns = _source_columns(conn, factor_table)
+        value = _source_expr(columns, "o", "value")
+        observation_time = _source_expr(columns, "o", "observation_time")
+        as_of = _source_expr(columns, "o", "as_of")
+        retrieved_at = _source_expr(columns, "o", "retrieved_at")
+        conn.execute(
+            f"""
+            INSERT INTO artist_factor_observations (
+                factor_observation_key, artist_key, factor_family, factor_name,
+                platform, value, unit, observation_time, available_at, knowledge_time,
+                retrieved_at, period_start, period_end, source, evidence_ref,
+                source_scope, rights_status, commercial_use_status, quality_status,
+                generation, evidence_json
+            )
+            SELECT
+                {_source_expr(columns, 'o', 'factor_observation_key')},
+                o.artist_key,
+                o.factor_family,
+                o.factor_name,
+                {_source_expr(columns, 'o', 'platform', 'source_system')},
+                {value},
+                {_source_expr(columns, 'o', 'unit', 'value_unit')},
+                COALESCE(TRY_CAST({observation_time} AS TIMESTAMP), TRY_CAST({as_of} AS TIMESTAMP)),
+                TRY_CAST({_source_expr(columns, 'o', 'available_at')} AS TIMESTAMP),
+                COALESCE(
+                    TRY_CAST({_source_expr(columns, 'o', 'knowledge_time')} AS TIMESTAMP),
+                    TRY_CAST({_source_expr(columns, 'o', 'available_at')} AS TIMESTAMP),
+                    TRY_CAST({retrieved_at} AS TIMESTAMP)
+                ),
+                TRY_CAST({retrieved_at} AS TIMESTAMP),
+                TRY_CAST({_source_expr(columns, 'o', 'period_start')} AS DATE),
+                TRY_CAST({_source_expr(columns, 'o', 'period_end')} AS DATE),
+                {_source_expr(columns, 'o', 'source', 'source_system')},
+                {_source_expr(columns, 'o', 'evidence_ref', 'source_url')},
+                COALESCE({_source_expr(columns, 'o', 'source_scope')}, 'LEGACY_ARTIST_SECURITY_FACTOR'),
+                COALESCE({_source_expr(columns, 'o', 'rights_status')}, 'TERMS_REVIEW_REQUIRED'),
+                COALESCE({_source_expr(columns, 'o', 'commercial_use_status')}, 'PROTOTYPE_ONLY'),
+                COALESCE(
+                    {_source_expr(columns, 'o', 'quality_status')},
+                    CASE WHEN {value} IS NULL THEN 'UNKNOWN' ELSE 'OBSERVED' END
+                ),
+                COALESCE({_source_expr(columns, 'o', 'generation', 'source_version')}, 'LEGACY'),
+                {_source_expr(columns, 'o', 'evidence_json')}
+            FROM {factor_table} o
+            JOIN selected_artists t ON t.artist_key = o.artist_key
+            """
+        )
+
+    sentiment_table = "src.metrics.artist_sentiment_observations"
+    if _source_table_exists(conn, "metrics", "artist_sentiment_observations"):
+        columns = _source_columns(conn, sentiment_table)
+        sentiment_columns = (
+            "observation_key", "artist_key", "platform", "date", "mention_count",
+            "analyzed_count", "positive_share", "neutral_share", "negative_share",
+            "sentiment_mean", "engagement_weighted_sentiment", "engagement_total",
+            "topic_distribution", "language_distribution", "sample_quality",
+            "source_generation", "model_name", "model_version", "deduplicated_count",
+            "spam_filtered_count", "source", "evidence_ref", "source_scope",
+            "rights_status", "commercial_use_status", "quality_status", "retrieved_at",
+            "knowledge_time",
+        )
+        expressions = {
+            "observation_key": _source_expr(columns, "o", "observation_key"),
+            "artist_key": "o.artist_key",
+            "platform": "o.platform",
+            "date": "o.\"date\"",
+        }
+        for column in sentiment_columns[4:]:
+            expressions[column] = _source_expr(columns, "o", column)
+        conn.execute(
+            f"""
+            INSERT INTO artist_sentiment_observations ({', '.join(sentiment_columns)})
+            SELECT {', '.join(expressions[column] for column in sentiment_columns)}
+            FROM {sentiment_table} o
+            JOIN selected_artists t ON t.artist_key = o.artist_key
+            """
+        )
 
 
 def _create_selected_table(conn: duckdb.DuckDBPyConnection, artists: list[dict[str, Any]]) -> None:
@@ -774,6 +959,8 @@ def _create_indexes(conn: duckdb.DuckDBPyConnection) -> None:
         "CREATE INDEX search_terms_term_idx ON artist_search_terms(normalized_term)",
         "CREATE INDEX search_terms_artist_idx ON artist_search_terms(artist_key)",
         "CREATE INDEX attention_artist_idx ON attention_observations(artist_key)",
+        "CREATE INDEX factor_artist_time_idx ON artist_factor_observations(artist_key, observation_time)",
+        "CREATE INDEX sentiment_artist_date_idx ON artist_sentiment_observations(artist_key, \"date\")",
         "CREATE INDEX peers_subject_rank_idx ON artist_peers(subject_key, rank)",
         "CREATE INDEX markets_artist_idx ON artist_markets(artist_key, market_key)",
         "CREATE INDEX history_artist_date_idx ON event_history(artist_key, event_date)",
@@ -815,6 +1002,7 @@ def build(
         _create_selected_table(conn, artists)
         _materialize_identity(conn)
         _materialize_attention(conn)
+        _materialize_artist_intelligence(conn)
         _materialize_peers(
             conn, affinity_parquet.resolve() if affinity_parquet else None,
             max_peers_per_artist=max_peers_per_artist,
@@ -830,6 +1018,8 @@ def build(
             "search_terms": _count(conn, "artist_search_terms"),
             "external_ids": _count(conn, "artist_external_ids"),
             "attention_observations": _count(conn, "attention_observations"),
+            "artist_factor_observations": _count(conn, "artist_factor_observations"),
+            "artist_sentiment_observations": _count(conn, "artist_sentiment_observations"),
             "peers": _count(conn, "artist_peers"),
             "markets": _count(conn, "artist_markets"),
             "event_history": _count(conn, "event_history"),
@@ -872,7 +1062,7 @@ def build(
             [
                 "TALENT_BUYER_TERMINAL_V1",
                 "artist_security_terminal_v1",
-                datetime.now(timezone.utc).replace(tzinfo=None),
+                datetime.now(UTC).replace(tzinfo=None),
                 str(source.resolve()),
                 str(report_path.resolve()),
                 str(affinity_parquet.resolve()) if affinity_parquet else None,

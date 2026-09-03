@@ -26,6 +26,7 @@ import json
 import os
 import re
 import threading
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -35,6 +36,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 import duckdb
 
 from . import artist_security, decision_system
+from .connections import CompatibilityRequestLock, wrap_connection
 from .storage import WORKSPACE_DEFAULT_DB
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -139,17 +141,61 @@ class MvpTerminalApp:
     """Product-only dispatcher: compact serving DB + workspace shortlist DB."""
 
     def __init__(self, conn, workspace_conn, *, db_path: Path, current_json_path: Path) -> None:
-        self.conn = conn
-        self.workspace_conn = workspace_conn
-        self._lock = threading.Lock()
+        self.conn = wrap_connection(conn, read_only=True)
+        self.workspace_conn = wrap_connection(workspace_conn, read_only=False)
+        self._workspace_write_lock = threading.RLock()
+        self._compatibility_lock = CompatibilityRequestLock()
         self._meta_lock = threading.Lock()
         self._meta_cache: dict[str, Any] | None = None
         self._db_path = db_path
         self._current_json_path = current_json_path
+        self._connections = tuple(
+            dict.fromkeys(
+                connection for connection in (self.conn, self.workspace_conn)
+                if connection is not None
+            )
+        )
+        self._compatibility_mode = any(
+            getattr(connection, "compatibility_mode", False)
+            for connection in self._connections
+        )
 
     def dispatch(self, method: str, path: str, query: str = "", body: bytes = b"") -> dict[str, Any]:
-        with self._lock:
-            return self._dispatch_locked(method, path, query, body)
+        """Dispatch without serializing independent file-backed reads."""
+        compatibility = self._compatibility_lock if self._compatibility_mode else nullcontext()
+        try:
+            with compatibility:
+                if self._is_workspace_mutation(method, path):
+                    with self._workspace_write_lock:
+                        return self._dispatch_locked(method, path, query, body)
+                return self._dispatch_locked(method, path, query, body)
+        finally:
+            for connection in self._connections:
+                connection.release_current()
+
+    @staticmethod
+    def _is_workspace_mutation(method: str, path: str) -> bool:
+        # Monitor first-look baselines are persisted even for GET requests.
+        if path == "/api/monitor":
+            return True
+        if method not in {"POST", "PUT", "PATCH", "DELETE"}:
+            return False
+        if path == "/api/shortlist" or path.startswith("/api/shortlist/"):
+            return True
+        if path in {"/api/underwrite/save", "/api/backtest/commit"}:
+            return True
+        if path.startswith("/api/decisions/"):
+            return method == "POST"
+        if path == "/api/portfolio/lineup" or path.startswith("/api/portfolio/lineup/"):
+            return method == "POST"
+        if path == "/api/pace/import":
+            return method == "POST"
+        return False
+
+    def close(self) -> None:
+        """Close all owned terminal connections."""
+        for connection in self._connections:
+            connection.close()
 
     def _serving_meta(self) -> dict[str, Any]:
         with self._meta_lock:

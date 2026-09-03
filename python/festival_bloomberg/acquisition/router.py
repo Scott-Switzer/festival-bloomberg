@@ -16,16 +16,16 @@ telemetry through a callback (e.g. the evidence repository).
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from datetime import datetime
-from typing import Callable
 
+from .automation import AutomationStatus, automation_status
 from .contracts import (
     AcquisitionRequest,
     AcquisitionResult,
     AcquisitionStatus,
     utc_now,
 )
-from .automation import automation_status, AutomationStatus
 from .costs import SessionBudget
 from .health import ProviderHealthRegistry
 from .policy import PolicyGate
@@ -48,6 +48,8 @@ MECHANISM_BY_PROVIDER = {
     "openstreetmap": "api",
     "nws": "api",
     "commoncrawl": "api",
+    "google_trends": "api",
+    "soundcharts": "api",
     "scrapling": "scraping",
 }
 

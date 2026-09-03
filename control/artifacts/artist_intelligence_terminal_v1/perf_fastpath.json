@@ -1,0 +1,727 @@
+{
+  "after_fast_path": {
+    "artifact_rebuilt": false,
+    "benchmark": "terminal_read_path_v1",
+    "concurrency": [
+      1,
+      8,
+      20,
+      32
+    ],
+    "endpoints": [
+      "search",
+      "artist",
+      "market",
+      "compare",
+      "underwrite",
+      "portfolio",
+      "pace",
+      "monitor"
+    ],
+    "external_provider_calls": 0,
+    "results": {
+      "1": {
+        "artist": {
+          "max_ms": 51.6,
+          "min_ms": 43.44,
+          "p50_ms": 46.826,
+          "p95_ms": 50.884,
+          "requests": 5,
+          "status_counts": {
+            "200": 5
+          }
+        },
+        "compare": {
+          "max_ms": 119.335,
+          "min_ms": 94.937,
+          "p50_ms": 98.84,
+          "p95_ms": 116.106,
+          "requests": 5,
+          "status_counts": {
+            "200": 5
+          }
+        },
+        "market": {
+          "max_ms": 11.917,
+          "min_ms": 8.048,
+          "p50_ms": 8.368,
+          "p95_ms": 11.263,
+          "requests": 5,
+          "status_counts": {
+            "200": 5
+          }
+        },
+        "monitor": {
+          "max_ms": 0.602,
+          "min_ms": 0.532,
+          "p50_ms": 0.573,
+          "p95_ms": 0.602,
+          "requests": 5,
+          "status_counts": {
+            "200": 5
+          }
+        },
+        "pace": {
+          "max_ms": 2.174,
+          "min_ms": 1.957,
+          "p50_ms": 2.052,
+          "p95_ms": 2.16,
+          "requests": 5,
+          "status_counts": {
+            "200": 5
+          }
+        },
+        "portfolio": {
+          "max_ms": 3.831,
+          "min_ms": 3.227,
+          "p50_ms": 3.456,
+          "p95_ms": 3.771,
+          "requests": 5,
+          "status_counts": {
+            "200": 5
+          }
+        },
+        "search": {
+          "max_ms": 15.424,
+          "min_ms": 6.85,
+          "p50_ms": 7.166,
+          "p95_ms": 13.779,
+          "requests": 5,
+          "status_counts": {
+            "200": 5
+          }
+        },
+        "underwrite": {
+          "max_ms": 509.561,
+          "min_ms": 391.832,
+          "p50_ms": 440.274,
+          "p95_ms": 500.996,
+          "requests": 5,
+          "status_counts": {
+            "200": 5
+          }
+        }
+      },
+      "20": {
+        "artist": {
+          "max_ms": 1253.938,
+          "min_ms": 59.464,
+          "p50_ms": 1085.967,
+          "p95_ms": 1235.474,
+          "requests": 100,
+          "status_counts": {
+            "200": 100
+          }
+        },
+        "compare": {
+          "max_ms": 2672.222,
+          "min_ms": 125.016,
+          "p50_ms": 2460.717,
+          "p95_ms": 2566.852,
+          "requests": 100,
+          "status_counts": {
+            "200": 100
+          }
+        },
+        "market": {
+          "max_ms": 163.433,
+          "min_ms": 7.601,
+          "p50_ms": 155.292,
+          "p95_ms": 162.046,
+          "requests": 100,
+          "status_counts": {
+            "200": 100
+          }
+        },
+        "monitor": {
+          "max_ms": 29.662,
+          "min_ms": 0.447,
+          "p50_ms": 10.049,
+          "p95_ms": 20.373,
+          "requests": 100,
+          "status_counts": {
+            "200": 100
+          }
+        },
+        "pace": {
+          "max_ms": 120.289,
+          "min_ms": 2.849,
+          "p50_ms": 48.228,
+          "p95_ms": 69.268,
+          "requests": 100,
+          "status_counts": {
+            "200": 100
+          }
+        },
+        "portfolio": {
+          "max_ms": 163.822,
+          "min_ms": 4.283,
+          "p50_ms": 80.619,
+          "p95_ms": 86.457,
+          "requests": 100,
+          "status_counts": {
+            "200": 100
+          }
+        },
+        "search": {
+          "max_ms": 177.617,
+          "min_ms": 9.738,
+          "p50_ms": 172.18,
+          "p95_ms": 177.116,
+          "requests": 100,
+          "status_counts": {
+            "200": 100
+          }
+        },
+        "underwrite": {
+          "max_ms": 9380.711,
+          "min_ms": 505.463,
+          "p50_ms": 8949.366,
+          "p95_ms": 9329.394,
+          "requests": 100,
+          "status_counts": {
+            "200": 100
+          }
+        }
+      },
+      "32": {
+        "artist": {
+          "max_ms": 2099.711,
+          "min_ms": 64.244,
+          "p50_ms": 1847.473,
+          "p95_ms": 2067.696,
+          "requests": 160,
+          "status_counts": {
+            "200": 160
+          }
+        },
+        "compare": {
+          "max_ms": 7557.123,
+          "min_ms": 118.544,
+          "p50_ms": 3931.521,
+          "p95_ms": 4473.627,
+          "requests": 160,
+          "status_counts": {
+            "200": 160
+          }
+        },
+        "market": {
+          "max_ms": 268.597,
+          "min_ms": 9.099,
+          "p50_ms": 257.762,
+          "p95_ms": 268.149,
+          "requests": 160,
+          "status_counts": {
+            "200": 160
+          }
+        },
+        "monitor": {
+          "max_ms": 70.818,
+          "min_ms": 0.459,
+          "p50_ms": 15.76,
+          "p95_ms": 50.34,
+          "requests": 160,
+          "status_counts": {
+            "200": 160
+          }
+        },
+        "pace": {
+          "max_ms": 60.917,
+          "min_ms": 2.501,
+          "p50_ms": 60.091,
+          "p95_ms": 60.748,
+          "requests": 160,
+          "status_counts": {
+            "200": 160
+          }
+        },
+        "portfolio": {
+          "max_ms": 210.18,
+          "min_ms": 2.925,
+          "p50_ms": 92.087,
+          "p95_ms": 124.013,
+          "requests": 160,
+          "status_counts": {
+            "200": 160
+          }
+        },
+        "search": {
+          "max_ms": 312.31,
+          "min_ms": 8.217,
+          "p50_ms": 270.042,
+          "p95_ms": 310.214,
+          "requests": 160,
+          "status_counts": {
+            "200": 160
+          }
+        },
+        "underwrite": {
+          "max_ms": 14210.487,
+          "min_ms": 439.429,
+          "p50_ms": 13486.15,
+          "p95_ms": 14033.851,
+          "requests": 160,
+          "status_counts": {
+            "200": 160
+          }
+        }
+      },
+      "8": {
+        "artist": {
+          "max_ms": 587.201,
+          "min_ms": 46.117,
+          "p50_ms": 487.822,
+          "p95_ms": 580.771,
+          "requests": 40,
+          "status_counts": {
+            "200": 40
+          }
+        },
+        "compare": {
+          "max_ms": 1134.575,
+          "min_ms": 105.564,
+          "p50_ms": 880.101,
+          "p95_ms": 1100.094,
+          "requests": 40,
+          "status_counts": {
+            "200": 40
+          }
+        },
+        "market": {
+          "max_ms": 65.77,
+          "min_ms": 7.417,
+          "p50_ms": 60.624,
+          "p95_ms": 65.32,
+          "requests": 40,
+          "status_counts": {
+            "200": 40
+          }
+        },
+        "monitor": {
+          "max_ms": 5.606,
+          "min_ms": 1.08,
+          "p50_ms": 5.08,
+          "p95_ms": 5.485,
+          "requests": 40,
+          "status_counts": {
+            "200": 40
+          }
+        },
+        "pace": {
+          "max_ms": 20.576,
+          "min_ms": 3.218,
+          "p50_ms": 19.059,
+          "p95_ms": 20.489,
+          "requests": 40,
+          "status_counts": {
+            "200": 40
+          }
+        },
+        "portfolio": {
+          "max_ms": 34.673,
+          "min_ms": 3.965,
+          "p50_ms": 26.76,
+          "p95_ms": 34.066,
+          "requests": 40,
+          "status_counts": {
+            "200": 40
+          }
+        },
+        "search": {
+          "max_ms": 63.997,
+          "min_ms": 7.295,
+          "p50_ms": 55.246,
+          "p95_ms": 63.608,
+          "requests": 40,
+          "status_counts": {
+            "200": 40
+          }
+        },
+        "underwrite": {
+          "max_ms": 3984.74,
+          "min_ms": 466.486,
+          "p50_ms": 3655.563,
+          "p95_ms": 3923.167,
+          "requests": 40,
+          "status_counts": {
+            "200": 40
+          }
+        }
+      }
+    },
+    "samples_per_worker": 5
+  },
+  "artifact_rebuilt": false,
+  "before_serialized": {
+    "artifact_rebuilt": false,
+    "benchmark": "terminal_read_path_v1",
+    "concurrency": [
+      1,
+      8,
+      20,
+      32
+    ],
+    "endpoints": [
+      "search",
+      "artist",
+      "market",
+      "compare",
+      "underwrite",
+      "portfolio",
+      "pace",
+      "monitor"
+    ],
+    "external_provider_calls": 0,
+    "results": {
+      "1": {
+        "artist": {
+          "max_ms": 91.695,
+          "min_ms": 33.097,
+          "p50_ms": 35.635,
+          "p95_ms": 80.568,
+          "requests": 5,
+          "status_counts": {
+            "200": 5
+          }
+        },
+        "compare": {
+          "max_ms": 76.77,
+          "min_ms": 68.67,
+          "p50_ms": 69.544,
+          "p95_ms": 75.39,
+          "requests": 5,
+          "status_counts": {
+            "200": 5
+          }
+        },
+        "market": {
+          "max_ms": 7.102,
+          "min_ms": 5.049,
+          "p50_ms": 5.143,
+          "p95_ms": 6.719,
+          "requests": 5,
+          "status_counts": {
+            "200": 5
+          }
+        },
+        "monitor": {
+          "max_ms": 0.646,
+          "min_ms": 0.557,
+          "p50_ms": 0.592,
+          "p95_ms": 0.637,
+          "requests": 5,
+          "status_counts": {
+            "200": 5
+          }
+        },
+        "pace": {
+          "max_ms": 2.233,
+          "min_ms": 2.07,
+          "p50_ms": 2.183,
+          "p95_ms": 2.225,
+          "requests": 5,
+          "status_counts": {
+            "200": 5
+          }
+        },
+        "portfolio": {
+          "max_ms": 3.839,
+          "min_ms": 3.386,
+          "p50_ms": 3.45,
+          "p95_ms": 3.773,
+          "requests": 5,
+          "status_counts": {
+            "200": 5
+          }
+        },
+        "search": {
+          "max_ms": 26.087,
+          "min_ms": 5.47,
+          "p50_ms": 5.663,
+          "p95_ms": 22.07,
+          "requests": 5,
+          "status_counts": {
+            "200": 5
+          }
+        },
+        "underwrite": {
+          "max_ms": 494.843,
+          "min_ms": 332.476,
+          "p50_ms": 420.44,
+          "p95_ms": 485.648,
+          "requests": 5,
+          "status_counts": {
+            "200": 5
+          }
+        }
+      },
+      "20": {
+        "artist": {
+          "max_ms": 1095.392,
+          "min_ms": 54.689,
+          "p50_ms": 1004.323,
+          "p95_ms": 1035.314,
+          "requests": 100,
+          "status_counts": {
+            "200": 100
+          }
+        },
+        "compare": {
+          "max_ms": 2717.478,
+          "min_ms": 88.673,
+          "p50_ms": 2240.651,
+          "p95_ms": 2695.506,
+          "requests": 100,
+          "status_counts": {
+            "200": 100
+          }
+        },
+        "market": {
+          "max_ms": 186.916,
+          "min_ms": 10.133,
+          "p50_ms": 156.75,
+          "p95_ms": 181.001,
+          "requests": 100,
+          "status_counts": {
+            "200": 100
+          }
+        },
+        "monitor": {
+          "max_ms": 14.358,
+          "min_ms": 0.961,
+          "p50_ms": 12.999,
+          "p95_ms": 13.99,
+          "requests": 100,
+          "status_counts": {
+            "200": 100
+          }
+        },
+        "pace": {
+          "max_ms": 142.341,
+          "min_ms": 3.525,
+          "p50_ms": 64.922,
+          "p95_ms": 77.193,
+          "requests": 100,
+          "status_counts": {
+            "200": 100
+          }
+        },
+        "portfolio": {
+          "max_ms": 160.671,
+          "min_ms": 3.709,
+          "p50_ms": 82.265,
+          "p95_ms": 86.909,
+          "requests": 100,
+          "status_counts": {
+            "200": 100
+          }
+        },
+        "search": {
+          "max_ms": 169.19,
+          "min_ms": 8.484,
+          "p50_ms": 158.225,
+          "p95_ms": 168.191,
+          "requests": 100,
+          "status_counts": {
+            "200": 100
+          }
+        },
+        "underwrite": {
+          "max_ms": 9857.696,
+          "min_ms": 433.448,
+          "p50_ms": 9016.664,
+          "p95_ms": 9782.028,
+          "requests": 100,
+          "status_counts": {
+            "200": 100
+          }
+        }
+      },
+      "32": {
+        "artist": {
+          "max_ms": 3517.711,
+          "min_ms": 63.444,
+          "p50_ms": 1709.509,
+          "p95_ms": 2202.663,
+          "requests": 160,
+          "status_counts": {
+            "200": 160
+          }
+        },
+        "compare": {
+          "max_ms": 7679.078,
+          "min_ms": 117.029,
+          "p50_ms": 3884.387,
+          "p95_ms": 3971.478,
+          "requests": 160,
+          "status_counts": {
+            "200": 160
+          }
+        },
+        "market": {
+          "max_ms": 295.466,
+          "min_ms": 10.642,
+          "p50_ms": 254.828,
+          "p95_ms": 284.122,
+          "requests": 160,
+          "status_counts": {
+            "200": 160
+          }
+        },
+        "monitor": {
+          "max_ms": 63.799,
+          "min_ms": 0.45,
+          "p50_ms": 15.677,
+          "p95_ms": 47.162,
+          "requests": 160,
+          "status_counts": {
+            "200": 160
+          }
+        },
+        "pace": {
+          "max_ms": 127.794,
+          "min_ms": 1.875,
+          "p50_ms": 62.96,
+          "p95_ms": 67.779,
+          "requests": 160,
+          "status_counts": {
+            "200": 160
+          }
+        },
+        "portfolio": {
+          "max_ms": 149.558,
+          "min_ms": 17.795,
+          "p50_ms": 123.868,
+          "p95_ms": 148.071,
+          "requests": 160,
+          "status_counts": {
+            "200": 160
+          }
+        },
+        "search": {
+          "max_ms": 365.041,
+          "min_ms": 10.528,
+          "p50_ms": 307.966,
+          "p95_ms": 351.502,
+          "requests": 160,
+          "status_counts": {
+            "200": 160
+          }
+        },
+        "underwrite": {
+          "max_ms": 18233.452,
+          "min_ms": 417.322,
+          "p50_ms": 14892.337,
+          "p95_ms": 17866.161,
+          "requests": 160,
+          "status_counts": {
+            "200": 160
+          }
+        }
+      },
+      "8": {
+        "artist": {
+          "max_ms": 437.134,
+          "min_ms": 45.391,
+          "p50_ms": 388.272,
+          "p95_ms": 421.257,
+          "requests": 40,
+          "status_counts": {
+            "200": 40
+          }
+        },
+        "compare": {
+          "max_ms": 1110.403,
+          "min_ms": 105.193,
+          "p50_ms": 905.005,
+          "p95_ms": 1085.191,
+          "requests": 40,
+          "status_counts": {
+            "200": 40
+          }
+        },
+        "market": {
+          "max_ms": 67.764,
+          "min_ms": 8.666,
+          "p50_ms": 64.107,
+          "p95_ms": 66.931,
+          "requests": 40,
+          "status_counts": {
+            "200": 40
+          }
+        },
+        "monitor": {
+          "max_ms": 4.699,
+          "min_ms": 0.882,
+          "p50_ms": 4.226,
+          "p95_ms": 4.559,
+          "requests": 40,
+          "status_counts": {
+            "200": 40
+          }
+        },
+        "pace": {
+          "max_ms": 19.615,
+          "min_ms": 2.771,
+          "p50_ms": 17.535,
+          "p95_ms": 19.552,
+          "requests": 40,
+          "status_counts": {
+            "200": 40
+          }
+        },
+        "portfolio": {
+          "max_ms": 29.215,
+          "min_ms": 3.856,
+          "p50_ms": 25.205,
+          "p95_ms": 28.956,
+          "requests": 40,
+          "status_counts": {
+            "200": 40
+          }
+        },
+        "search": {
+          "max_ms": 67.43,
+          "min_ms": 7.423,
+          "p50_ms": 60.083,
+          "p95_ms": 67.389,
+          "requests": 40,
+          "status_counts": {
+            "200": 40
+          }
+        },
+        "underwrite": {
+          "max_ms": 3823.185,
+          "min_ms": 478.091,
+          "p50_ms": 3525.94,
+          "p95_ms": 3799.705,
+          "requests": 40,
+          "status_counts": {
+            "200": 40
+          }
+        }
+      }
+    },
+    "samples_per_worker": 5
+  },
+  "benchmark": "terminal_read_path_before_after_v1",
+  "concurrency": [
+    1,
+    8,
+    20,
+    32
+  ],
+  "external_provider_calls": 0,
+  "requests": [
+    "search",
+    "artist",
+    "market",
+    "compare",
+    "underwrite",
+    "portfolio",
+    "pace",
+    "monitor"
+  ],
+  "samples_per_worker": 5,
+  "serving_db": "serving/artist_security_terminal_v1/terminal_demo_ai_v1.duckdb"
+}

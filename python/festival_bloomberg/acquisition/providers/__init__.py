@@ -13,6 +13,7 @@ from ..base import AcquisitionProvider
 from .apify import ApifyProvider
 from .commoncrawl import CommonCrawlProvider
 from .eventbrite import EventbriteProvider
+from .google_trends import GoogleTrendsProvider
 from .http import HttpProvider
 from .monid import MonidProvider
 from .nws import NwsProvider
@@ -20,6 +21,7 @@ from .openstreetmap import OpenStreetMapProvider
 from .scrapling import ScraplingProvider
 from .seatgeek import SeatGeekProvider
 from .setlistfm import SetlistFmProvider
+from .soundcharts import SoundchartsProvider
 from .spotify import SpotifyProvider
 from .ticketmaster import TicketmasterProvider
 from .wikidata import WikidataProvider
@@ -31,12 +33,14 @@ __all__ = [
     "ApifyProvider",
     "CommonCrawlProvider",
     "EventbriteProvider",
+    "GoogleTrendsProvider",
     "HttpProvider",
     "MonidProvider",
     "NwsProvider",
     "OpenStreetMapProvider",
     "ScraplingProvider",
     "SeatGeekProvider",
+    "SoundchartsProvider",
     "SetlistFmProvider",
     "SpotifyProvider",
     "TicketmasterProvider",
@@ -53,6 +57,7 @@ def default_providers(**overrides) -> dict[str, AcquisitionProvider]:
         "http": HttpProvider(**overrides.pop("http", {})),
         "commoncrawl": CommonCrawlProvider(**overrides.pop("commoncrawl", {})),
         "eventbrite": EventbriteProvider(**overrides.pop("eventbrite", {})),
+        "google_trends": GoogleTrendsProvider(**overrides.pop("google_trends", {})),
         "monid": MonidProvider(**overrides.pop("monid", {})),
         "nws": NwsProvider(**overrides.pop("nws", {})),
         "apify": ApifyProvider(**overrides.pop("apify", {})),
@@ -65,5 +70,6 @@ def default_providers(**overrides) -> dict[str, AcquisitionProvider]:
         "spotify": SpotifyProvider(**overrides.pop("spotify", {})),
         "setlistfm": SetlistFmProvider(**overrides.pop("setlistfm", {})),
         "seatgeek": SeatGeekProvider(**overrides.pop("seatgeek", {})),
+        "soundcharts": SoundchartsProvider(**overrides.pop("soundcharts", {})),
     }
     return providers
