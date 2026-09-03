@@ -39,8 +39,9 @@ def _env_token() -> str:
 
 
 pytestmark = pytest.mark.skipif(
-    not (os.environ.get("APIFY_TOKEN") or _env_token()),
-    reason="APIFY_TOKEN not configured; live Apify contract tests skipped",
+    os.environ.get("FESTIVAL_BLOOMBERG_LIVE_TESTS") != "1"
+    or not (os.environ.get("APIFY_TOKEN") or _env_token()),
+    reason="FESTIVAL_BLOOMBERG_LIVE_TESTS=1 and APIFY_TOKEN required for live tests",
 )
 
 

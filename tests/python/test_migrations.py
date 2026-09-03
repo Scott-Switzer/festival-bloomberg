@@ -30,7 +30,7 @@ def test_apply_pending_migrations_is_idempotent(tmp_path: Path):
                 "SELECT version FROM schema_migrations ORDER BY version"
             ).fetchall()
         ]
-        assert versions == list(range(1, 50))
+        assert versions == list(range(1, 51))
         tables = {
             row[0]
             for row in connection.execute(

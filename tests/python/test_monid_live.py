@@ -48,8 +48,8 @@ def _has_key() -> bool:
 
 
 pytestmark = pytest.mark.skipif(
-    not _has_key(),
-    reason="MONID_API_KEY not configured; live Monid contract tests skipped",
+    os.environ.get("FESTIVAL_BLOOMBERG_LIVE_TESTS") != "1" or not _has_key(),
+    reason="FESTIVAL_BLOOMBERG_LIVE_TESTS=1 and MONID_API_KEY required for live tests",
 )
 
 

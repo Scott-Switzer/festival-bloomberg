@@ -14,10 +14,19 @@ sandbox contract, these tests fail loudly instead of silently drifting.
 
 from __future__ import annotations
 
+import os
 import time
 from datetime import UTC, datetime, timedelta
 
 import pytest
+
+# Live sandbox tests are opt-in: CI stays hermetic and deterministic, while
+# local runs with FESTIVAL_BLOOMBERG_LIVE_TESTS=1 record the live acceptance
+# evidence against the real Soundcharts API.
+pytestmark = pytest.mark.skipif(
+    os.environ.get("FESTIVAL_BLOOMBERG_LIVE_TESTS") != "1",
+    reason="FESTIVAL_BLOOMBERG_LIVE_TESTS=1 required for live sandbox tests",
+)
 
 from festival_bloomberg.acquisition.contracts import AcquisitionStatus
 from festival_bloomberg.acquisition.providers.soundcharts import (
