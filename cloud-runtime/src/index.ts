@@ -396,6 +396,38 @@ export default {
       return Response.json({ status: "governor_reset" });
     }
 
+    if (url.pathname === "/admin/sentiment-pilot" && request.method === "POST") {
+      // Bounded official-API YouTube comment sampling for sentiment.
+      // Reads verified channel identities from the active-channel universe,
+      // samples a bounded set, writes ANONYMOUS samples to
+      // staging/sentiment_samples/ (no usernames, no user IDs). The batch
+      // container job artist_sentiment_build_v1 reduces them into the gold
+      // daily aggregate. No live social scraping in browser pages — this is
+      // asynchronous acquisition, materialized serving.
+      try {
+        const body = await request.json() as { max_artists?: number; max_comments_per_video?: number };
+        const universe = await loadV2Universe(env);
+        const identities = (universe.youtube_channels || [])
+          .filter((c) => c.artist_key && c.youtube_channel_id && c.status !== "QUARANTINED")
+          .map((c) => ({ artist_key: c.artist_key, youtube_channel_id: c.youtube_channel_id }));
+        if (!identities.length) {
+          return Response.json({ error: "NO_CHANNEL_IDENTITIES", universe_version: universe.version }, { status: 409 });
+        }
+        const { collectYouTubeCommentSamples } = await import("./youtube-sentiment");
+        const result = await collectYouTubeCommentSamples(env, identities, {
+          maxArtists: body.max_artists ?? 20,
+          maxCommentsPerVideo: body.max_comments_per_video ?? 20,
+        });
+        const runId = `sentiment_pilot_${Date.now()}`;
+        await env.BACKUP_BUCKET.put(`control/runs/${runId}.json`, JSON.stringify({ ...result, run_id: runId, type: "sentiment_pilot" }), {
+          httpMetadata: { contentType: "application/json" },
+        });
+        return Response.json({ run_id: runId, ...result });
+      } catch (e: any) {
+        return Response.json({ error: e.message || String(e) }, { status: 500 });
+      }
+    }
+
     if (url.pathname === "/admin/controlled-structured-test" && request.method === "POST") {
       try {
         const universe = await loadV2Universe(env);

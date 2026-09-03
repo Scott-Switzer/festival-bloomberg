@@ -58,6 +58,8 @@ ALLOWED_JOB_TYPES = frozenset({
     "listenbrainz_reduce",
     "cloud_smoke",
     "terminal_serving_build_v1",
+    "artist_factor_tape_build_v1",
+    "artist_sentiment_build_v1",
 })
 
 # Bounded numeric parameter limits.
@@ -267,6 +269,14 @@ def main() -> int:
         elif job_type == "terminal_serving_build_v1":
             from festival_bloomberg.cloud.batch_jobs import run_terminal_serving_build
             outcome = run_terminal_serving_build(spec, scratch_dir)
+            result.update(outcome)
+        elif job_type == "artist_factor_tape_build_v1":
+            from festival_bloomberg.cloud.batch_jobs import run_artist_factor_tape_build
+            outcome = run_artist_factor_tape_build(spec, scratch_dir)
+            result.update(outcome)
+        elif job_type == "artist_sentiment_build_v1":
+            from festival_bloomberg.cloud.batch_jobs import run_artist_sentiment_build
+            outcome = run_artist_sentiment_build(spec, scratch_dir)
             result.update(outcome)
         else:
             # Should be unreachable because validate_spec() already rejects

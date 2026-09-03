@@ -18,6 +18,8 @@ export const ALLOWED_BATCH_JOB_TYPES = new Set([
   "listenbrainz_reduce",
   "cloud_smoke",
   "terminal_serving_build_v1",
+  "artist_factor_tape_build_v1",
+  "artist_sentiment_build_v1",
 ]);
 
 /** Fixed safe error codes — never raw exception text. */

@@ -1,0 +1,79 @@
+name: Browser UAT
+
+# Permanent exact-artifact browser acceptance (release gate).
+#
+# The gate is fully atomic: scripts/uat_current_serving.py owns server
+# startup AND shutdown in one process — no CI job depends on an already
+# running server, no fixed port, no preview-process lifetime.
+#
+# Secrets required (provision before this gate can run):
+#   ADMIN_TOKEN  — matches the deployed worker's ADMIN_TOKEN (batch/terminal
+#                  bootstrap auth). The artifact is fetched from the CURRENT
+#                  serving generation through the worker's admin-gated
+#                  /terminal/bootstrap/current endpoint, so the EXACT
+#                  published generation is what gets tested.
+#
+# Until ADMIN_TOKEN is provisioned the job is skipped (not failed), so
+# unrelated PRs are not blocked; the gate activates automatically once the
+# secret exists.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  browser-uat:
+    runs-on: ubuntu-latest
+    if: ${{ secrets.ADMIN_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python deps (duckdb + app)
+        run: |
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet duckdb
+          pip install --quiet -e python 2>/dev/null || true
+
+      - name: Install headless Chrome (playwright-managed, pinned)
+        run: |
+          python -m pip install --quiet playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Atomic UAT against CURRENT serving generation
+        id: uat
+        env:
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+          WORKER_URL: ${{ secrets.WORKER_URL }}
+        run: |
+          URL="${WORKER_URL:-https://fi-acquisition-runtime.scswitzer.workers.dev}"
+          # Resolve playwright's chromium binary; the harness honours CHROME_BIN.
+          CHROME_BIN_PATH="$(find ~/.cache/ms-playwright -type f \( -name chrome -o -name headless_shell \) -path '*chromium*' | head -1)"
+          if [ -z "$CHROME_BIN_PATH" ]; then
+            echo "no playwright chromium found; trying system google-chrome" >&2
+            CHROME_BIN_PATH="$(command -v google-chrome || command -v chromium || true)"
+          fi
+          echo "chrome: $CHROME_BIN_PATH"
+          export CHROME_BIN="$CHROME_BIN_PATH"
+          PYTHONPATH=python python scripts/uat_current_serving.py \
+            --fetch-remote "$URL" \
+            --out-dir artifacts/artist_security_data_v2
+        shell: bash
+
+      - name: Upload UAT evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: artist-security-uat-evidence
+          path: artifacts/artist_security_data_v2/
+          if-no-files-found: ignore
