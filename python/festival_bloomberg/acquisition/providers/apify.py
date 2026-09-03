@@ -27,6 +27,17 @@ from ..transport import TransportError
 
 DEFAULT_BASE_URL = "https://api.apify.com/v2"
 
+# Actor defaults are intentionally explicit and bounded. They are secondary
+# acquisition rails; known YouTube channel IDs should continue through the
+# official API first.
+DEFAULT_ACTORS = {
+    "youtube": "streamers/youtube-scraper",
+    "tiktok": "clockworks/tiktok-scraper",
+    "instagram": "apify/instagram-api-scraper",
+}
+ACTOR_RIGHTS_STATUS = "TERMS_REVIEW_REQUIRED"
+ACTOR_COMMERCIAL_USE_STATUS = "TERMS_REVIEW_REQUIRED"
+
 
 class ApifyProvider(BaseProvider):
     name = "apify"
@@ -47,6 +58,7 @@ class ApifyProvider(BaseProvider):
             actor_id
             or self.env.get("APIFY_ACTOR_ID")
             or self._platform_default_actor()
+            or DEFAULT_ACTORS.get(str(self.env.get("APIFY_ACTOR_PLATFORM") or "").lower())
         )
         self.base_url = (base_url or self.env.get("APIFY_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
         self.max_polls = max_polls
@@ -62,7 +74,9 @@ class ApifyProvider(BaseProvider):
         if self.secret("APIFY_TOKEN") is None:
             return ProviderHealth(provider=self.name, healthy=False, last_error="no APIFY_TOKEN")
         if self.actor_id is None:
-            return ProviderHealth(provider=self.name, healthy=False, last_error="no actor_id configured")
+            return ProviderHealth(
+                provider=self.name, healthy=False, last_error="no actor_id configured"
+            )
         return ProviderHealth(provider=self.name, healthy=True)
 
     def estimate(self, request: AcquisitionRequest) -> CostEstimate:
@@ -81,10 +95,12 @@ class ApifyProvider(BaseProvider):
         auth = {"Authorization": f"Bearer {token}"}
         endpoint = f"{self.base_url}/acts/{self.actor_id}/runs"
 
+        operation = str(request.operation or "PLATFORM_DISCOVERY").strip().upper()
         body: dict[str, Any] = {
             "input": {
                 "query": request.query,
                 "platform": request.platform,
+                "operation": operation,
                 "maxItems": request.max_records,
             }
         }
@@ -100,14 +116,30 @@ class ApifyProvider(BaseProvider):
                 "POST", endpoint, headers=auth, body=body, timeout_seconds=30.0
             )
         except TransportError as exc:
-            return self._fail(request, started, AcquisitionStatus.PROVIDER_ERROR, "network", str(exc))
+            return self._fail(
+                request, started, AcquisitionStatus.PROVIDER_ERROR, "network", str(exc)
+            )
 
         if run.status == 401 or run.status == 403:
-            return self._fail(request, started, AcquisitionStatus.PROVIDER_ERROR, "authentication", f"http {run.status}")
+            return self._fail(
+                request,
+                started,
+                AcquisitionStatus.PROVIDER_ERROR,
+                "authentication",
+                f"http {run.status}",
+            )
         if run.status == 429:
-            return self._fail(request, started, AcquisitionStatus.RATE_LIMITED, "rate_limited", f"http {run.status}")
+            return self._fail(
+                request,
+                started,
+                AcquisitionStatus.RATE_LIMITED,
+                "rate_limited",
+                f"http {run.status}",
+            )
         if run.status != 201 and run.status != 200:
-            return self._fail(request, started, AcquisitionStatus.PROVIDER_ERROR, "run", f"http {run.status}")
+            return self._fail(
+                request, started, AcquisitionStatus.PROVIDER_ERROR, "run", f"http {run.status}"
+            )
 
         try:
             run_payload = run.json()
@@ -128,15 +160,31 @@ class ApifyProvider(BaseProvider):
                     timeout_seconds=30.0,
                 )
             except TransportError as exc:
-                return self._fail(request, started, AcquisitionStatus.PROVIDER_ERROR, "network", str(exc))
+                return self._fail(
+                    request, started, AcquisitionStatus.PROVIDER_ERROR, "network", str(exc)
+                )
             if status_resp.status == 404:
-                return self._fail(request, started, AcquisitionStatus.PROVIDER_ERROR, "run_not_found", f"run {run_id}")
+                return self._fail(
+                    request,
+                    started,
+                    AcquisitionStatus.PROVIDER_ERROR,
+                    "run_not_found",
+                    f"run {run_id}",
+                )
             if status_resp.status != 200:
-                return self._fail(request, started, AcquisitionStatus.PROVIDER_ERROR, "run_status", f"http {status_resp.status}")
+                return self._fail(
+                    request,
+                    started,
+                    AcquisitionStatus.PROVIDER_ERROR,
+                    "run_status",
+                    f"http {status_resp.status}",
+                )
             try:
                 run_payload = status_resp.json()
             except ValueError:
-                return self._fail(request, started, AcquisitionStatus.SCHEMA_INVALID, "run_status_response")
+                return self._fail(
+                    request, started, AcquisitionStatus.SCHEMA_INVALID, "run_status_response"
+                )
             state = run_payload.get("status", "UNKNOWN")
             polls += 1
 
@@ -153,14 +201,18 @@ class ApifyProvider(BaseProvider):
                         timeout_seconds=30.0,
                     )
                 except TransportError as exc:
-                    return self._fail(request, started, AcquisitionStatus.PROVIDER_ERROR, "network", str(exc))
+                    return self._fail(
+                        request, started, AcquisitionStatus.PROVIDER_ERROR, "network", str(exc)
+                    )
                 if items_resp.status == 200:
                     try:
                         records = items_resp.json()
                         if not isinstance(records, list):
                             records = [records]
                     except ValueError:
-                        return self._fail(request, started, AcquisitionStatus.SCHEMA_INVALID, "dataset_items")
+                        return self._fail(
+                            request, started, AcquisitionStatus.SCHEMA_INVALID, "dataset_items"
+                        )
             normalized = self._normalize_records(records)
             return self._result(
                 request,
@@ -176,19 +228,31 @@ class ApifyProvider(BaseProvider):
                     "state": state,
                     "polls": polls,
                     "dataset_id": dataset_id,
+                    "operation": operation,
+                    "rights_status": ACTOR_RIGHTS_STATUS,
+                    "commercial_use_status": ACTOR_COMMERCIAL_USE_STATUS,
                 },
                 records=tuple(normalized),
             )
 
         if state in ("FAILED", "ABORTED", "TIMED-OUT"):
-            return self._fail(request, started, AcquisitionStatus.PROVIDER_ERROR, "run_failed", state)
+            return self._fail(
+                request, started, AcquisitionStatus.PROVIDER_ERROR, "run_failed", state
+            )
 
         return self._result(
             request,
             status=AcquisitionStatus.PARTIAL_SUCCESS,
             provider_endpoint=endpoint,
             started_at=started,
-            provider_metadata={"run_id": run_id, "state": state, "polls": polls},
+            provider_metadata={
+                "run_id": run_id,
+                "state": state,
+                "polls": polls,
+                "operation": operation,
+                "rights_status": ACTOR_RIGHTS_STATUS,
+                "commercial_use_status": ACTOR_COMMERCIAL_USE_STATUS,
+            },
         )
 
     def _fail(self, request, started, status, category, detail=None) -> AcquisitionResult:

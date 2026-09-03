@@ -48,8 +48,24 @@ DEFAULT_SECURITY_UNIVERSE_SIZE = 1000
 # Keys
 # ---------------------------------------------------------------------------
 
-def factor_observation_key(*, artist_key: str, factor_name: str, as_of: str, source_system: str) -> str:
-    material = "|".join([artist_key, factor_name, as_of, source_system, FACTOR_VERSION])
+def factor_observation_key(
+    *,
+    artist_key: str,
+    factor_name: str,
+    as_of: str,
+    source_system: str,
+    generation: str | None = None,
+) -> str:
+    """Build an immutable observation key.
+
+    ``generation`` is optional for backwards compatibility with migration 043
+    callers. New collectors should provide it so two independently published
+    snapshots on the same observation date remain distinct rows.
+    """
+    material = "|".join([
+        artist_key, factor_name, as_of, source_system,
+        generation or FACTOR_VERSION, FACTOR_VERSION,
+    ])
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
 
 
@@ -174,11 +190,19 @@ def _attention_level_observation(
     commercial_use_status: str = "PROTOTYPE_ONLY",
     confidence: float | None = None,
     evidence: dict[str, Any] | None = None,
+    platform: str | None = None,
+    generation: str | None = None,
+    observation_time: str | None = None,
+    available_at: str | None = None,
+    knowledge_time: str | None = None,
+    source_scope: str | None = None,
+    quality_status: str | None = None,
 ) -> dict[str, Any]:
     return {
         "factor_observation_key": factor_observation_key(
             artist_key=artist_key, factor_name=factor_name,
             as_of=as_of.isoformat(), source_system=source_system,
+            generation=generation,
         ),
         "artist_key": artist_key,
         "factor_family": family,
@@ -186,7 +210,7 @@ def _attention_level_observation(
         "value": value,
         "value_unit": unit,
         "as_of": as_of.isoformat(),
-        "available_at": None,
+        "available_at": available_at,
         "retrieved_at": retrieved_at,
         "period_start": period_start.isoformat() if period_start else None,
         "period_end": period_end.isoformat() if period_end else None,
@@ -196,6 +220,15 @@ def _attention_level_observation(
         "rights_status": rights_status,
         "commercial_use_status": commercial_use_status,
         "confidence": confidence,
+        "platform": platform or source_system,
+        "unit": unit,
+        "observation_time": observation_time or f"{as_of.isoformat()}T00:00:00",
+        "knowledge_time": knowledge_time or retrieved_at,
+        "source": source_system,
+        "evidence_ref": source_url,
+        "source_scope": source_scope or "ARTIST_SECURITY_FACTOR",
+        "quality_status": quality_status or ("UNKNOWN" if value is None else "OBSERVED"),
+        "generation": generation or FACTOR_VERSION,
         "evidence_json": json.dumps(evidence or {}, default=str),
     }
 

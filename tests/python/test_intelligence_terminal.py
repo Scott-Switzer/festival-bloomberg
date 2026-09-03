@@ -349,7 +349,7 @@ def test_providers_fail_closed_without_keys(monkeypatch):
     assert by_name["listenbrainz"]["operational_status"] == OPERATIONAL
     # JamBase absence never breaks the terminal: it is OPTIONAL.
     assert "jambase" in by_name
-    assert len(ALL_PROVIDERS) == 17
+    assert len(ALL_PROVIDERS) == 20
 
 
 def test_provider_failure_does_not_break_read_path(conn):

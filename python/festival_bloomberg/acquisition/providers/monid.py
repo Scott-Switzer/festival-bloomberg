@@ -33,6 +33,31 @@ from ..transport import HttpResponse, TransportError
 
 DEFAULT_BASE_URL = "https://api.monid.ai"
 
+# These are the only generic acquisition intents this adapter may route. The
+# endpoint/provider behind Monid still owns the concrete schema and rights
+# decision; this list keeps browser and queue callers from inventing an
+# unbounded scraping surface.
+SUPPORTED_OPERATIONS = frozenset(
+    {
+        "SOCIAL_PROFILE",
+        "SOCIAL_POSTS",
+        "SOCIAL_COMMENTS",
+        "VIDEO_SEARCH",
+        "PLATFORM_DISCOVERY",
+    }
+)
+
+
+def operation_for_request(request: AcquisitionRequest) -> str:
+    """Resolve a bounded Monid intent without changing legacy requests."""
+    requested = str(request.operation or "").strip().upper()
+    if requested in SUPPORTED_OPERATIONS:
+        return requested
+    platform = str(request.platform or "").strip().lower()
+    if platform in {"youtube", "video", "tiktok", "instagram"}:
+        return "VIDEO_SEARCH" if platform == "youtube" else "SOCIAL_POSTS"
+    return "PLATFORM_DISCOVERY"
+
 
 class MonidProvider(BaseProvider):
     name = "monid"
@@ -93,6 +118,7 @@ class MonidProvider(BaseProvider):
             return self._not_configured(request, "MONID_API_KEY not set")
 
         started = utc_now()
+        operation = operation_for_request(request)
         headers = {
             "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
@@ -107,23 +133,47 @@ class MonidProvider(BaseProvider):
                 body={
                     "query": request.query,
                     "platform": request.platform,
+                    "operation": operation,
                     "entity_id": request.entity_id,
                     "entity_type": request.entity_type,
+                    "max_records": request.max_records,
                 },
             )
         except TransportError as exc:
-            return self._fail(request, started, AcquisitionStatus.PROVIDER_ERROR, "network", str(exc))
+            return self._fail(
+                request, started, AcquisitionStatus.PROVIDER_ERROR, "network", str(exc)
+            )
         if discover.status == 401 or discover.status == 403:
-            return self._fail(request, started, AcquisitionStatus.PROVIDER_ERROR, "authentication", f"http {discover.status}")
+            return self._fail(
+                request,
+                started,
+                AcquisitionStatus.PROVIDER_ERROR,
+                "authentication",
+                f"http {discover.status}",
+            )
         if discover.status == 429:
-            return self._fail(request, started, AcquisitionStatus.RATE_LIMITED, "rate_limited", f"http {discover.status}")
+            return self._fail(
+                request,
+                started,
+                AcquisitionStatus.RATE_LIMITED,
+                "rate_limited",
+                f"http {discover.status}",
+            )
         if discover.status != 200:
-            return self._fail(request, started, AcquisitionStatus.PROVIDER_ERROR, "discover", f"http {discover.status}")
+            return self._fail(
+                request,
+                started,
+                AcquisitionStatus.PROVIDER_ERROR,
+                "discover",
+                f"http {discover.status}",
+            )
 
         try:
             discover_payload = discover.json()
         except ValueError:
-            return self._fail(request, started, AcquisitionStatus.SCHEMA_INVALID, "discover_response")
+            return self._fail(
+                request, started, AcquisitionStatus.SCHEMA_INVALID, "discover_response"
+            )
 
         # Real API returns {"results": [{... "endpoint": "/path"}]};
         # legacy fallback {"endpoints": [{"id": ...}]}.
@@ -141,7 +191,9 @@ class MonidProvider(BaseProvider):
         first = endpoints[0]
         endpoint_id = first.get("endpoint") or first.get("id") or first.get("endpoint_id")
         if not endpoint_id:
-            return self._fail(request, started, AcquisitionStatus.SCHEMA_INVALID, "discover_endpoint_id")
+            return self._fail(
+                request, started, AcquisitionStatus.SCHEMA_INVALID, "discover_endpoint_id"
+            )
 
         # 2. inspect
         try:
@@ -152,7 +204,9 @@ class MonidProvider(BaseProvider):
                 body={"endpoint_id": endpoint_id},
             )
         except TransportError as exc:
-            return self._fail(request, started, AcquisitionStatus.PROVIDER_ERROR, "network", str(exc))
+            return self._fail(
+                request, started, AcquisitionStatus.PROVIDER_ERROR, "network", str(exc)
+            )
         cost_per_call = None
         if inspect.status == 200:
             try:
@@ -166,6 +220,8 @@ class MonidProvider(BaseProvider):
             "endpoint_id": endpoint_id,
             "params": {
                 "query": request.query,
+                "platform": request.platform,
+                "operation": operation,
                 "limit": request.max_records,
             },
         }
@@ -183,11 +239,21 @@ class MonidProvider(BaseProvider):
                 body=run_body,
             )
         except TransportError as exc:
-            return self._fail(request, started, AcquisitionStatus.PROVIDER_ERROR, "network", str(exc))
+            return self._fail(
+                request, started, AcquisitionStatus.PROVIDER_ERROR, "network", str(exc)
+            )
         if run.status == 429:
-            return self._fail(request, started, AcquisitionStatus.RATE_LIMITED, "rate_limited", f"http {run.status}")
+            return self._fail(
+                request,
+                started,
+                AcquisitionStatus.RATE_LIMITED,
+                "rate_limited",
+                f"http {run.status}",
+            )
         if run.status != 200:
-            return self._fail(request, started, AcquisitionStatus.PROVIDER_ERROR, "run", f"http {run.status}")
+            return self._fail(
+                request, started, AcquisitionStatus.PROVIDER_ERROR, "run", f"http {run.status}"
+            )
 
         try:
             run_payload = run.json()
@@ -209,28 +275,48 @@ class MonidProvider(BaseProvider):
                     headers={"Authorization": f"Bearer {key}"},
                 )
             except TransportError as exc:
-                return self._fail(request, started, AcquisitionStatus.PROVIDER_ERROR, "network", str(exc))
+                return self._fail(
+                    request, started, AcquisitionStatus.PROVIDER_ERROR, "network", str(exc)
+                )
             if status_resp.status == 404:
-                return self._fail(request, started, AcquisitionStatus.PROVIDER_ERROR, "run_not_found", f"run {run_id}")
+                return self._fail(
+                    request,
+                    started,
+                    AcquisitionStatus.PROVIDER_ERROR,
+                    "run_not_found",
+                    f"run {run_id}",
+                )
             if status_resp.status != 200:
-                return self._fail(request, started, AcquisitionStatus.PROVIDER_ERROR, "run_status", f"http {status_resp.status}")
+                return self._fail(
+                    request,
+                    started,
+                    AcquisitionStatus.PROVIDER_ERROR,
+                    "run_status",
+                    f"http {status_resp.status}",
+                )
             try:
                 status_payload = status_resp.json()
             except ValueError:
-                return self._fail(request, started, AcquisitionStatus.SCHEMA_INVALID, "run_status_response")
+                return self._fail(
+                    request, started, AcquisitionStatus.SCHEMA_INVALID, "run_status_response"
+                )
             run_state = status_payload.get("status", "unknown")
             data = status_payload.get("data") or data
             polls += 1
 
         if run_state in ("failed", "error"):
-            return self._fail(request, started, AcquisitionStatus.PROVIDER_ERROR, "run_failed", run_state)
+            return self._fail(
+                request, started, AcquisitionStatus.PROVIDER_ERROR, "run_failed", run_state
+            )
 
         # 5. normalize + hash
         records = self._normalize_records(data or [])
         raw_hash = content_hash_of(data or [])
         return self._result(
             request,
-            status=AcquisitionStatus.SUCCESS if run_state in ("completed", "succeeded", "success") else AcquisitionStatus.PARTIAL_SUCCESS,
+            status=AcquisitionStatus.SUCCESS
+            if run_state in ("completed", "succeeded", "success")
+            else AcquisitionStatus.PARTIAL_SUCCESS,
             provider_endpoint=f"{self.base_url}/v1/run",
             started_at=started,
             record_count=len(records),
@@ -243,6 +329,8 @@ class MonidProvider(BaseProvider):
                 "final_state": run_state,
                 "http_status_discover": discover.status,
                 "http_status_run": run.status,
+                "operation": operation,
+                "supported_operations": sorted(SUPPORTED_OPERATIONS),
             },
             records=tuple(records),
         )

@@ -48,6 +48,8 @@ MECHANISM_BY_PROVIDER = {
     "openstreetmap": "api",
     "nws": "api",
     "commoncrawl": "api",
+    "google_trends": "api",
+    "soundcharts": "api",
     "scrapling": "scraping",
 }
 

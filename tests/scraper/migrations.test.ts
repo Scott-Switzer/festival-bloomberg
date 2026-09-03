@@ -35,11 +35,11 @@ describe("schema migrations", () => {
 
     const db = await createDuckDbWarehouse({ path: temp.path });
     const versions = migrationCatalog().map((migration) => migration.version);
-    assert.deepEqual(versions, Array.from({ length: 48 }, (_, i) => i + 1));
+    assert.deepEqual(versions, Array.from({ length: 49 }, (_, i) => i + 1));
     await db.close();
 
     const rows = await queryMigrations(temp.path);
-    assert.equal(rows.length, 48);
+    assert.equal(rows.length, 49);
     assert.equal(rows[1]?.name, "published_at_point_in_time_v2");
     assert.equal(rows[2]?.name, "intelligence_metrics_v1");
     assert.equal(rows[3]?.name, "canonical_entity_resolution_v1");
@@ -87,13 +87,14 @@ describe("schema migrations", () => {
     assert.equal(rows[45]?.name, "artist_security_25000_database_v1");
     assert.equal(rows[46]?.name, "data_estate_scale_25k_v1");
     assert.equal(rows[47]?.name, "identity_graph_v2");
+    assert.equal(rows[48]?.name, "artist_intelligence_tape_v1");
 
     const reopened = await createDuckDbWarehouse({ path: temp.path });
     await reopened.close();
     const again = await queryMigrations(temp.path);
     assert.deepEqual(
       again.map((row) => row.version),
-      Array.from({ length: 48 }, (_, i) => i + 1),
+      Array.from({ length: 49 }, (_, i) => i + 1),
     );
   });
 });
