@@ -1980,10 +1980,10 @@ def _fold_gold_artist_intelligence(
                 neutral_share, negative_share, sentiment_mean,
                 engagement_weighted_sentiment, engagement_total,
                 topic_distribution::JSON, sample_quality, source_generation,
-                'vader', 'VADER_3.3.2', 'YOUTUBE_API', NULL,
+                'vader', 'VADER_3.3.2', source, NULL,
                 'OFFICIAL_API_COMMENT_SAMPLE', rights_status::VARCHAR,
                 commercial_use_status::VARCHAR, 'OBSERVED',
-                CAST(now() AS TIMESTAMP), CAST("date" AS TIMESTAMP)
+                CAST(retrieved_at AS TIMESTAMP), CAST("date" AS TIMESTAMP)
             FROM read_parquet({q(sent_path)})
             ON CONFLICT (observation_key) DO NOTHING
             """
@@ -2293,6 +2293,7 @@ def run_artist_sentiment_build(spec: dict, scratch_dir: Path) -> dict:
             "mention_count": 0, "analyzed_count": 0, "sentiment_sum": 0.0,
             "engagement_sum": 0.0, "weighted_sum": 0.0,
             "positive": 0, "neutral": 0, "negative": 0, "langs": set(),
+            "rights": {}, "commercial": {}, "sources": {}, "last_observed": "",
         })
         skipped = 0
         for key in sample_keys:
@@ -2332,6 +2333,14 @@ def run_artist_sentiment_build(spec: dict, scratch_dir: Path) -> dict:
                 a["neutral"] += 1
             lang = s.get("language") or "unknown"
             a["langs"].add(lang)
+            r = s.get("rights_status") or "RIGHTS_REVIEW_REQUIRED"
+            c = s.get("commercial_use_status") or "TERMS_REVIEW_REQUIRED"
+            so = s.get("source") or "UNKNOWN"
+            a["rights"][r] = a["rights"].get(r, 0) + 1
+            a["commercial"][c] = a["commercial"].get(c, 0) + 1
+            a["sources"][so] = a["sources"].get(so, 0) + 1
+            if obs > a["last_observed"]:
+                a["last_observed"] = obs
 
         rows_out: list[dict] = []
         for (artist_key, platform, day), a in agg.items():
@@ -2357,6 +2366,13 @@ def run_artist_sentiment_build(spec: dict, scratch_dir: Path) -> dict:
                 "sample_quality": "VADER_BASELINE",
                 "source_generation": "artist_sentiment_v1",
                 "languages": json.dumps(sorted(a["langs"])),
+                "rights_status": max(a["rights"], key=a["rights"].get)
+                if a["rights"] else "RIGHTS_REVIEW_REQUIRED",
+                "commercial_use_status": max(a["commercial"], key=a["commercial"].get)
+                if a["commercial"] else "TERMS_REVIEW_REQUIRED",
+                "source": max(a["sources"], key=a["sources"].get)
+                if a["sources"] else "UNKNOWN",
+                "retrieved_at": a["last_observed"] or f"{day}T00:00:00Z",
             })
 
         columns = [
@@ -2364,6 +2380,7 @@ def run_artist_sentiment_build(spec: dict, scratch_dir: Path) -> dict:
             "analyzed_count", "positive_share", "neutral_share", "negative_share",
             "sentiment_mean", "engagement_weighted_sentiment", "engagement_total",
             "topic_distribution", "sample_quality", "source_generation", "languages",
+            "source", "rights_status", "commercial_use_status", "retrieved_at",
         ]
         import pyarrow as pa
         import pyarrow.parquet as pq
