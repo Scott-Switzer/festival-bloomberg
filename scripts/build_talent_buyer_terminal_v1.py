@@ -306,7 +306,13 @@ def _create_schema(conn: duckdb.DuckDBPyConnection) -> None:
             commercial_use_status VARCHAR,
             quality_status VARCHAR,
             generation VARCHAR,
-            evidence_json JSON
+            evidence_json JSON,
+            measurement_basis VARCHAR,
+            measurement_window VARCHAR,
+            population_scope VARCHAR,
+            geographic_scope VARCHAR,
+            methodology_version VARCHAR,
+            coverage_generation VARCHAR
         );
 
         CREATE TABLE artist_sentiment_observations (
@@ -400,6 +406,14 @@ def _materialize_artist_intelligence(conn: duckdb.DuckDBPyConnection) -> None:
         observation_time = _source_expr(columns, "o", "observation_time")
         as_of = _source_expr(columns, "o", "as_of")
         retrieved_at = _source_expr(columns, "o", "retrieved_at")
+
+        def _context_expr(name: str) -> str:
+            if name in columns:
+                return f"o.{name}"
+            if "evidence_json" in columns:
+                return f"CAST(o.evidence_json ->> '{name}' AS VARCHAR)"
+            return "NULL"
+
         conn.execute(
             f"""
             INSERT INTO artist_factor_observations (
@@ -407,7 +421,8 @@ def _materialize_artist_intelligence(conn: duckdb.DuckDBPyConnection) -> None:
                 platform, value, unit, observation_time, available_at, knowledge_time,
                 retrieved_at, period_start, period_end, source, evidence_ref,
                 source_scope, rights_status, commercial_use_status, quality_status,
-                generation, evidence_json
+                generation, evidence_json, measurement_basis, measurement_window,
+                population_scope, geographic_scope, methodology_version, coverage_generation
             )
             SELECT
                 {_source_expr(columns, 'o', 'factor_observation_key')},
@@ -437,7 +452,13 @@ def _materialize_artist_intelligence(conn: duckdb.DuckDBPyConnection) -> None:
                     CASE WHEN {value} IS NULL THEN 'UNKNOWN' ELSE 'OBSERVED' END
                 ),
                 COALESCE({_source_expr(columns, 'o', 'generation', 'source_version')}, 'LEGACY'),
-                {_source_expr(columns, 'o', 'evidence_json')}
+                {_source_expr(columns, 'o', 'evidence_json')},
+                {_context_expr('measurement_basis')},
+                {_context_expr('measurement_window')},
+                {_context_expr('population_scope')},
+                {_context_expr('geographic_scope')},
+                {_context_expr('methodology_version')},
+                {_context_expr('coverage_generation')}
             FROM {factor_table} o
             JOIN selected_artists t ON t.artist_key = o.artist_key
             """

@@ -62,3 +62,11 @@ cloud-runtime/worker-configuration.d.ts
 .pytest-tmp/
 # Atomic UAT scratch (regenerated per run)
 artifacts/*.duckdb
+
+# terminal-runtime deploy assembly (generated in CI, never committed)
+terminal-runtime/public/
+terminal-runtime/docker/python/
+terminal-runtime/docker/public/
+terminal-runtime/docker/requirements.txt
+terminal-runtime/node_modules
+terminal-runtime/worker-configuration.d.ts

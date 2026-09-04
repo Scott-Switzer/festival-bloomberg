@@ -26,8 +26,8 @@ import json
 import os
 import re
 import threading
+import time
 from contextlib import nullcontext
-from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -42,7 +42,12 @@ from .storage import WORKSPACE_DEFAULT_DB
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_SERVING_DB = _PROJECT_ROOT / "serving" / "artist_security_terminal_v1" / "terminal.duckdb"
 DEFAULT_CURRENT_JSON = _PROJECT_ROOT / "serving" / "artist_security_terminal_v1" / "CURRENT.json"
-MVP_STATIC_DIR = _PROJECT_ROOT / "apps" / "terminal" / "mvp"
+MVP_STATIC_DIR = Path(
+    os.environ.get(
+        "TERMINAL_STATIC_DIR",
+        str(_PROJECT_ROOT / "apps" / "terminal" / "mvp"),
+    )
+)
 SHORTLIST_DB = Path(WORKSPACE_DEFAULT_DB).parent / "terminal_mvp_shortlists.duckdb"
 DEFAULT_PORT = 8931
 
@@ -68,7 +73,7 @@ def _json(payload: Any) -> bytes:
 def _rows(conn, sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
     cur = conn.execute(sql, params or [])
     cols = [column[0] for column in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
+    return [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
 
 
 def _one(conn, sql: str, params: list[Any] | None = None) -> dict[str, Any] | None:
@@ -142,6 +147,7 @@ class MvpTerminalApp:
 
     def __init__(self, conn, workspace_conn, *, db_path: Path, current_json_path: Path) -> None:
         self.conn = wrap_connection(conn, read_only=True)
+        self._started_at = time.time()
         self.workspace_conn = wrap_connection(workspace_conn, read_only=False)
         self._workspace_write_lock = threading.RLock()
         self._compatibility_lock = CompatibilityRequestLock()
@@ -212,6 +218,16 @@ class MvpTerminalApp:
             return self._static(path[len("/static/"):])
         params = {k: v[0] for k, v in parse_qs(query).items()}
 
+        if path == "/health":
+            meta = self._serving_meta()
+            return self._ok({
+                "status": "ok",
+                "artifact": meta.get("artifact"),
+                "generation": meta.get("generation"),
+                "sha256": meta.get("sha256"),
+                "db_bytes": meta.get("db_bytes"),
+                "uptime_seconds": int(time.time() - self._started_at),
+            })
         if path == "/api/status":
             return self._ok(self._serving_meta())
         if path == "/api/coverage":
@@ -459,7 +475,6 @@ class MvpTerminalApp:
             item = json.loads(body.decode("utf-8"))
         except Exception:
             return self._bad_request("invalid JSON body")
-        import hashlib
         import uuid
         name = str(item.get("name") or "").strip()
         if not name:

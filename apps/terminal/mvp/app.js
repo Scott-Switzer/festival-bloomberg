@@ -10,8 +10,20 @@ function toast(msg) {
   toastTimer = setTimeout(() => el.classList.add("hidden"), 2600);
 }
 
+const TERMINAL_ACCESS_PREFIX = (() => {
+  const pathname = window.location.pathname.replace(/\/+$/, "");
+  return pathname === "/" ? "" : pathname;
+})();
+
+function terminalApiPath(path) {
+  const normalized = String(path || "").startsWith("/")
+    ? String(path)
+    : `/${String(path || "")}`;
+  return `${TERMINAL_ACCESS_PREFIX}${normalized}`;
+}
+
 async function api(path, opts) {
-  const res = await fetch(path, opts);
+  const res = await fetch(terminalApiPath(path), opts);
   if (!res.ok) {
     let msg = res.status + " " + path;
     try { const j = await res.json(); if (j && j.error) msg = j.error; } catch (e) {}

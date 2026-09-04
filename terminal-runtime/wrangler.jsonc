@@ -1,0 +1,85 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // Dedicated read-only terminal runtime. SEPARATE from fi-acquisition-runtime.
+  // Responsibilities ONLY: static terminal assets + product container serving
+  // the compact serving DuckDB artifact. NO acquisition admin API, NO provider
+  // secrets, NO batch triggers, NO Gold materialization, NO warehouse mutation.
+  //
+  // Cloudflare does NOT inherit durable_objects / containers / r2_buckets
+  // across environments, so every binding is declared explicitly per env
+  // below (staging → festival-bloomberg-terminal-staging, production →
+  // festival-bloomberg-terminal-production).
+  "name": "festival-bloomberg-terminal",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-26",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Static terminal assets (Home / Search / Artist Security / Underwrite /
+  // Portfolio SPA). Assembled into ./public by CI from apps/terminal/mvp.
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  },
+
+  "env": {
+    "staging": {
+      "name": "festival-bloomberg-terminal-staging",
+      "durable_objects": {
+        "bindings": [
+          { "name": "TERMINAL_CONTAINER", "class_name": "TerminalContainer" }
+        ]
+      },
+      "migrations": [
+        { "tag": "v1", "new_sqlite_classes": ["TerminalContainer"] }
+      ],
+      "r2_buckets": [
+        { "binding": "LAKE_BUCKET", "bucket_name": "festival-intelligence-lake" }
+      ],
+      "containers": [
+        {
+          "class_name": "TerminalContainer",
+          "image": "./docker/Dockerfile.terminal",
+          "max_instances": 1,
+          "instance_type": "standard-1"
+        }
+      ],
+      "vars": {
+        "POLICY_VERSION": "1.0.0",
+        "SOFTWARE_VERSION": "artist-terminal-v1"
+      }
+    },
+
+    "production": {
+      "name": "festival-bloomberg-terminal-production",
+      "durable_objects": {
+        "bindings": [
+          { "name": "TERMINAL_CONTAINER", "class_name": "TerminalContainer" }
+        ]
+      },
+      "migrations": [
+        { "tag": "v1", "new_sqlite_classes": ["TerminalContainer"] }
+      ],
+      "r2_buckets": [
+        { "binding": "LAKE_BUCKET", "bucket_name": "festival-intelligence-lake" }
+      ],
+      "containers": [
+        {
+          "class_name": "TerminalContainer",
+          "image": "./docker/Dockerfile.terminal",
+          "max_instances": 1,
+          "instance_type": "standard-1"
+        }
+      ],
+      "vars": {
+        "POLICY_VERSION": "1.0.0",
+        "SOFTWARE_VERSION": "artist-terminal-v1"
+      }
+    }
+  }
+
+  // --- Secrets ---
+  // NONE required. The terminal runtime deliberately carries no provider
+  // credentials or admin tokens. It serves the PUBLIC read-only product
+  // artifact only. Cloudflare Access (or another allowlist) can be layered in
+  // front of it without changing the worker.
+}

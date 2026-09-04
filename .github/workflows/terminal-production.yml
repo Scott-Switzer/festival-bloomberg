@@ -1,0 +1,95 @@
+# Festival Bloomberg — Hosted Terminal Production Deploy
+#
+# Manual + environment-gated deploy of the read-only terminal runtime to
+# Cloudflare as festival-bloomberg-terminal-production. The `production`
+# GitHub environment requires an approving reviewer before deployment runs.
+
+name: Terminal Production Deploy
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-production:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: terminal-runtime/package-lock.json
+
+      - name: Install dependencies
+        working-directory: terminal-runtime
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: terminal-runtime
+        run: npm run typecheck
+
+      - name: Assemble deploy context
+        working-directory: terminal-runtime
+        run: |
+          set -euo pipefail
+          mkdir -p public docker
+          cp -r ../apps/terminal/mvp/. public/
+          cp -r ../python docker/python
+          cp -r public docker/public
+          cp ../requirements.txt docker/requirements.txt
+          test -f public/index.html
+          test -f docker/Dockerfile.terminal
+          test -f docker/public/index.html
+          test -f docker/requirements.txt
+
+      - name: Deploy production terminal (festival-bloomberg-terminal-production)
+        working-directory: terminal-runtime
+        id: deploy
+        run: |
+          set -euo pipefail
+          npx wrangler deploy --env production 2>&1 | tee /tmp/wrangler-deploy.log
+          URL="$(grep -Eo 'https://[^[:space:]]+\.workers\.dev' /tmp/wrangler-deploy.log | tail -1 || true)"
+          if [ -z "$URL" ]; then
+            echo "WRANGLER_URL_NOT_FOUND: deploy did not return a workers.dev URL" >&2
+            exit 1
+          fi
+          echo "PRODUCTION_URL=$URL"
+          echo "PRODUCTION_URL=$URL" >> "$GITHUB_OUTPUT"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Smoke test hosted terminal
+        env:
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          URL="${{ steps.deploy.outputs.PRODUCTION_URL }}"
+          CURL_HEADERS=()
+          if [ -n "${CF_ACCESS_CLIENT_ID:-}" ] && [ -n "${CF_ACCESS_CLIENT_SECRET:-}" ]; then
+            CURL_HEADERS+=( -H "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" )
+            CURL_HEADERS+=( -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}" )
+          fi
+          ok=""
+          for i in $(seq 1 60); do
+            if curl "${CURL_HEADERS[@]}" -fsS --max-time 20 "$URL/health" > /tmp/health.json 2>/dev/null; then
+              ok=1
+              break
+            fi
+            echo "waiting for terminal cold start (attempt $i)..."
+            sleep 20
+          done
+          if [ -z "$ok" ]; then
+            echo "TERMINAL_HEALTH_TIMEOUT" >&2
+            exit 1
+          fi
+          cat /tmp/health.json
+          curl "${CURL_HEADERS[@]}" -fsS --max-time 30 "$URL/api/status" | head -c 1200
+          echo
