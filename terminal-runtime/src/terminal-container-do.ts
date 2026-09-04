@@ -42,7 +42,10 @@ export class TerminalContainer extends DurableObject<TerminalRuntimeEnv> {
    */
   async fetch(request: Request): Promise<Response> {
     const requestUrl = new URL(request.url);
-    const configuredPath = requestUrl.pathname.match(/^\/[A-Za-z0-9_-]{16,96}/)?.[0] || "";
+    // The Worker computes the logical path and passes only the prefix as an
+    // internal routing header. Do not infer a prefix from /api or /health:
+    // those are ordinary public-demo paths and must bootstrap at the origin.
+    const configuredPath = request.headers.get("X-Terminal-Access-Prefix") || "";
     const origin = `${requestUrl.origin}${configuredPath}`;
     const logicalPath = configuredPath
       ? requestUrl.pathname.slice(configuredPath.length) || "/"
@@ -50,7 +53,14 @@ export class TerminalContainer extends DurableObject<TerminalRuntimeEnv> {
     await this.ensureContainerStarted(origin);
     const forwardedUrl = new URL(request.url);
     forwardedUrl.pathname = logicalPath;
-    return this.http!.fetch(new Request(forwardedUrl, request));
+    const forwardedHeaders = new Headers(request.headers);
+    forwardedHeaders.delete("X-Terminal-Access-Prefix");
+    return this.http!.fetch(new Request(forwardedUrl, {
+      method: request.method,
+      headers: forwardedHeaders,
+      body: request.method === "GET" || request.method === "HEAD" ? undefined : request.body,
+      redirect: request.redirect,
+    }));
   }
 
   /**
@@ -97,6 +107,7 @@ export class TerminalContainer extends DurableObject<TerminalRuntimeEnv> {
         env: {
           BOOTSTRAP_BASE: origin,
           PRODUCT_SCRATCH_DIR: "/tmp/festival-bloomberg-terminal",
+          TERMINAL_MODE: String(this.env.TERMINAL_MODE || "PRODUCTION_PRIVATE"),
         },
         enableInternet: true, // needs to reach its own public origin for the artifact
       });
@@ -119,13 +130,15 @@ export class TerminalContainer extends DurableObject<TerminalRuntimeEnv> {
       });
 
     const http = container.getTcpPort(PRODUCT_PORT);
+    const originUrl = new URL(origin);
+    const internalHealthUrl = `${originUrl.origin}/health`;
 
     // Poll /health until the entrypoint reports a verified, open generation.
     const deadline = Date.now() + START_TIMEOUT_MS;
     let lastError = "no health response yet";
     while (Date.now() < deadline) {
       try {
-        const health = await http.fetch(new Request(`${origin}/health`));
+        const health = await http.fetch(new Request(internalHealthUrl));
         if (health.ok) {
           this.http = http;
           return;

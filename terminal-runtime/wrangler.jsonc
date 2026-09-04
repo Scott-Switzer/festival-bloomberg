@@ -4,18 +4,14 @@
   // Responsibilities ONLY: static terminal assets + product container serving
   // the compact serving DuckDB artifact. NO acquisition admin API, NO provider
   // secrets, NO batch triggers, NO Gold materialization, NO warehouse mutation.
-  //
-  // Cloudflare does NOT inherit durable_objects / containers / r2_buckets
-  // across environments, so every binding is declared explicitly per env
-  // below (staging → festival-bloomberg-terminal-staging, production →
-  // festival-bloomberg-terminal-production).
   "name": "festival-bloomberg-terminal",
   "main": "src/index.ts",
   "compatibility_date": "2026-08-26",
   "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
 
-  // Static terminal assets (Home / Search / Artist Security / Underwrite /
-  // Portfolio SPA). Assembled into ./public by CI from apps/terminal/mvp.
+  // Static terminal assets are assembled into ./public by CI from
+  // apps/terminal/mvp. The Worker never serves data from these files.
   "assets": {
     "directory": "./public",
     "binding": "ASSETS"
@@ -44,8 +40,9 @@
         }
       ],
       "vars": {
+        "TERMINAL_MODE": "STAGING_PUBLIC_DEMO",
         "POLICY_VERSION": "1.0.0",
-        "SOFTWARE_VERSION": "artist-terminal-v1"
+        "SOFTWARE_VERSION": "artist-terminal-v1-staging"
       }
     },
 
@@ -71,15 +68,14 @@
         }
       ],
       "vars": {
+        "TERMINAL_MODE": "PRODUCTION_PRIVATE",
         "POLICY_VERSION": "1.0.0",
-        "SOFTWARE_VERSION": "artist-terminal-v1"
+        "SOFTWARE_VERSION": "artist-terminal-v1-production"
       }
     }
   }
 
-  // --- Secrets ---
-  // NONE required. The terminal runtime deliberately carries no provider
-  // credentials or admin tokens. It serves the PUBLIC read-only product
-  // artifact only. Cloudflare Access (or another allowlist) can be layered in
-  // front of it without changing the worker.
+  // No provider or acquisition secrets are present in this runtime. Production
+  // authentication is supplied by Cloudflare Access in front of the Worker;
+  // absent Access headers fail closed in src/index.ts.
 }

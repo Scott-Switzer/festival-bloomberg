@@ -408,11 +408,51 @@ class MvpTerminalApp:
         }
 
     def _demo(self) -> list[dict[str, Any]]:
+        # Keep the guided demo useful on data-expanded artifacts: prioritize
+        # artists with both a real factor-tape row and a real sentiment row,
+        # then fall back to the estate's cross-source leaders. The query is
+        # intentionally read-only and tolerates pre-intelligence snapshots.
         try:
             rows = _rows(
                 self.conn,
-                """SELECT * FROM demo_artists ORDER BY completeness DESC,
-                   market_count DESC, historical_event_count DESC, name LIMIT 12""",
+                """
+                WITH factor AS (
+                    SELECT artist_key, COUNT(*) AS factor_rows
+                    FROM artist_factor_observations
+                    GROUP BY artist_key
+                ), sentiment AS (
+                    SELECT artist_key, COUNT(*) AS sentiment_rows
+                    FROM artist_sentiment_observations
+                    GROUP BY artist_key
+                )
+                SELECT
+                    a.artist_key,
+                    a.name,
+                    a.tier,
+                    COALESCE(d.completeness, 1) AS completeness,
+                    COALESCE(d.market_count, a.market_count, 0) AS market_count,
+                    COALESCE(d.historical_event_count, a.historical_event_count, 0) AS historical_event_count,
+                    COALESCE(d.festival_appearance_count, a.festival_appearance_count, 0) AS festival_appearance_count,
+                    COALESCE(d.attention_source_count, 0) AS attention_source_count,
+                    COALESCE(d.peer_count, 0) AS peer_count,
+                    COALESCE(d.future_event_count, 0) AS future_event_count,
+                    COALESCE(factor.factor_rows, 0) AS factor_rows,
+                    COALESCE(sentiment.sentiment_rows, 0) AS sentiment_rows
+                FROM artists a
+                LEFT JOIN demo_artists d USING (artist_key)
+                LEFT JOIN factor USING (artist_key)
+                LEFT JOIN sentiment USING (artist_key)
+                ORDER BY
+                    (factor.factor_rows > 0 AND sentiment.sentiment_rows > 0) DESC,
+                    (factor.factor_rows > 0 OR sentiment.sentiment_rows > 0) DESC,
+                    factor.factor_rows DESC,
+                    sentiment.sentiment_rows DESC,
+                    completeness DESC,
+                    market_count DESC,
+                    historical_event_count DESC,
+                    a.name
+                LIMIT 12
+                """,
             )
         except Exception:
             rows = []

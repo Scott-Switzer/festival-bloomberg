@@ -39,6 +39,7 @@ SCRATCH = Path(os.environ.get("PRODUCT_SCRATCH_DIR", "/tmp/festival-bloomberg-te
 DB_PATH = SCRATCH / "terminal.duckdb"
 CURRENT_PATH = SCRATCH / "CURRENT.json"
 WORKSPACE_PATH = SCRATCH / "workspace.db"
+TERMINAL_MODE = os.environ.get("TERMINAL_MODE", "PRODUCTION_PRIVATE").strip().upper()
 PORT = int(os.environ.get("PRODUCT_SERVING_PORT", "8080"))
 
 
@@ -93,7 +94,10 @@ def main() -> None:
     app = mvp_server.make_app(
         serving_db=DB_PATH,
         current_json=CURRENT_PATH,
-        workspace_db=str(WORKSPACE_PATH),
+        # Public staging has no private/customer workspace. Keep buyer inputs
+        # ephemeral in-memory and avoid cross-user persistence on the shared
+        # read-only demo container; production remains on its instance scratch.
+        workspace_db=(":memory:" if TERMINAL_MODE == "STAGING_PUBLIC_DEMO" else str(WORKSPACE_PATH)),
     )
     print(f"serving product on 0.0.0.0:{PORT}", flush=True)
     mvp_server.serve(app, PORT, host="0.0.0.0")

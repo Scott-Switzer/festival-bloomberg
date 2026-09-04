@@ -8,7 +8,7 @@
 # The terminal worker has NO secrets of its own (no provider credentials, no
 # admin token). It serves the public read-only serving artifact.
 #
-# Manual trigger: gh workflow run terminal-staging.yml
+# Manual trigger: gh workflow run terminal-deploy.yml --ref <branch>
 # Automatic: push to main touching the terminal runtime or terminal assets.
 
 name: Terminal Staging Deploy
