@@ -147,6 +147,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--serving-db", type=Path, default=None)
     parser.add_argument("--current-json", type=Path, default=None)
+    parser.add_argument("--current", action="store_true",
+                        help="Use the local serving CURRENT.json pointer and its artifact")
+    parser.add_argument("--generation", default=None,
+                        help="Use a named local generation under serving/.../generations/<id> when present")
     parser.add_argument("--out-dir", type=Path,
                         default=PROJECT_ROOT / "artifacts" / "artist_security_data_v2")
     parser.add_argument("--artist-key", default=None,
@@ -166,6 +170,29 @@ def main() -> int:
 
     out_dir = args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.current and args.generation:
+        parser.error("--current and --generation are mutually exclusive")
+    if args.current:
+        args.current_json = PROJECT_ROOT / "serving" / "artist_security_terminal_v1" / "CURRENT.json"
+        current_payload = json.loads(args.current_json.read_text(encoding="utf-8"))
+        args.serving_db = args.current_json.parent / "terminal.duckdb"
+        if current_payload.get("generation"):
+            print(f"resolved --current to {current_payload['generation']}")
+    elif args.generation:
+        args.current_json = PROJECT_ROOT / "serving" / "artist_security_terminal_v1" / "CURRENT.json"
+        args.serving_db = (
+            PROJECT_ROOT / "serving" / "artist_security_terminal_v1" / "generations"
+            / args.generation / "terminal.duckdb"
+        )
+        if not args.serving_db.is_file():
+            parser.error(f"local generation artifact not found: {args.serving_db}")
+        current_payload = json.loads(args.current_json.read_text(encoding="utf-8"))
+        if current_payload.get("generation") != args.generation:
+            parser.error(
+                "--generation requires a matching local CURRENT.json; "
+                f"CURRENT points to {current_payload.get('generation')!r}"
+            )
 
     # ── 0. Remote fetch mode: obtain the EXACT CURRENT generation ──
     if args.fetch_remote:
@@ -197,8 +224,7 @@ def main() -> int:
         args.serving_db = db_path
         args.current_json = out_dir / "CURRENT.json"
     elif args.serving_db is None or args.current_json is None:
-        parser.error("--serving-db and --current-json are required unless "
-                     "--fetch-remote is used")
+        parser.error("--serving-db/--current-json, --current, or --generation is required unless --fetch-remote is used")
 
     results: dict = {
         "serving_db": str(args.serving_db),

@@ -26,8 +26,8 @@ import json
 import os
 import re
 import threading
+import time
 from contextlib import nullcontext
-from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -42,7 +42,12 @@ from .storage import WORKSPACE_DEFAULT_DB
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_SERVING_DB = _PROJECT_ROOT / "serving" / "artist_security_terminal_v1" / "terminal.duckdb"
 DEFAULT_CURRENT_JSON = _PROJECT_ROOT / "serving" / "artist_security_terminal_v1" / "CURRENT.json"
-MVP_STATIC_DIR = _PROJECT_ROOT / "apps" / "terminal" / "mvp"
+MVP_STATIC_DIR = Path(
+    os.environ.get(
+        "TERMINAL_STATIC_DIR",
+        str(_PROJECT_ROOT / "apps" / "terminal" / "mvp"),
+    )
+)
 SHORTLIST_DB = Path(WORKSPACE_DEFAULT_DB).parent / "terminal_mvp_shortlists.duckdb"
 DEFAULT_PORT = 8931
 
@@ -68,7 +73,7 @@ def _json(payload: Any) -> bytes:
 def _rows(conn, sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
     cur = conn.execute(sql, params or [])
     cols = [column[0] for column in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
+    return [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
 
 
 def _one(conn, sql: str, params: list[Any] | None = None) -> dict[str, Any] | None:
@@ -142,6 +147,7 @@ class MvpTerminalApp:
 
     def __init__(self, conn, workspace_conn, *, db_path: Path, current_json_path: Path) -> None:
         self.conn = wrap_connection(conn, read_only=True)
+        self._started_at = time.time()
         self.workspace_conn = wrap_connection(workspace_conn, read_only=False)
         self._workspace_write_lock = threading.RLock()
         self._compatibility_lock = CompatibilityRequestLock()
@@ -212,6 +218,16 @@ class MvpTerminalApp:
             return self._static(path[len("/static/"):])
         params = {k: v[0] for k, v in parse_qs(query).items()}
 
+        if path == "/health":
+            meta = self._serving_meta()
+            return self._ok({
+                "status": "ok",
+                "artifact": meta.get("artifact"),
+                "generation": meta.get("generation"),
+                "sha256": meta.get("sha256"),
+                "db_bytes": meta.get("db_bytes"),
+                "uptime_seconds": int(time.time() - self._started_at),
+            })
         if path == "/api/status":
             return self._ok(self._serving_meta())
         if path == "/api/coverage":
@@ -392,11 +408,51 @@ class MvpTerminalApp:
         }
 
     def _demo(self) -> list[dict[str, Any]]:
+        # Keep the guided demo useful on data-expanded artifacts: prioritize
+        # artists with both a real factor-tape row and a real sentiment row,
+        # then fall back to the estate's cross-source leaders. The query is
+        # intentionally read-only and tolerates pre-intelligence snapshots.
         try:
             rows = _rows(
                 self.conn,
-                """SELECT * FROM demo_artists ORDER BY completeness DESC,
-                   market_count DESC, historical_event_count DESC, name LIMIT 12""",
+                """
+                WITH factor AS (
+                    SELECT artist_key, COUNT(*) AS factor_rows
+                    FROM artist_factor_observations
+                    GROUP BY artist_key
+                ), sentiment AS (
+                    SELECT artist_key, COUNT(*) AS sentiment_rows
+                    FROM artist_sentiment_observations
+                    GROUP BY artist_key
+                )
+                SELECT
+                    a.artist_key,
+                    a.name,
+                    a.tier,
+                    COALESCE(d.completeness, 1) AS completeness,
+                    COALESCE(d.market_count, a.market_count, 0) AS market_count,
+                    COALESCE(d.historical_event_count, a.historical_event_count, 0) AS historical_event_count,
+                    COALESCE(d.festival_appearance_count, a.festival_appearance_count, 0) AS festival_appearance_count,
+                    COALESCE(d.attention_source_count, 0) AS attention_source_count,
+                    COALESCE(d.peer_count, 0) AS peer_count,
+                    COALESCE(d.future_event_count, 0) AS future_event_count,
+                    COALESCE(factor.factor_rows, 0) AS factor_rows,
+                    COALESCE(sentiment.sentiment_rows, 0) AS sentiment_rows
+                FROM artists a
+                LEFT JOIN demo_artists d USING (artist_key)
+                LEFT JOIN factor USING (artist_key)
+                LEFT JOIN sentiment USING (artist_key)
+                ORDER BY
+                    (factor.factor_rows > 0 AND sentiment.sentiment_rows > 0) DESC,
+                    (factor.factor_rows > 0 OR sentiment.sentiment_rows > 0) DESC,
+                    factor.factor_rows DESC,
+                    sentiment.sentiment_rows DESC,
+                    completeness DESC,
+                    market_count DESC,
+                    historical_event_count DESC,
+                    a.name
+                LIMIT 12
+                """,
             )
         except Exception:
             rows = []
@@ -459,7 +515,6 @@ class MvpTerminalApp:
             item = json.loads(body.decode("utf-8"))
         except Exception:
             return self._bad_request("invalid JSON body")
-        import hashlib
         import uuid
         name = str(item.get("name") or "").strip()
         if not name:
