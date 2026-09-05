@@ -36,7 +36,11 @@
       { "queue": "fi-youtube", "binding": "YOUTUBE_QUEUE" },
       { "queue": "fi-structured-api", "binding": "STRUCTURED_API_QUEUE" },
       { "queue": "fi-browser", "binding": "BROWSER_QUEUE" },
+      // FAST_QUEUE and MONID_QUEUE are the same fi-monid producer under two
+      // names: planner/workflow/bootstrap use FAST_QUEUE; scheduled() uses
+      // MONID_QUEUE. Dual-bind so both code paths enqueue without a rewrite.
       { "queue": "fi-monid", "binding": "MONID_QUEUE" },
+      { "queue": "fi-monid", "binding": "FAST_QUEUE" },
       { "queue": "fi-processing", "binding": "PROCESSING_QUEUE" },
       { "queue": "fi-dlq", "binding": "DLQ_QUEUE" }
     ],

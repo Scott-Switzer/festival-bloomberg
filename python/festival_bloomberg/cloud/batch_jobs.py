@@ -1610,6 +1610,7 @@ def run_terminal_serving_build(spec: dict, scratch_dir: Path) -> dict:
                 f"{GOLD_FACTOR_TAPE_PREFIX}/CURRENT.json"
             ),
             sentiment_current=f"{GOLD_SENTIMENT_PREFIX}/CURRENT.json",
+            ticket_market_current=f"{GOLD_TICKET_MARKET_PREFIX}/CURRENT.json",
             manifest=manifest,
         )
         counts.update(gold_counts)
@@ -1676,6 +1677,7 @@ def run_terminal_serving_build(spec: dict, scratch_dir: Path) -> dict:
                 "inputs": {name: key for name, key in fixed_parquet_keys.items()},
                 "wikidata_artist_external_ids": wd_key,
                 "factor_gold": json.loads((work / "factor_gold_lineage.json").read_text()) if (work / "factor_gold_lineage.json").exists() else None,
+                "ticket_market_gold": json.loads((work / "ticket_market_gold_lineage.json").read_text()) if (work / "ticket_market_gold_lineage.json").exists() else None,
                 "code_commit": _git_commit(),
             },
             "row_counts": counts,
@@ -1763,6 +1765,7 @@ def run_terminal_serving_build(spec: dict, scratch_dir: Path) -> dict:
 #: Prefixes for the gold artist-intelligence data products (P17).
 GOLD_FACTOR_TAPE_PREFIX = "gold/artist_factor_tape"
 GOLD_SENTIMENT_PREFIX = "gold/artist_sentiment"
+GOLD_TICKET_MARKET_PREFIX = "gold/ticket_market_observations"
 
 #: Staging prefix where the Worker writes official-API ticks.
 STAGING_YOUTUBE_PREFIX = "staging/youtube/"
@@ -1835,6 +1838,7 @@ def _normalize_youtube_tick(tick: dict) -> list[dict]:
 def _fold_gold_artist_intelligence(
     lake, work: Path,
     *, factor_tape_current: str, sentiment_current: str,
+    ticket_market_current: str | None = None,
     manifest: JobManifest,
 ) -> dict[str, int]:
     """Fold gold artist-intelligence products into the compact serving DB.
@@ -1843,7 +1847,8 @@ def _fold_gold_artist_intelligence(
     CURRENT pointers for gold/artist_factor_tape and gold/artist_sentiment
     (if published), streams the parquet to scratch, and materializes the
     ``artist_factor_observations`` and ``artist_sentiment_observations``
-    tables into the serving artifact.
+    tables into the serving artifact. Optionally folds
+    ``ticket_market_observations`` (PUBLIC TICKET MARKET longitudinal tape).
 
     Missing gold products are tolerated (counts stay 0) — the base terminal
     still builds. Any object present but corrupt fails the build closed.
@@ -1853,7 +1858,11 @@ def _fold_gold_artist_intelligence(
     q = _qp
     conn = duckdb.connect(str(work / "terminal.duckdb"))
     conn.execute("PRAGMA threads=2")
-    out: dict[str, int] = {"artist_factor_observations": 0, "artist_sentiment_observations": 0}
+    out: dict[str, int] = {
+        "artist_factor_observations": 0,
+        "artist_sentiment_observations": 0,
+        "ticket_market_observations": 0,
+    }
 
     # ── Factor tape ──
     current = lake.read_checkpoint(lake.config.lake_bucket, factor_tape_current)
@@ -2005,6 +2014,106 @@ def _fold_gold_artist_intelligence(
         )
         out["artist_sentiment_observations"] = int(
             conn.execute("SELECT COUNT(*) FROM artist_sentiment_observations").fetchone()[0]
+        )
+
+    # ── Public ticket market longitudinal observations (optional) ──
+    ticket_current_key = ticket_market_current or f"{GOLD_TICKET_MARKET_PREFIX}/CURRENT.json"
+    current = lake.read_checkpoint(lake.config.lake_bucket, ticket_current_key)
+    if current and current.get("object_key"):
+        tm_key = str(current["object_key"])
+        tm_path = work / "gold_ticket_market_observations.parquet"
+        size = _download_to_scratch(lake, lake.config.lake_bucket, tm_key, tm_path)
+        actual_sha = _streaming_sha256(tm_path)
+        if current.get("sha256") and actual_sha != current["sha256"]:
+            conn.close()
+            raise RuntimeError("TICKET_MARKET_GOLD_HASH_MISMATCH")
+        (work / "ticket_market_gold_lineage.json").write_text(json.dumps({
+            "generation": current.get("generation"), "object_key": tm_key,
+            "sha256": actual_sha, "rows": current.get("rows"),
+            "distinct_pairs": current.get("distinct_pairs"),
+            "label": "PUBLIC TICKET MARKET",
+        }, sort_keys=True))
+        manifest.source_paths.append(f"r2://{lake.config.lake_bucket}/{tm_key}")
+        manifest.r2_read_bytes += size
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ticket_market_observations (
+                observation_key VARCHAR PRIMARY KEY,
+                artist_key VARCHAR,
+                event_key VARCHAR NOT NULL,
+                provider_event_id VARCHAR,
+                artist_name VARCHAR,
+                marketplace VARCHAR NOT NULL,
+                venue_name VARCHAR,
+                city VARCHAR,
+                market_key VARCHAR,
+                event_date DATE,
+                source_url VARCHAR,
+                observed_at TIMESTAMP,
+                retrieved_at TIMESTAMP,
+                knowledge_time TIMESTAMP,
+                currency VARCHAR,
+                face_value DOUBLE,
+                all_in_price DOUBLE,
+                resale_min_price DOUBLE,
+                resale_median_price DOUBLE,
+                resale_max_price DOUBLE,
+                listing_count BIGINT,
+                price_basis VARCHAR,
+                evidence_status VARCHAR,
+                evidence_ref VARCHAR,
+                raw_payload_hash VARCHAR,
+                rights_status VARCHAR,
+                commercial_use_status VARCHAR,
+                identity_match_status VARCHAR,
+                parser_version VARCHAR,
+                wave_label VARCHAR,
+                cohort_version VARCHAR
+            )
+            """
+        )
+        # Resolve artist_key via future_events.provider_event_id (exact), else exact name.
+        conn.execute(
+            f"""
+            INSERT INTO ticket_market_observations (
+                observation_key, artist_key, event_key, provider_event_id,
+                artist_name, marketplace, venue_name, city, market_key, event_date,
+                source_url, observed_at, retrieved_at, knowledge_time, currency,
+                face_value, all_in_price, resale_min_price, resale_median_price,
+                resale_max_price, listing_count, price_basis, evidence_status,
+                evidence_ref, raw_payload_hash, rights_status, commercial_use_status,
+                identity_match_status, parser_version, wave_label, cohort_version
+            )
+            SELECT
+                g.observation_key,
+                COALESCE(
+                    (SELECT f.artist_key FROM future_events f
+                     WHERE g.provider_event_id IS NOT NULL
+                       AND f.provider_event_id = g.provider_event_id
+                     LIMIT 1),
+                    (SELECT a.artist_key FROM artists a
+                     WHERE g.artist_name IS NOT NULL
+                       AND lower(a.name) = lower(g.artist_name)
+                     LIMIT 1)
+                ) AS artist_key,
+                g.event_key, g.provider_event_id, g.artist_name, g.marketplace,
+                g.venue_name, g.city, g.market_key,
+                TRY_CAST(g.event_date AS DATE),
+                g.source_url,
+                CAST(g.observed_at AS TIMESTAMP),
+                CAST(g.retrieved_at AS TIMESTAMP),
+                CAST(g.knowledge_time AS TIMESTAMP),
+                g.currency, g.face_value, g.all_in_price, g.resale_min_price,
+                g.resale_median_price, g.resale_max_price, g.listing_count,
+                g.price_basis, g.evidence_status, g.evidence_ref, g.raw_payload_hash,
+                g.rights_status, g.commercial_use_status, g.identity_match_status,
+                g.parser_version, g.wave_label, g.cohort_version
+            FROM read_parquet({q(tm_path)}) g
+            ON CONFLICT (observation_key) DO NOTHING
+            """
+        )
+        out["ticket_market_observations"] = int(
+            conn.execute("SELECT COUNT(*) FROM ticket_market_observations").fetchone()[0]
         )
 
     conn.close()

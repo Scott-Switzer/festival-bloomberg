@@ -303,25 +303,26 @@ export default {
     }
 
     if (url.pathname === "/ops/health" && request.method === "GET") {
+      // Bounded health: never list+GET thousands of scheduler audit bodies.
+      // last_cron comes from the LAST_CRON pointer written by scheduled().
       const universe = await loadV2Universe(env);
       const governorId = env.GOVERNOR.idFromName("acquisition-governor");
       const governor = env.GOVERNOR.get(governorId) as any;
       const gov = await governor.getReservationSummary();
-      const objects = await Promise.all([
-        env.RAW_BUCKET.list({ prefix: "raw/youtube/", limit: 1000 }),
-        env.LAKE_BUCKET.list({ prefix: "staging/youtube/", limit: 1000 }),
-        env.BACKUP_BUCKET.list({ prefix: "control/scheduler/", limit: 1000 }),
+      const [youtubeRaw, youtubeLake, lastCronObj] = await Promise.all([
+        env.RAW_BUCKET.list({ prefix: "raw/youtube/", limit: 50 }),
+        env.LAKE_BUCKET.list({ prefix: "staging/youtube/", limit: 50 }),
+        env.BACKUP_BUCKET.get("control/scheduler/LAST_CRON.json"),
       ]);
-      const nowMs = Date.now();
-      const audits: any[] = [];
-      for (const obj of objects[2].objects.slice(-1000)) {
-        const item = await env.BACKUP_BUCKET.get(obj.key);
-        if (item) { try { audits.push(await item.json()); } catch {} }
+      let lastCron: any = null;
+      if (lastCronObj) {
+        try { lastCron = await lastCronObj.json(); } catch { /* ignore malformed */ }
       }
-      const recent = audits.filter((x) => x.started_at && nowMs - new Date(x.started_at).getTime() <= 24 * 3600 * 1000);
-      const recentHour = recent.filter((x) => nowMs - new Date(x.started_at).getTime() <= 3600 * 1000);
-      const youtubeAudit = (xs: any[]) => xs.reduce((n, x) => n + (x.queues?.youtube || 0), 0);
-      const youtubeTicks = objects[1].objects.filter((x) => x.key.includes("staging/youtube/")).length;
+      const nowMs = Date.now();
+      const lastCronAt = lastCron?.completed_at || lastCron?.started_at || null;
+      const lastCronMs = lastCronAt ? new Date(lastCronAt).getTime() : null;
+      const cronFresh1h = lastCronMs !== null && nowMs - lastCronMs <= 3600 * 1000;
+      const cronFresh24h = lastCronMs !== null && nowMs - lastCronMs <= 24 * 3600 * 1000;
       const queueMetrics = await readQueueMetrics(env, new Date(), 15);
       const platformQueueMetrics = await readPlatformQueueMetrics({
         "fi-youtube": env.YOUTUBE_QUEUE,
@@ -356,14 +357,42 @@ export default {
       const platformBacklogValues = Object.entries(platformQueueMetrics).filter(([queue, metric]) => queue !== "fi-dlq" && metric.available && metric.backlog_count !== null).map(([, metric]) => metric.backlog_count as number);
       const platformBacklogComplete = Object.entries(platformQueueMetrics).filter(([queue]) => queue !== "fi-dlq").every(([, metric]) => metric.available && metric.backlog_count !== null);
       const platformDlq = platformQueueMetrics["fi-dlq"];
+      const lastQueues = lastCron?.queues || {};
       return Response.json({
         deployed_version: env.SOFTWARE_VERSION,
-        last_cron_at: audits.length ? audits[audits.length - 1].completed_at || audits[audits.length - 1].started_at : null,
-        cron_runs_1h: recentHour.length,
-        cron_runs_24h: recent.length,
+        last_cron_at: lastCronAt,
+        last_cron_run_id: lastCron?.run_id || null,
+        last_cron_status: lastCron?.status || null,
+        // Pointer-based freshness (not a truncated audit scan). Exact 1h/24h
+        // counts require pagination; these booleans are honest substitutes.
+        cron_fresh_1h: cronFresh1h,
+        cron_fresh_24h: cronFresh24h,
+        cron_runs_1h: cronFresh1h ? 1 : 0,
+        cron_runs_24h: cronFresh24h ? 1 : 0,
         watch_universe_size: universe.events.length,
-        youtube: { candidate: universe.youtube_channels?.length || 0, due: youtubeAudit(recent), selected: youtubeAudit(recent), checks_1h: youtubeTicks, checks_24h: youtubeTicks, changes_1h: youtubeTicks, changes_24h: youtubeTicks, heartbeats_1h: 0, quota_used_today: youtubeAudit(recent), quota_projected_today: youtubeAudit(recent), quota_blocked: 0 },
-        tickets: { candidate: universe.events.length, due: null, selected: null, checks_24h: null, useful_24h: null, changes_24h: null, structured_queue_checks_24h: null },
+        youtube: {
+          candidate: universe.youtube_channels?.length || 0,
+          due: null,
+          selected: lastQueues.youtube ?? null,
+          checks_1h: youtubeLake.objects.length,
+          checks_24h: youtubeLake.objects.length,
+          changes_1h: null,
+          changes_24h: null,
+          heartbeats_1h: 0,
+          quota_used_today: null,
+          quota_projected_today: null,
+          quota_blocked: null,
+        },
+        tickets: {
+          candidate: universe.events.length,
+          due: null,
+          selected: (lastQueues.monid || 0) + (lastQueues.structured_api || 0),
+          checks_24h: null,
+          useful_24h: null,
+          changes_24h: null,
+          structured_queue_checks_24h: lastQueues.structured_api ?? null,
+          monid_queue_checks_last_cron: lastQueues.monid ?? null,
+        },
         queues: {
           // Aggregate fields are authoritative when every operational queue
           // returned a realtime metric; use by_queue for per-queue bytes and
@@ -377,7 +406,11 @@ export default {
           source: "Cloudflare Queue.metrics() realtime depth plus R2 batch lifecycle telemetry",
           by_queue: queueHealth,
         },
-        r2: { youtube_raw_objects: objects[0].objects.length, youtube_lake_objects: objects[1].objects.length, scheduler_audits: audits.length },
+        r2: {
+          youtube_raw_objects: youtubeRaw.objects.length,
+          youtube_lake_objects: youtubeLake.objects.length,
+          scheduler_last_cron_pointer: Boolean(lastCron),
+        },
         governor: gov,
       });
     }
@@ -974,6 +1007,12 @@ export default {
       };
       await env.BACKUP_BUCKET.put(`control/scheduler/${runId}.json`, JSON.stringify(audit), { httpMetadata: { contentType: "application/json" } });
       await env.BACKUP_BUCKET.put(`control/runs/${runId}.json`, JSON.stringify(audit), { httpMetadata: { contentType: "application/json" } });
+      // Pointer for O(1) health — never derive last_cron from a truncated list.
+      await env.BACKUP_BUCKET.put(
+        "control/scheduler/LAST_CRON.json",
+        JSON.stringify(audit),
+        { httpMetadata: { contentType: "application/json" } },
+      );
       await Promise.all([
         writeQueueEnqueueMetric(env, "fi-youtube", youtubeQueued, runId),
         writeQueueEnqueueMetric(env, "fi-structured-api", structuredQueued, runId),

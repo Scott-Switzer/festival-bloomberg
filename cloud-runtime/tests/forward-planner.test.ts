@@ -68,7 +68,39 @@ describe("forward planner", () => {
 
     const webWindow = await planForwardFamilies(makeEnv([], stateReads, events), { now: new Date("2026-08-30T12:00:00Z") });
     expect(webWindow.tasks.TICKET_STRUCTURED).toHaveLength(1);
-    expect(webWindow.tasks.TICKET_WEB).toHaveLength(1);
+    // Monid FAST covers every accepted exact URL, including Ticketmaster pages.
+    expect(webWindow.tasks.TICKET_WEB).toHaveLength(2);
+    expect(webWindow.tasks.TICKET_WEB.map((t) => t.marketplace).sort()).toEqual([
+      "ticketmaster.com",
+      "vividseats.com",
+    ]);
+  });
+
+  it("rotates Monid FAST across ticketmaster and ticketweb exact URLs", async () => {
+    const events = [
+      ...Array.from({ length: 30 }, (_, i) => ({
+        event_key: `tm_${i}`,
+        event_date: "2026-09-01",
+        marketplace: "ticketmaster.com",
+        marketplace_event_url: `https://www.ticketmaster.com/event/${i}`,
+        mapping_status: "EXACT_PROVIDER_ID",
+        provider_event_id: `id_${i}`,
+      })),
+      ...Array.from({ length: 10 }, (_, i) => ({
+        event_key: `tw_${i}`,
+        event_date: "2026-09-01",
+        marketplace: "ticketweb.com",
+        marketplace_event_url: `https://www.ticketweb.com/event/${i}`,
+        mapping_status: "EXACT_PROVIDER_ID",
+      })),
+    ];
+    const plan = await planForwardFamilies(makeEnv([], { count: 0 }, events), {
+      now: new Date("2026-08-30T12:00:00Z"),
+      web_limit: 25,
+    });
+    expect(plan.families.find((x) => x.family === "TICKET_WEB")?.candidate).toBe(40);
+    expect(plan.tasks.TICKET_WEB).toHaveLength(25);
+    expect(plan.tasks.TICKET_WEB.some((t) => t.marketplace === "ticketmaster.com")).toBe(true);
   });
 
   it("preserves native ids and filters structured rows without a usable native id", async () => {

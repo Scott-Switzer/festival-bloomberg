@@ -140,6 +140,156 @@ def has_advertised_structured_range(event: dict[str, Any]) -> bool:
     )
 
 
+def _table_exists(conn, table: str) -> bool:
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM information_schema.tables WHERE table_name = ? LIMIT 1",
+            [table],
+        ).fetchone()
+        return row is not None
+    except Exception:
+        return False
+
+
+def _public_ticket_market(conn, artist_key: str) -> dict[str, Any]:
+    """PUBLIC TICKET MARKET panel — listing observations, never demand/sales."""
+    note = (
+        "PUBLIC TICKET MARKET observations from accepted marketplace pages. "
+        "Missing prices stay missing. Listing disappearance is LISTING_NO_LONGER_OBSERVED, "
+        "not a sale. This is not ticket demand, sell-through, attendance, or transaction price."
+    )
+    if not _table_exists(conn, "ticket_market_observations"):
+        return {
+            "status": "UNKNOWN",
+            "label": "PUBLIC TICKET MARKET",
+            "items": [],
+            "events": [],
+            "note": note + " No ticket_market_observations table in this serving generation.",
+        }
+    rows = _rows(conn, """
+        SELECT *
+        FROM ticket_market_observations
+        WHERE artist_key = ?
+        ORDER BY event_key, marketplace, observed_at ASC NULLS LAST
+        LIMIT 500
+    """, [artist_key])
+    if not rows:
+        return {
+            "status": "UNKNOWN",
+            "label": "PUBLIC TICKET MARKET",
+            "items": [],
+            "events": [],
+            "note": note,
+        }
+
+    # Group by event×marketplace; current = latest; priors = earlier chronological.
+    from collections import defaultdict
+    groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for row in rows:
+        groups[(row.get("event_key") or "", row.get("marketplace") or "")].append(row)
+
+    events_out: list[dict[str, Any]] = []
+    for (event_key, marketplace), obs in groups.items():
+        obs_sorted = sorted(obs, key=lambda r: str(r.get("observed_at") or ""))
+        current = obs_sorted[-1]
+        priors = obs_sorted[:-1]
+        current_price = current.get("all_in_price")
+        if current_price is None:
+            current_price = current.get("resale_min_price")
+        if current_price is None:
+            current_price = current.get("face_value")
+
+        def _delta(hours: int) -> dict[str, Any] | None:
+            """1D/7D change only when a prior observation exists in the window."""
+            if current.get("observed_at") is None or current_price is None:
+                return None
+            try:
+                from datetime import datetime, timedelta
+                cur_t = current["observed_at"]
+                if isinstance(cur_t, str):
+                    cur_t = datetime.fromisoformat(cur_t.replace("Z", "+00:00"))
+                cutoff = cur_t - timedelta(hours=hours)
+                candidates = [
+                    r for r in priors
+                    if r.get("observed_at") is not None
+                    and (
+                        datetime.fromisoformat(str(r["observed_at"]).replace("Z", "+00:00"))
+                        if isinstance(r["observed_at"], str) else r["observed_at"]
+                    ) >= cutoff
+                ]
+                if not candidates:
+                    return None
+                base = candidates[0]
+                base_price = base.get("all_in_price")
+                if base_price is None:
+                    base_price = base.get("resale_min_price")
+                if base_price is None:
+                    base_price = base.get("face_value")
+                if base_price is None:
+                    return None
+                # Only compare when both price_basis values are present and equal.
+                if base.get("price_basis") and current.get("price_basis"):
+                    if base["price_basis"] != current["price_basis"]:
+                        return {"status": "NOT_COMPARABLE", "reason": "price_basis_mismatch"}
+                return {
+                    "status": "OBSERVED",
+                    "from_price": base_price,
+                    "to_price": current_price,
+                    "delta": float(current_price) - float(base_price),
+                    "from_observed_at": base.get("observed_at"),
+                    "basis": current.get("price_basis"),
+                }
+            except Exception:
+                return None
+
+        events_out.append({
+            "event_key": event_key,
+            "provider_event_id": current.get("provider_event_id"),
+            "artist_name": current.get("artist_name"),
+            "marketplace": marketplace,
+            "venue_name": current.get("venue_name"),
+            "city": current.get("city"),
+            "event_date": current.get("event_date"),
+            "source_url": current.get("source_url"),
+            "current": {
+                "observed_at": current.get("observed_at"),
+                "retrieved_at": current.get("retrieved_at"),
+                "knowledge_time": current.get("knowledge_time"),
+                "price": current_price,
+                "currency": current.get("currency"),
+                "price_basis": current.get("price_basis") or "UNKNOWN",
+                "evidence_status": current.get("evidence_status") or "UNKNOWN",
+                "evidence_ref": current.get("evidence_ref") or current.get("raw_payload_hash"),
+                "listing_count": current.get("listing_count"),
+            },
+            "prior_observations": [
+                {
+                    "observed_at": p.get("observed_at"),
+                    "price": p.get("all_in_price") if p.get("all_in_price") is not None else (
+                        p.get("resale_min_price") if p.get("resale_min_price") is not None else p.get("face_value")
+                    ),
+                    "currency": p.get("currency"),
+                    "price_basis": p.get("price_basis") or "UNKNOWN",
+                    "evidence_status": p.get("evidence_status") or "UNKNOWN",
+                    "evidence_ref": p.get("evidence_ref") or p.get("raw_payload_hash"),
+                }
+                for p in reversed(priors[-12:])
+            ],
+            "change_1d": _delta(24),
+            "change_7d": _delta(24 * 7),
+            "observation_count": len(obs_sorted),
+        })
+
+    events_out.sort(key=lambda e: str(e.get("event_date") or ""), reverse=True)
+    return {
+        "status": "OBSERVED",
+        "label": "PUBLIC TICKET MARKET",
+        "items": rows,
+        "events": events_out,
+        "note": note,
+    }
+
+
 def _attention(conn, artist_key: str) -> dict[str, dict[str, Any]]:
     rows = _rows(conn, """
         SELECT * FROM attention_observations
@@ -698,6 +848,7 @@ def get_artist_security(conn, artist_key: str) -> dict[str, Any] | None:
         ORDER BY event_date, event_name, future_event_key
         LIMIT 150
     """, [artist_key])
+    public_ticket_market = _public_ticket_market(conn, artist_key)
     alternatives = _alternatives(peers)
     _enrich_markets_from_future(markets, future)
     ticket_evidence_count = sum(has_advertised_structured_range(event) for event in future)
@@ -791,6 +942,7 @@ def get_artist_security(conn, artist_key: str) -> dict[str, Any] | None:
                 "they are not transactions, resale prices, attendance, sell-through, or sales."
             ),
         },
+        "public_ticket_market": public_ticket_market,
         "factor_tape": factor_tape,
         "what_changed": factor_tape.get("changes", []),
         "sentiment": sentiment,

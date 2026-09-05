@@ -171,16 +171,26 @@ export async function planForwardFamilies(
   // malformed rows stay visible as candidates only after they are repaired;
   // they must never become guaranteed retry traffic in the API consumer.
   const structuredCandidates = exact.filter((e) => (e.marketplace || "").toLowerCase().includes("ticketmaster") && Boolean(extractTicketmasterEventId(e)));
-  const webCandidates = exact.filter((e) => !(e.marketplace || "").includes("ticketmaster") && e.marketplace_event_url);
+  // Monid FAST observes the stored exact page URL for ANY accepted marketplace
+  // (including ticketmaster.com / ticketweb.com).  Ticketmaster Discovery
+  // structured pulls remain a separate family — do not exclude TM from the
+  // page-observation rail or the longitudinal tape only covers TicketWeb.
+  const webCandidates = exact.filter((e) => Boolean(e.marketplace_event_url));
   const structuredLimit = Math.min(opts.structured_limit ?? 25, 25);
   const structuredWindow = Math.floor(now.getTime() / (STRUCTURED_DISPATCH_MINUTES * 60 * 1000));
   const structured = isStructuredWindow
     ? rotatedTake(structuredCandidates, (structuredWindow * Math.max(1, structuredLimit)) % Math.max(1, structuredCandidates.length), structuredLimit)
     : [];
   // Four 25-task windows/day at the measured $0.0009 Monid unit cost is
-  // $0.09/day, below the $0.25 automated daily budget.  A persisted Governor
-  // budget check still belongs in the consumer for authoritative admission.
-  const web = isWebWindow ? webCandidates.slice(0, opts.web_limit ?? 25) : [];
+  // $0.09/day, below the $0.25 automated daily budget.  Rotate across the
+  // full exact-URL cohort so Ticketmaster pairs are not starved.  A persisted
+  // Governor budget check still belongs in the consumer for authoritative
+  // admission.
+  const webLimit = Math.min(opts.web_limit ?? 25, 25);
+  const webWindow = Math.floor(now.getTime() / (WEB_DISPATCH_INTERVAL_HOURS * 3600 * 1000));
+  const web = isWebWindow
+    ? rotatedTake(webCandidates, (webWindow * Math.max(1, webLimit)) % Math.max(1, webCandidates.length), webLimit)
+    : [];
   const youtubeCandidates = activeChannels.length;
   const families: FamilyPlan[] = [
     { family: "YOUTUBE_CHANNEL", candidate: youtubeCandidates, due: youtubeCandidates, selected: hot + full.length, deferred: Math.max(0, youtubeCandidates - hot - full.length), quota_blocked: Math.max(0, youtubeCandidates - (hot + full.length)), budget_blocked: 0 },

@@ -1,0 +1,61 @@
+{
+  "scorecard": "DATA_FLYWHEEL_SCORECARD_V1",
+  "as_of": "2026-09-05T22:42:58Z",
+  "canonical_artists_identity_graph": 25000,
+  "artists_security_universe_25000_local": 0,
+  "factor_observations_local": 0,
+  "provider_event_snapshots": 96556,
+  "distinct_tm_events": 33383,
+  "forward_watch_events": 562,
+  "ticket_cohort_pairs": 500,
+  "ticket_pairs_ge1": 440,
+  "ticket_pairs_ge2": 313,
+  "ticket_pairs_ge3": 12,
+  "ticket_snapshots": 771,
+  "ticket_rows_with_price": 108,
+  "ticket_raw_evidence_hashes": 441,
+  "ticket_spend_usd": 0.5653,
+  "sandbox_ticket_rows": 0,
+  "ticket_gold": {
+    "generation": "ticket_market_obs_20260905T224057Z",
+    "rows": 771,
+    "distinct_pairs": 441,
+    "sha256": "a067514088faf799626ac60c382defd37c11f7a96ec40fd6bd08aaf7db17ac3f"
+  },
+  "serving": {
+    "generation": "terminal_v1_20260905T224121Z",
+    "sha256": "4a75f9b19d2cf39cb3f549b228d473318915cebd4aed1d9223e6a4e5cb415805",
+    "ticket_market_observations": 771,
+    "ticket_artists_linked": 153,
+    "label": "PUBLIC TICKET MARKET"
+  },
+  "cloud": {
+    "watch_universe_size": 500,
+    "active_paid_acquisition_size": 500,
+    "last_cron_at": "2026-09-05T22:42:12.031Z",
+    "cron_status": "ACTIVE_LAST_CRON_POINTER",
+    "cron_root_cause_resolved": "health used truncated R2 list (oldest 1000); cron was not idle; TM excluded from Monid web rail until planner fix",
+    "ticket_web_candidates_post_fix": 450,
+    "r2_raw_bulk_approx_gb": 239,
+    "r2_lake_serving_approx_mb": 896,
+    "r2_lake_gold_approx_mb": 35,
+    "stored_not_activated": [
+      "ListenBrainz/Wikidata/MusicBrainz bulk raw",
+      "local 25k/factor tables empty",
+      "factor unattended refresh"
+    ],
+    "fast_queue_bound": true,
+    "bootstrap_enqueue": "WORKING"
+  },
+  "targets": {
+    "ticket_ge1": "400/500",
+    "ticket_ge2": "250/500",
+    "ticket_ge3": "100/500",
+    "progress_ge1": "440/500",
+    "progress_ge2": "313/500",
+    "progress_ge3": "12/500",
+    "ge1_target": "MET",
+    "ge2_target": "MET"
+  },
+  "pr": "https://github.com/Scott-Switzer/festival-bloomberg/pull/71"
+}
