@@ -1,6 +1,6 @@
 {
   "scorecard": "DATA_FLYWHEEL_SCORECARD_V1",
-  "as_of": "2026-09-05T22:58:20Z",
+  "as_of": "2026-09-05T22:59:49Z",
   "canonical_artists_identity_graph": 25000,
   "artists_security_universe_25000_local": 0,
   "factor_observations_local": 0,
@@ -67,7 +67,17 @@
     "listenbrainz_affinity_artists": 10429,
     "listenbrainz_affinity_edges": 508894,
     "listenbrainz_full_map_reduce": "PARTIAL_PROCESSING_ACTIVE",
-    "stored_not_activated_note": "Raw dumps remain in R2; useful 25K projections now in gold CURRENT pointers"
+    "stored_not_activated_note": "Raw dumps remain in R2; useful 25K projections now in gold CURRENT pointers",
+    "raw_bulk_total_gb": 256.2,
+    "listenbrainz_full_scan_blockers": [
+      "missing lb_tar_index.json",
+      "missing listenbrainz_full_scan checkpoint",
+      "local free disk below map minimum",
+      "prior reducer-correctness gates"
+    ]
   },
-  "pr71_merged": "c590be9cc56f36ba4d55cdfa826eafda4e7908bc"
+  "pr71_merged": "c590be9cc56f36ba4d55cdfa826eafda4e7908bc",
+  "STORED_NOT_ACTIVATED_BYTES": 256171149034,
+  "STORED_NOT_ACTIVATED_GB": 256.2,
+  "ACTIVATED_GOLD_BYTES_NOTE": "25K projections: reference_ids+geography+event_history+affinity (~12MB) + prior ticket/factor gold"
 }
