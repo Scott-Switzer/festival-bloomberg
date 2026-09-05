@@ -120,6 +120,9 @@ export class BatchContainer extends DurableObject<BatchEnv> {
     if (this.containerReady) return;
     try {
       const containerEnv = buildContainerEnv(this.containerEnvSource());
+      // Exec-based batch work must outlive the short default inactivity window.
+      // Completed jobs release their instance in monitorJob's finally block.
+      await this.ctx.container!.setInactivityTimeout(30 * 60 * 1000);
       await this.ctx.container!.start({
         env: containerEnv,
         enableInternet: true, // R2 S3 API needs outbound
@@ -306,6 +309,8 @@ export class BatchContainer extends DurableObject<BatchEnv> {
     } finally {
       this.lastResult = result;
       this.currentJob = null;
+      this.containerReady = false;
+      await this.ctx.container!.destroy().catch(() => {});
     }
   }
 
