@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import inspect
 import math
 import re
 import resource
@@ -78,6 +79,11 @@ def _validate_tick(tick):
         raise RuntimeError("INVALID_CHANNEL_ID")
     if not tick.get("artist_key") or not tick.get("raw_evidence_ref"):
         raise RuntimeError("MISSING_IDENTITY_OR_LINEAGE")
+    for name, limit in (("artist_key", 200), ("raw_evidence_ref", 2048),
+                        ("rights_status", 128), ("commercial_use_status", 128),
+                        ("subscriber_precision", 128)):
+        if tick.get(name) is not None and (not isinstance(tick[name], str) or len(tick[name]) > limit):
+            raise RuntimeError("OVERSIZED_TICK_FIELD")
     # Current collection timestamps may not be invented from the event date.
     from datetime import datetime
     for name in ("observed_at", "retrieved_at", "knowledge_time"):
@@ -94,6 +100,7 @@ def _validate_tick(tick):
 def run_factor_history(spec, scratch_dir: Path, *, lake, normalize):
     from .batch_jobs import _git_commit, verify_outputs
 
+    implementation_sha = _sha(Path(__file__).read_bytes() + inspect.getsource(normalize).encode())
     params = spec.get("params", {})
     max_ticks = _bound(params, "max_ticks", 25_000, 100_000)
     max_artists = _bound(params, "max_artists", 25_000, 25_000)
@@ -131,12 +138,12 @@ def run_factor_history(spec, scratch_dir: Path, *, lake, normalize):
                 if obj["key"] in ledger and ledger[obj["key"]]["etag"] != obj["etag"]:
                     raise RuntimeError("APPEND_ONLY_SOURCE_MUTATED")
             pending = [o for o in inventory if o["key"] not in ledger]
-            plan = {"version": VERSION, "params": params, "parent": parent, "parent_etag": parent_etag,
+            plan = {"version": VERSION, "implementation_sha256": implementation_sha, "params": params, "parent": parent, "parent_etag": parent_etag,
                     "selected": [{k: o[k] for k in ("key", "size", "etag")} for o in pending[:max_ticks]],
                     "inventory_count": len(inventory), "pending_count": len(pending),
                     "planned_at": now_iso(), "code_commit": _git_commit()}
             lake.put_json_if_version(bucket, f"{control}/plan.json", plan, None)
-        if plan["version"] != VERSION or plan["params"] != params or plan["code_commit"] != _git_commit():
+        if plan["version"] != VERSION or plan.get("implementation_sha256") != implementation_sha or plan["params"] != params:
             raise RuntimeError("RESUME_CONTRACT_MISMATCH: use a new job_id")
         completed, _ = lake.read_versioned_json(bucket, f"{control}/result.json")
         if completed:
@@ -153,6 +160,10 @@ def run_factor_history(spec, scratch_dir: Path, *, lake, normalize):
             manifest.source_generation = parent["generation"]
             manifest.source_paths.append(parent["object_key"])
             manifest.r2_read_bytes += _download(lake, bucket, parent["object_key"], parent["sha256"], work / "parent.parquet", 512 * 1024**2)
+            metadata = pq.read_metadata(work / "parent.parquet")
+            uncompressed = sum(metadata.row_group(i).total_byte_size for i in range(metadata.num_row_groups))
+            if metadata.num_rows > 1_000_000 or uncompressed > 512 * 1024**2:
+                raise RuntimeError("PARENT_EXPANSION_LIMIT_EXCEEDED")
             conn.execute("INSERT INTO tape SELECT " + ",".join(COLUMNS) + " FROM read_parquet(?)", [str(work / "parent.parquet")])
             parent_rows = conn.execute("SELECT count(*) FROM tape").fetchone()[0]
             if parent_rows != parent["factor_rows"]:
@@ -192,6 +203,8 @@ def run_factor_history(spec, scratch_dir: Path, *, lake, normalize):
                         inputs[obj["key"]] = lineage
                         manifest.r2_read_bytes += size
                     pq.write_table(pa.Table.from_pylist(rows, schema=SCHEMA), chunk_path, compression="zstd")
+                    if chunk_path.stat().st_size > 4 * 1024**2:
+                        raise RuntimeError("CHUNK_SIZE_LIMIT_EXCEEDED")
                     checkpoint = {"sha256": _file_sha(chunk_path), "inputs": inputs}
                     lake.put_bytes(bucket, chunk_key, chunk_path.read_bytes())
                     manifest.r2_write_bytes += chunk_path.stat().st_size
@@ -203,6 +216,8 @@ def run_factor_history(spec, scratch_dir: Path, *, lake, normalize):
                 manifest.completed_batches += 1
                 manifest.rows_read = min(offset + batch_size, len(selected))
                 manifest.scratch_peak_bytes = max(manifest.scratch_peak_bytes, sum(p.stat().st_size for p in work.rglob('*') if p.is_file()))
+                if manifest.scratch_peak_bytes > 1024**3:
+                    raise RuntimeError("SCRATCH_SIZE_LIMIT_EXCEEDED")
                 lake.write_manifest(bucket, manifest_path, manifest.to_dict())
                 chunk_path.unlink()
         # Never silently reconcile two different payloads sharing an observation key.
@@ -210,6 +225,8 @@ def run_factor_history(spec, scratch_dir: Path, *, lake, normalize):
         if conn.execute("SELECT 1 FROM unique_rows GROUP BY factor_observation_key HAVING count(*) > 1 LIMIT 1").fetchone():
             raise RuntimeError("OBSERVATION_KEY_CONFLICT")
         count, artists, first, last = conn.execute("SELECT count(*), count(DISTINCT artist_key), min(observation_time), max(observation_time) FROM unique_rows").fetchone()
+        if count > 1_000_000:
+            raise RuntimeError("FACTOR_ROW_LIMIT_EXCEEDED")
         if not count:
             raise RuntimeError("FACTOR_TAPE_EMPTY")
         if artists > max_artists:
@@ -240,7 +257,7 @@ def run_factor_history(spec, scratch_dir: Path, *, lake, normalize):
         manifest.status = "BUILD_COMPLETE"
         lake.write_manifest(bucket, manifest_path, manifest.to_dict())
         verify_outputs(lake, bucket=bucket, output_hashes=manifest.output_hashes, manifest=manifest, manifest_key_path=manifest_path)
-        payload = {"artifact": PREFIX, "contract_version": "artist_factor_tape_v1", "refresh_version": VERSION,
+        payload = {"artifact": PREFIX, "contract_version": "artist_factor_tape_v1", "refresh_version": VERSION, "implementation_sha256": implementation_sha,
                    "generation": generation, "object_key": tape_key, "sha256": tape_sha, "bytes": tape_path.stat().st_size,
                    "ledger_key": ledger_key, "ledger_sha256": ledger_sha, "created_at": now_iso(),
                    "source_prefix": SOURCE, "tick_rows_read": len(selected), "factor_rows": count, "artists": artists,

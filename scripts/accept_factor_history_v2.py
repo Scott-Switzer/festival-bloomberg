@@ -99,12 +99,53 @@ class IsolatedLake(R2Lake):
         return result
 
 
+def verify_serving_and_stale_write(client, lake, work, report):
+    """Independent full-serving count plus a real R2 HTTP-412 proof."""
+    bucket = lake.config.lake_bucket
+    key = 'control/cas_acceptance.json'
+    lake.put_json_if_version(bucket, key, {'generation': 'first'}, None)
+    _, etag = lake.read_versioned_json(bucket, key)
+    lake.put_json_if_version(bucket, key, {'generation': 'winner'}, etag)
+    try:
+        lake.put_json_if_version(bucket, key, {'generation': 'stale'}, etag)
+        raise AssertionError('stale write accepted')
+    except client.exceptions.ClientError as exc:
+        report['r2_stale_write_http_status'] = exc.response['ResponseMetadata']['HTTPStatusCode']
+        assert report['r2_stale_write_http_status'] == 412
+    assert lake.read_checkpoint(bucket, key)['generation'] == 'winner'
+    pointer = json.loads(client.get_object(Bucket=bucket, Key='serving/artist_security_terminal_v1/CURRENT.json')['Body'].read())
+    assert pointer['bytes'] < 256 * 1024**2, 'pilot serving artifact size limit'
+    client.download_file(bucket, pointer['object_key'], str(work / 'terminal.duckdb'))
+    with (work / 'terminal.duckdb').open('rb') as stream:
+        assert hashlib.file_digest(stream, 'sha256').hexdigest() == pointer['sha256']
+    conn = duckdb.connect(str(work / 'terminal.duckdb'), read_only=True)
+    names = {r[0] for r in conn.execute('SHOW TABLES').fetchall()}
+    wanted = ['artists', 'artist_external_ids', 'artist_markets', 'event_history', 'festival_appearances',
+              'future_events', 'artist_factor_observations', 'artist_sentiment_observations']
+    report['serving_verified_generation'] = pointer['generation']
+    report['serving_verified_sha256'] = pointer['sha256']
+    report['serving_independent_counts'] = {t: conn.execute(f'SELECT count(*) FROM "{t}"').fetchone()[0] for t in wanted if t in names}
+    conn.close()
+    report['full_serving_after_fold'] = batch_jobs._fold_gold_artist_intelligence(
+        lake, work, factor_tape_current=CURRENT, sentiment_current='control/no_sentiment.json',
+        manifest=batch_jobs.new_manifest('acceptance', 'full_serving'))
+    conn = duckdb.connect(str(work / 'terminal.duckdb'), read_only=True)
+    from festival_bloomberg.terminal.artist_security import _artist_factor_tape
+    product = _artist_factor_tape(conn, report['product_artist'])
+    conn.close()
+    report['product_comparability'] = [r['comparability'] for r in product['changes']]
+    # The current source has no complete comparison window/geography contract.
+    assert all(value == 'NOT_COMPARABLE' for value in report['product_comparability'])
+    assert not any('delta_pct' in r for r in product['changes'])
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--run', required=True)
     parser.add_argument('--source-date', required=True)
     parser.add_argument('--max-ticks', type=int, default=512)
     parser.add_argument('--out', type=Path, required=True)
+    parser.add_argument('--verify-serving', action='store_true')
     args = parser.parse_args()
     if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', args.run) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', args.source_date):
         parser.error('Invalid run/date')
@@ -162,6 +203,8 @@ def main():
                   'first': first, 'second': second, 'rows': counts[0], 'artists': counts[1], 'time_min': counts[2], 'time_max': counts[3],
                   'serving_fold': fold, 'product_artist': artist, 'product_status': product.get('status'), 'product_changes': len(product.get('changes', [])),
                   'provider_requests': 0, 'billed_cost_usd': None, 'cost_status': 'NOT_AVAILABLE'}
+        if args.verify_serving:
+            verify_serving_and_stale_write(client, lake, scratch, report)
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(json.dumps(report, indent=2, sort_keys=True) + '\n')
         lake.put_bytes(bucket, 'acceptance.json', json.dumps(report, sort_keys=True).encode(), content_type='application/json')

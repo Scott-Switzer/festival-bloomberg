@@ -131,6 +131,9 @@ class _FakeS3:
 
 @pytest.fixture()
 def fake_lake(monkeypatch) -> FakeLake:
+    from types import SimpleNamespace
+    from festival_bloomberg.cloud import factor_history
+    monkeypatch.setattr(factor_history.shutil, "disk_usage", lambda _: SimpleNamespace(free=10 * 1024**3))
     lake = FakeLake()
     from festival_bloomberg.cloud import batch_jobs
 

@@ -13,6 +13,9 @@ from test_cloud_gold_artist_intelligence import FakeLake, _tick
 
 @pytest.fixture
 def lake(monkeypatch):
+    from types import SimpleNamespace
+    from festival_bloomberg.cloud import factor_history
+    monkeypatch.setattr(factor_history.shutil, "disk_usage", lambda _: SimpleNamespace(free=10 * 1024**3))
     lake = FakeLake()
     monkeypatch.setattr(batch_jobs, '_get_lake', lambda: lake)
     return lake
@@ -203,3 +206,13 @@ def test_r2_publication_uses_conditional_writes():
     assert lake._s3.put_object.call_args.kwargs['IfNoneMatch'] == '*'
     lake.put_json_if_version('lake', CURRENT, {'generation': 'b'}, 'original-etag')
     assert lake._s3.put_object.call_args.kwargs['IfMatch'] == 'original-etag'
+
+
+def test_disk_preflight_fails_before_any_control_write(lake, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from festival_bloomberg.cloud import factor_history
+    monkeypatch.setattr(factor_history.shutil, 'disk_usage', lambda _: SimpleNamespace(free=1))
+    with pytest.raises(RuntimeError, match='SCRATCH_FREE_SPACE_BELOW_2_GIB'):
+        run(lake, tmp_path, 'disk_full')
+    assert f'lake/{CURRENT}' not in lake.objects
+    assert not any(k.endswith('plan.json') for k in lake.objects)
