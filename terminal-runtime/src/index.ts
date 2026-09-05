@@ -66,7 +66,8 @@ async function serveShell(
   prefix: string,
 ): Promise<Response> {
   const shellUrl = new URL(request.url);
-  shellUrl.pathname = "/index.html";
+  // Asset HTML canonicalization redirects /index.html to /. Request its canonical path.
+  shellUrl.pathname = "/";
   const response = await env.ASSETS.fetch(new Request(shellUrl, request));
   const label = publicDemo
     ? "STAGING / PUBLIC DATA DEMO"
