@@ -1,0 +1,42 @@
+{
+  "scorecard": "DATA_FLYWHEEL_SCORECARD_V1",
+  "as_of": "2026-09-05T19:33:01.737863+00:00",
+  "canonical_artists_identity_graph": 25000,
+  "artists_security_universe_25000_local": 0,
+  "factor_observations_local": 0,
+  "provider_event_snapshots": 96556,
+  "distinct_tm_events": 33383,
+  "forward_watch_events": 562,
+  "ticket_cohort_pairs": 500,
+  "ticket_pairs_ge1": 313,
+  "ticket_pairs_ge2": 232,
+  "ticket_pairs_ge3": 5,
+  "ticket_snapshots": 331,
+  "ticket_raw_evidence_hashes": 313,
+  "ticket_spend_usd": 0.4959,
+  "sandbox_ticket_rows": 0,
+  "cloud": {
+    "watch_universe_size": 500,
+    "active_paid_acquisition_size": 500,
+    "last_cron_at": "2026-08-31T09:37:50.927Z",
+    "cron_status": "IDLE_LAST_2026-08-31_INVESTIGATE",
+    "r2_raw_bulk_approx_gb": 239,
+    "r2_lake_serving_approx_mb": 896,
+    "r2_lake_gold_approx_mb": 35,
+    "stored_not_activated": [
+      "ListenBrainz/Wikidata/MusicBrainz bulk raw",
+      "local 25k/factor tables empty",
+      "factor unattended refresh"
+    ],
+    "fast_queue_bound": true,
+    "bootstrap_enqueue": "WORKING"
+  },
+  "targets": {
+    "ticket_ge1": "400/500",
+    "ticket_ge2": "250/500",
+    "ticket_ge3": "100/500",
+    "progress_ge1": "313/500",
+    "progress_ge2": "232/500"
+  },
+  "pr": "https://github.com/Scott-Switzer/festival-bloomberg/pull/71"
+}

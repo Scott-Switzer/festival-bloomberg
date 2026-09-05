@@ -274,25 +274,80 @@ def run_collect(
     wave_label: str,
     dry_run: bool = False,
     tickets_dev_live_key: bool | None = None,
+    cohort_version: str | None = None,
+    due_only: bool = False,
 ) -> dict:
     """Run one observation wave. Returns a structured run report.
 
     tickets_dev_live_key: override sandbox detection (tests use this to
     prove fixtures never reach the warehouse). Defaults to the configured
     key state.
+
+    due_only: when True, select pairs via lifecycle cadence schedule
+    (nearest / weakest depth / stale) instead of scanning the full universe.
     """
     if tickets_dev_live_key is None:
         tickets_dev_live_key = not is_sandbox()
     mappings = _load_mappings(conn)
+
+    from festival_bloomberg.evidence_rails.collection_ledger import finish_run, start_run
+    from festival_bloomberg.evidence_rails.cohort_cadence import prioritize_due_pairs
+
+    run_id = f"run_{wave_label}_{int(time.time())}"
+    candidate_pairs = len(mappings)
+    due_pairs_meta: list[dict] = []
+    try:
+        rows = conn.execute(
+            """SELECT s.event_key, s.marketplace, s.lifecycle_bucket, s.cadence_label,
+                      s.next_due_at, s.observation_count, s.last_succeeded_at,
+                      c.event_date
+               FROM acquisition.ticket_market_pair_schedule s
+               LEFT JOIN acquisition.ticket_market_cohort_pairs c
+                 ON c.event_key = s.event_key AND c.marketplace = s.marketplace
+                AND (? IS NULL OR c.cohort_version = ?)""",
+            [cohort_version, cohort_version],
+        ).fetchall()
+        cols = ["event_key", "marketplace", "lifecycle_bucket", "cadence_label",
+                "next_due_at", "observation_count", "last_succeeded_at", "event_date"]
+        due_pairs_meta = [dict(zip(cols, r)) for r in rows]
+    except Exception:  # noqa: BLE001 — schedule table may be absent on older DBs
+        due_pairs_meta = []
+
+    if due_only and due_pairs_meta:
+        due = prioritize_due_pairs(due_pairs_meta, limit=max_fetch)
+        universe = [
+            next((e for e in universe if e.get("event_key") == p["event_key"]), {"event_key": p["event_key"]})
+            for p in due
+        ]
+        # Restrict mappings iteration implicitly via filtered universe.
+    due_count = len(prioritize_due_pairs(due_pairs_meta)) if due_pairs_meta else candidate_pairs
+
+    try:
+        start_run(
+            conn,
+            run_id=run_id,
+            cohort_version=cohort_version,
+            rail="FAST" if fast and not deep else ("DEEP" if deep and not fast else "FAST+DEEP"),
+            wave_label=wave_label,
+            budget_cap_usd=max_cost,
+            candidate_pairs=candidate_pairs,
+            due_pairs=due_count,
+        )
+    except Exception:  # noqa: BLE001 — ledger optional on pre-051 DBs
+        run_id = ""
+
     report: dict = {
         "wave_label": wave_label,
+        "run_id": run_id or None,
+        "cohort_version": cohort_version,
         "mode": "FAST+DEEP" if fast and deep else ("FAST" if fast else "DEEP"),
         "started_at": _now(),
         "budget": {"max_cost_usd": max_cost, "spent_usd": 0.0},
         "methods": {},
         "totals": {"attempted": 0, "fetches": 0, "snapshots": 0, "listings": 0,
                    "cost_usd": 0.0, "errors": [], "warnings": [], "skipped_budget": 0,
-                   "skipped_deep_no_live_key": 0},
+                   "skipped_deep_no_live_key": 0, "retry_count": 0,
+                   "budget_cap_usd": max_cost},
     }
 
     def _can_afford(expected: float) -> bool:
@@ -443,6 +498,17 @@ def run_collect(
     report["totals"]["cost_usd"] = round(report["totals"]["cost_usd"], 4)
     report["budget"]["spent_usd"] = report["totals"]["cost_usd"]
     report["finished_at"] = _now()
+    if run_id:
+        try:
+            status = "BUDGET_STOPPED" if report["totals"]["skipped_budget"] else "COMPLETE"
+            err_classes: dict[str, int] = {}
+            for e in report["totals"]["errors"]:
+                key = str(e.get("error") or "UNKNOWN")[:80]
+                err_classes[key] = err_classes.get(key, 0) + 1
+            report["totals"]["error_classes"] = err_classes
+            finish_run(conn, run_id, report["totals"], status=status)
+        except Exception:  # noqa: BLE001
+            report["totals"]["warnings"].append({"warning": "collection-run ledger finish failed"})
     return report
 
 
@@ -505,6 +571,9 @@ def main() -> None:
     ap.add_argument("--db", default=str(DEFAULT_DB))
     ap.add_argument("--wave", default=None)
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--cohort-version", default=None)
+    ap.add_argument("--due-only", action="store_true",
+                    help="lifecycle-due pairs only (nearest / shallow / stale)")
     args = ap.parse_args()
 
     if not args.fast and not args.deep:
@@ -523,6 +592,7 @@ def main() -> None:
 
     print(f"Collector: wave={wave_label} fast={args.fast} deep={args.deep} "
           f"max_cost=${args.max_cost} universe={len(universe)} events "
+          f"cohort={args.cohort_version} due_only={args.due_only} "
           f"{'(DRY RUN)' if args.dry_run else ''}")
     report = run_collect(
         conn,
@@ -534,6 +604,8 @@ def main() -> None:
         max_fetch=args.max_fetch,
         wave_label=wave_label,
         dry_run=args.dry_run,
+        cohort_version=args.cohort_version,
+        due_only=args.due_only,
     )
     print(json.dumps(report, indent=2)[:8000])
     conn.close()
