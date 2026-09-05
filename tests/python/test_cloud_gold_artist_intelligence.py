@@ -15,6 +15,7 @@ Covered:
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -74,10 +75,30 @@ class FakeLake:
 
     def list_prefix(self, bucket, prefix, limit=1000) -> list[dict]:
         return [
-            {"key": k.split("/", 1)[1], "size": len(v)}
-            for k, v in self.objects.items()
+            {"key": k.split("/", 1)[1], "size": len(v), "etag": hashlib.md5(v).hexdigest()}
+            for k, v in sorted(self.objects.items())
             if k.startswith(f"{bucket}/{prefix}")
         ][:limit]
+
+    def head(self, bucket, key):
+        data = self.objects.get(f"{bucket}/{key}")
+        return {"ContentLength": len(data)} if data is not None else None
+
+    def read_versioned_json(self, bucket, key):
+        data = self.objects.get(f"{bucket}/{key}")
+        return (json.loads(data), hashlib.md5(data).hexdigest()) if data is not None else (None, None)
+
+    def put_json_if_version(self, bucket, key, payload, etag):
+        _, current_etag = self.read_versioned_json(bucket, key)
+        if current_etag != etag:
+            raise RuntimeError("PRECONDITION_FAILED")
+        self.put_bytes(bucket, key, json.dumps(payload, sort_keys=True).encode())
+
+    def get_bytes_if_match(self, bucket, key, etag):
+        data = self.get_bytes(bucket, key)
+        if hashlib.md5(data).hexdigest() != etag:
+            raise RuntimeError("PRECONDITION_FAILED")
+        return data
 
     def read_checkpoint(self, bucket, key) -> dict | None:
         data = self.objects.get(f"{bucket}/{key}")
@@ -110,6 +131,9 @@ class _FakeS3:
 
 @pytest.fixture()
 def fake_lake(monkeypatch) -> FakeLake:
+    from types import SimpleNamespace
+    from festival_bloomberg.cloud import factor_history
+    monkeypatch.setattr(factor_history.shutil, "disk_usage", lambda _: SimpleNamespace(free=10 * 1024**3))
     lake = FakeLake()
     from festival_bloomberg.cloud import batch_jobs
 

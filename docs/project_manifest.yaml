@@ -55,6 +55,8 @@ milestones:
   CLOUD_FORWARD_DATA_PLANE_V2: "PARTIAL_LIVE_REPAIRED (production version caa3ccf6-cfbf-4d6d-ae5a-42be70a53157; bounded scheduler, six queues, durable DLQ archival, realtime backlog plus internal lifecycle telemetry, structured native-ID filtering, quota-capped YouTube; persistent aggregate counters and bounded Monid acceptance remain)"
   R2_DATA_LAKE_PRODUCTIZATION_V1: "PARTIAL_SOURCE_VERIFIED (255.9 GB raw cataloged; MusicBrainz tooling and bounded ListenBrainz pilots validated; Wikidata launchd pass completed 8,241,853,938 lines with provisional Silver outputs; parser/finalizer audit remains before those outputs are authoritative; full ListenBrainz map/reduce remains gated on compatible checkpoint and local capacity)"
 
+  FACTOR_TAPE_HISTORY_V2: "IMPLEMENTED_TESTED_PILOTED (history-preserving bounded refresh, source ledger/chunk replay, conditional R2 publication; real isolated 66,684 -> 69,756 rows / 725 artists, zero lost parent rows, HTTP 412 stale-writer proof; production rollout NOT_PROVEN)"
+
 providers:
   # status taxonomy: PUBLIC_NO_AUTH | AUTH_CONFIGURED | AUTH_MISSING |
   #                  OPERATIONAL | NOT_IMPLEMENTED | DISABLED_RIGHTS
