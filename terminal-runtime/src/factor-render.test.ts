@@ -44,3 +44,19 @@ describe('home navigation during pending requests', () => {
     });
   }
 });
+
+
+describe('public demo capabilities', () => {
+  it('does not request an unavailable private API or invent an empty dataset', async () => {
+    let calls = 0;
+    const apiSource = source.slice(source.indexOf('async function api('), source.indexOf('const esc ='));
+    const context = { document: {querySelector: () => ({dataset: {unavailableApiPrefixes: JSON.stringify(['/api/shortlist','/api/monitor','/api/pace'])}})},
+      terminalApiPath: String, fetch: async () => { calls += 1; return {ok: true, json: async () => ({observed: true})}; } };
+    for (const path of ['/api/shortlist','/api/monitor?limit=1','/api/pace/event/x']) {
+      await expect(runInNewContext(`${apiSource}\napi(${JSON.stringify(path)});`, context)).rejects.toThrow('unavailable in this public demo');
+    }
+    expect(calls).toBe(0);
+    await expect(runInNewContext(`${apiSource}\napi('/api/search?q=artist');`, context)).resolves.toEqual({observed:true});
+    expect(calls).toBe(1);
+  });
+});
