@@ -335,3 +335,19 @@ def test_fold_gold_into_serving_artifact(fake_lake, tmp_path: Path):
     conn.close()
     assert n == 3
     assert has_measurement == 3
+
+def test_fold_rejects_gold_hash_mismatch(fake_lake, tmp_path):
+    from festival_bloomberg.cloud import batch_jobs
+    from festival_bloomberg.cloud.job_manifest import new_manifest
+    fake_lake.put_bytes('lake', 'staging/youtube/test.json', json.dumps(_tick()).encode())
+    batch_jobs.run_artist_factor_tape_build({'job_id':'hash_test','params':{}}, tmp_path / 'build')
+    current = fake_lake.read_checkpoint('lake', 'gold/artist_factor_tape/CURRENT.json')
+    current['sha256'] = '0' * 64
+    fake_lake.put_bytes('lake', 'gold/artist_factor_tape/CURRENT.json', json.dumps(current).encode())
+    work = tmp_path / 'serving'
+    work.mkdir()
+    with pytest.raises(RuntimeError, match='FACTOR_GOLD_HASH_MISMATCH'):
+        batch_jobs._fold_gold_artist_intelligence(fake_lake, work,
+            factor_tape_current='gold/artist_factor_tape/CURRENT.json',
+            sentiment_current='gold/artist_sentiment/CURRENT.json',
+            manifest=new_manifest('terminal_serving_build_v1', 'hash_test'))

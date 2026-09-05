@@ -1682,7 +1682,7 @@ def run_terminal_serving_build(spec: dict, scratch_dir: Path) -> dict:
             "demo_artists": demo_artists,
             "validation": validation,
         }
-        current_bytes = json.dumps(current_payload, indent=2, sort_keys=True, default=str).encode()
+        current_bytes = json.dumps(current_payload, sort_keys=True).encode()
         current_sha = hashlib.sha256(current_bytes).hexdigest()
         current_key = f"{TERMINAL_SERVING_PREFIX}/CURRENT.json"
         try:
