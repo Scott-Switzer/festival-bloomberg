@@ -62,7 +62,9 @@ function setNav(active) {
   });
 }
 
+let routeVersion = 0;
 function route() {
+  routeVersion += 1;
   const raw = location.hash.replace(/^#\/?/, "").split("?")[0];
   const parts = raw.split("/").map(decodeURIComponent).filter((p) => p.length);
   if (!parts.length) { renderHome(); return; }
@@ -85,6 +87,7 @@ function route() {
 
 /* ── home ────────────────────────────────────────────────── */
 async function renderHome() {
+  const renderVersion = routeVersion;
   setNav("home");
   view.innerHTML = `<h1>Talent Buyer Terminal</h1>
     <p class="muted">Real Festival Bloomberg evidence — search an artist, inspect a market, or start the guided demo.</p>
@@ -130,6 +133,7 @@ async function renderHome() {
   // Freshness — one compact line, not a wall of database counts.
   try {
     const cov = await api("/api/coverage");
+    if (renderVersion !== routeVersion) return;
     const c = cov.counts || {};
     document.getElementById("freshLine").innerHTML =
       `<span class="badge">${esc(cov.generation || "")}</span> ` +
@@ -137,11 +141,12 @@ async function renderHome() {
       `${(c.artist_peers ?? 0).toLocaleString()} audience peer edges · ${(c.future_events ?? 0).toLocaleString()} forward events` +
       ` · built ${esc(String(cov.built_at || "").slice(0, 10))} · ${esc(cov.validation_status || "")}` +
       ` — <span class="muted">UNKNOWN ≠ 0 · audience sample ≠ total fans</span>`;
-  } catch (e) { document.getElementById("freshLine").innerHTML = `<span class="empty">${esc(e.message)}</span>`; }
+  } catch (e) { if (renderVersion !== routeVersion) return; document.getElementById("freshLine").innerHTML = `<span class="empty">${esc(e.message)}</span>`; }
 
   // Now strip: upcoming forward shows + recent live activity.
   try {
     const n = await api("/api/now");
+    if (renderVersion !== routeVersion) return;
     const box = document.getElementById("nowBox");
     const up = (n.upcoming || []).map((r) => `
       <div class="now-row" data-k="${esc(r.artist_key)}">
@@ -159,11 +164,12 @@ async function renderHome() {
     box.querySelectorAll(".now-row").forEach((el) => {
       el.onclick = () => location.hash = "#/artist/" + encodeURIComponent(el.dataset.k);
     });
-  } catch (e) { document.getElementById("nowBox").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  } catch (e) { if (renderVersion !== routeVersion) return; document.getElementById("nowBox").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
 
   // Shortlist preview: what am I currently evaluating?
   try {
     const sl = await api("/api/shortlist");
+    if (renderVersion !== routeVersion) return;
     const box = document.getElementById("slBox");
     if (!sl.length) {
       box.innerHTML = `<div class="empty">Nothing yet. Open an artist and hit <b>＋ Shortlist</b>, or <a href="#/shortlist">start a project</a>.</div>`;
@@ -178,11 +184,12 @@ async function renderHome() {
         el.onclick = () => location.hash = "#/artist/" + encodeURIComponent(el.dataset.k);
       });
     }
-  } catch (e) { document.getElementById("slBox").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  } catch (e) { if (renderVersion !== routeVersion) return; document.getElementById("slBox").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
 
   // Since-your-last-look strip from the monitor baselines.
   try {
     const mon = await api("/api/monitor");
+    if (renderVersion !== routeVersion) return;
     const box = document.getElementById("monStrip");
     const rows = (mon.artists || []).filter((a) => a.changes && a.changes.length);
     if (!rows.length) {
@@ -201,7 +208,7 @@ async function renderHome() {
         el.onclick = () => location.hash = "#/monitor";
       });
     }
-  } catch (e) { document.getElementById("monStrip").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  } catch (e) { if (renderVersion !== routeVersion) return; document.getElementById("monStrip").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
 
   // Underwrite launcher wiring.
   const uwArtist = document.getElementById("uwArtist");
@@ -212,13 +219,14 @@ async function renderHome() {
     if (q.length < 2) { hits.innerHTML = ""; return; }
     try {
       const res = await api("/api/search?q=" + encodeURIComponent(q) + "&limit=6");
+    if (renderVersion !== routeVersion) return;
       hits.innerHTML = res.map((h) =>
         `<div class="result" data-k="${esc(h.entity_id)}" data-name="${esc(h.name)}"><b>${esc(h.name)}</b></div>`
       ).join("");
       hits.querySelectorAll(".result").forEach((el) => {
         el.onclick = () => { uwKey = el.dataset.k; uwArtist.value = el.dataset.name; hits.innerHTML = ""; };
       });
-    } catch (e) { hits.innerHTML = `<span class="empty">${esc(e.message)}</span>`; }
+    } catch (e) { if (renderVersion !== routeVersion) return; hits.innerHTML = `<span class="empty">${esc(e.message)}</span>`; }
   });
   document.getElementById("uwGo").onclick = () => {
     if (!uwKey.trim()) { toast("Pick an artist from search first."); return; }
@@ -229,15 +237,17 @@ async function renderHome() {
 
   try {
     const demo = await api("/api/demo");
+    if (renderVersion !== routeVersion) return;
     const strip = document.getElementById("demoStrip");
     if (!demo.length) { strip.innerHTML = `<div class="empty">No demo artists yet.</div>`; return; }
     strip.innerHTML = demo.slice(0, 6).map((d) => demoCard(d)).join("");
     strip.querySelectorAll(".demo-card").forEach((el, i) => {
       el.onclick = () => { location.hash = "#/artist/" + encodeURIComponent(demo[i].artist_key); };
     });
-  } catch (e) { document.getElementById("demoStrip").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  } catch (e) { if (renderVersion !== routeVersion) return; document.getElementById("demoStrip").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
   try {
     const m = await api("/api/markets?limit=8");
+    if (renderVersion !== routeVersion) return;
     const strip = document.getElementById("marketStrip");
     if (!m.items.length) { strip.innerHTML = `<div class="empty">No market links materialized.</div>`; return; }
     strip.innerHTML = m.items.map((r) => `
@@ -247,7 +257,7 @@ async function renderHome() {
     strip.querySelectorAll(".market-row").forEach((el) => {
       el.onclick = () => location.hash = "#/market/" + encodeURIComponent(el.dataset.m);
     });
-  } catch (e) { document.getElementById("marketStrip").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  } catch (e) { if (renderVersion !== routeVersion) return; document.getElementById("marketStrip").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
 }
 
 function demoCard(d) {
