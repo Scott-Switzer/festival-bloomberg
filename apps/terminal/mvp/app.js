@@ -365,8 +365,13 @@ async function renderArtist(key) {
   </div>
   <div style="height:14px"></div>
   <div class="grid cols2">
-    <div class="panel"><h3>Audience peers ${statusChip(p.peers.status)}</h3><div id="peersBox"></div><p class="note">${esc(p.peers.note || "")}</p></div>
+    <div class="panel"><h3>LISTENBRAINZ CONSUMPTION AFFINITY ${statusChip(p.peers.status)}</h3><div id="peersBox"></div><p class="note">${esc(p.peers.note || "")}</p></div>
+    <div class="panel"><h3>Geography ${statusChip((p.geography && p.geography.status) || "UNKNOWN")}</h3><div id="geoBox"></div><p class="note">${esc((p.geography && p.geography.note) || "")}</p></div>
+  </div>
+  <div style="height:14px"></div>
+  <div class="grid cols2">
     <div class="panel"><h3>Alternatives ${statusChip(p.alternatives.status)}</h3><div id="altsBox" data-subject="${esc(a.artist_key)}"></div><p class="note">${esc(p.alternatives.note || "")}</p></div>
+    <div class="panel"><h3>External IDs ${statusChip((p.reference_identity && p.reference_identity.status) || "UNKNOWN")}</h3><div id="idsBox"></div><p class="note">${esc((p.reference_identity && p.reference_identity.note) || "")}</p></div>
   </div>
   <div style="height:14px"></div>
   <div class="grid cols2">
@@ -399,6 +404,8 @@ async function renderArtist(key) {
   renderSentiment(p.sentiment || {});
   renderProviders(p.provider_readiness || {});
   renderPeers(p.peers);
+  renderGeography(p.geography || {});
+  renderReferenceIds(p.reference_identity || {});
   renderAlts(p.alternatives);
   renderArtistMarkets(p.markets);
   renderHistory(p.history);
@@ -518,21 +525,55 @@ function renderPeers(peers) {
   const box = document.getElementById("peersBox");
   if (!box) return;
   if (!peers.items || !peers.items.length) {
-    box.innerHTML = `<div class="empty">No audience peer evidence for this artist.</div>`;
+    box.innerHTML = `<div class="empty">No ListenBrainz consumption affinity for this artist in the current serving generation.</div>`;
     return;
   }
-  box.innerHTML = `<table><thead><tr><th>Peer</th><th>Shared</th><th>Why related</th></tr></thead><tbody>
+  box.innerHTML = `<table><thead><tr><th>Peer</th><th>Shared listeners</th><th>Basis</th></tr></thead><tbody>
     ${peers.items.slice(0, 12).map((r) => {
-      const shared = [];
-      if (r.shared_listeners != null) shared.push(`${r.shared_listeners} shared listeners`);
-      if (r.shared_markets) shared.push(`${r.shared_markets} shared markets`);
-      if (r.shared_festival_bills) shared.push(`${r.shared_festival_bills} shared festival bills`);
       return `<tr>
-        <td><b>${esc(r.artist_name)}</b><div class="small muted">${esc(r.peer_tier || "")}</div></td>
+        <td><b>${esc(r.artist_name)}</b></td>
         <td><span class="badge">${money(r.shared_listeners)}</span>${r.jaccard != null ? `<div class="small muted">Jaccard ${Number(r.jaccard).toFixed(4)}</div>` : ""}</td>
-        <td class="small">${shared.map((s) => `<span class="whychip">${esc(s)}</span>`).join("")}</td>
+        <td class="small muted">LISTENBRAINZ CONSUMPTION AFFINITY</td>
       </tr>`;
     }).join("")}</tbody></table>`;
+}
+
+function renderGeography(geo) {
+  const box = document.getElementById("geoBox");
+  if (!box) return;
+  const items = (geo && geo.items) || [];
+  if (!items.length) {
+    box.innerHTML = `<div class="empty">No structured Wikidata geography for this artist.</div>`;
+    return;
+  }
+  box.innerHTML = `<table><thead><tr><th>Property</th><th>Location QID</th><th>Wikidata QID</th><th>Knowledge time</th></tr></thead><tbody>
+    ${items.slice(0, 20).map((r) => `<tr>
+      <td>${esc(r.location_property || "")}</td>
+      <td class="small">${esc(r.location_qid || "")}</td>
+      <td class="small muted">${esc(r.wikidata_qid || "")}</td>
+      <td class="small muted">${esc(fmtDate(r.knowledge_time))}</td>
+    </tr>`).join("")}</tbody></table>`;
+}
+
+function renderReferenceIds(ref) {
+  const box = document.getElementById("idsBox");
+  if (!box) return;
+  const items = (ref && ref.items) || [];
+  const amb = (ref && ref.ambiguous_qid) || [];
+  if (!items.length) {
+    box.innerHTML = `<div class="empty">No external IDs in this serving generation.</div>`;
+    return;
+  }
+  const ambNote = amb.length
+    ? `<p class="small muted">AMBIGUOUS_SHARED_QID: ${amb.length} Wikidata QID(s) also map to other 25K artists — not silently merged.</p>`
+    : "";
+  box.innerHTML = ambNote + `<table><thead><tr><th>Type</th><th>Value</th><th>Source</th><th>Status</th></tr></thead><tbody>
+    ${items.slice(0, 24).map((r) => `<tr>
+      <td>${esc(r.id_type || "")}</td>
+      <td class="small">${esc(r.id_value || "")}</td>
+      <td class="small muted">${esc(r.source_system || "")}</td>
+      <td class="small">${esc(r.status || "")}</td>
+    </tr>`).join("")}</tbody></table>`;
 }
 
 function renderAlts(alts) {

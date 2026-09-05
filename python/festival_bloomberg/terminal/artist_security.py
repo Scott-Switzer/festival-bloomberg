@@ -148,7 +148,11 @@ def _table_exists(conn, table: str) -> bool:
         ).fetchone()
         return row is not None
     except Exception:
-        return False
+        schema, name = table.split(".", 1) if "." in table else ("main", table)
+        return bool(conn.execute(
+            "SELECT COUNT(*) FROM duckdb_tables() WHERE schema_name=? AND table_name=?",
+            [schema, name],
+        ).fetchone()[0])
 
 
 def _public_ticket_market(conn, artist_key: str) -> dict[str, Any]:
@@ -286,6 +290,67 @@ def _public_ticket_market(conn, artist_key: str) -> dict[str, Any]:
         "label": "PUBLIC TICKET MARKET",
         "items": rows,
         "events": events_out,
+        "note": note,
+    }
+
+
+def _artist_geography(conn, artist_key: str) -> dict[str, Any]:
+    """Structured Wikidata geography — never fabricate location."""
+    note = (
+        "Wikidata location properties preserved with source/property semantics. "
+        "Missing geography stays unavailable — never inferred from nationality as demand."
+    )
+    if not _table_exists(conn, "artist_geography_observations"):
+        return {
+            "status": "UNKNOWN",
+            "label": "GEOGRAPHY",
+            "items": [],
+            "note": note + " No artist_geography_observations in this serving generation.",
+        }
+    rows = _rows(conn, """
+        SELECT artist_key, wikidata_qid, location_property, location_qid,
+               source_system, knowledge_time, wikidata_generation
+        FROM artist_geography_observations
+        WHERE artist_key = ?
+        ORDER BY location_property, location_qid
+        LIMIT 50
+    """, [artist_key])
+    if not rows:
+        return {"status": "UNKNOWN", "label": "GEOGRAPHY", "items": [], "note": note}
+    return {
+        "status": "OBSERVED",
+        "label": "GEOGRAPHY",
+        "items": rows,
+        "note": note,
+    }
+
+
+def _artist_reference_identity(
+    conn, artist_key: str, external_ids: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """External IDs + explicit AMBIGUOUS_SHARED_QID flags (no silent merge)."""
+    note = (
+        "External IDs joined by exact MBID↔Wikidata musicbrainz_artist_id. "
+        "AMBIGUOUS_SHARED_QID means multiple 25K artists share one QID — not collapsed."
+    )
+    ambiguous = [
+        row for row in external_ids
+        if row.get("id_type") == "wikidata_qid" and row.get("status") == "AMBIGUOUS_SHARED_QID"
+    ]
+    projection: list[dict[str, Any]] = []
+    if _table_exists(conn, "artist_reference_projection"):
+        projection = _rows(conn, """
+            SELECT artist_key, musicbrainz_id, wikidata_qid, identity_status,
+                   external_id_name, external_id_value, source_system, knowledge_time
+            FROM artist_reference_projection
+            WHERE artist_key = ?
+            LIMIT 40
+        """, [artist_key])
+    return {
+        "status": "OBSERVED" if (external_ids or projection) else "UNKNOWN",
+        "items": external_ids,
+        "projection": projection,
+        "ambiguous_qid": ambiguous,
         "note": note,
     }
 
@@ -849,6 +914,8 @@ def get_artist_security(conn, artist_key: str) -> dict[str, Any] | None:
         LIMIT 150
     """, [artist_key])
     public_ticket_market = _public_ticket_market(conn, artist_key)
+    geography = _artist_geography(conn, artist_key)
+    reference_identity = _artist_reference_identity(conn, artist_key, external_ids)
     alternatives = _alternatives(peers)
     _enrich_markets_from_future(markets, future)
     ticket_evidence_count = sum(has_advertised_structured_range(event) for event in future)
@@ -919,10 +986,15 @@ def get_artist_security(conn, artist_key: str) -> dict[str, Any] | None:
         "attention": attention,
         "peers": {
             "status": peer_status,
-            "label": "PILOT AUDIENCE DATA — 1% ListenBrainz sample",
+            "label": "LISTENBRAINZ CONSUMPTION AFFINITY",
             "items": peers,
-            "note": "Shared listening is not local demand, ticket intent, or a booking recommendation.",
+            "note": (
+                "LISTENBRAINZ CONSUMPTION AFFINITY — shared listening from the ListenBrainz pilot sample. "
+                "Not ticket demand, local demand, fan crossover probability, or a booking recommendation."
+            ),
         },
+        "geography": geography,
+        "reference_identity": reference_identity,
         "markets": {
             "status": market_status,
             "items": markets,
@@ -1001,7 +1073,7 @@ def compare_artists(conn, artist_a: str, artist_b: str) -> dict[str, Any] | None
         "label": "Audience overlap",
         "left": shared["summary"],
         "right": shared["summary"],
-        "explanation": "Shared-listener evidence from the 1% ListenBrainz pilot, if an observed edge exists. Shared listening is not local demand or ticket intent.",
+        "explanation": "LISTENBRAINZ CONSUMPTION AFFINITY from the pilot sample, if an observed edge exists. Not ticket demand, local demand, or fan crossover probability.",
     }
     dimensions = [
         {"label": "Identity", "left": left_summary["identity"], "right": right_summary["identity"],
