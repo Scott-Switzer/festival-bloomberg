@@ -42,3 +42,9 @@ Hosted diagnosis: static assets/bootstrap respond but API requests stall. The
 container serves plain HTTP on its private port; internal health and product
 forwarding now explicitly use HTTP, while the external surface remains HTTPS.
 This fix requires deployed acceptance before being considered effective.
+
+Buyer UI correction: incomparable pairs previously displayed an absolute delta
+under a comparable-only label. The renderer now shows NOT_COMPARABLE with the
+reason and no delta; rendering tests also distinguish missing from observed zero.
+The second full local suite ran out of disk; its generated scratch was removed.
+Full rollout validation uses exact-head CI, without claiming the interrupted run passed.
