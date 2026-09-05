@@ -21,6 +21,7 @@
  */
 
 import { DurableObject } from "cloudflare:workers";
+import { withJobManifest } from "./batch-status";
 import {
   BatchJobSpec,
   buildContainerEnv,
@@ -119,6 +120,9 @@ export class BatchContainer extends DurableObject<BatchEnv> {
     if (this.containerReady) return;
     try {
       const containerEnv = buildContainerEnv(this.containerEnvSource());
+      // Exec-based batch work must outlive the short default inactivity window.
+      // Completed jobs release their instance in monitorJob's finally block.
+      await this.ctx.container!.setInactivityTimeout(30 * 60 * 1000);
       await this.ctx.container!.start({
         env: containerEnv,
         enableInternet: true, // R2 S3 API needs outbound
@@ -305,6 +309,8 @@ export class BatchContainer extends DurableObject<BatchEnv> {
     } finally {
       this.lastResult = result;
       this.currentJob = null;
+      this.containerReady = false;
+      await this.ctx.container!.destroy().catch(() => {});
     }
   }
 
@@ -320,6 +326,7 @@ export class BatchContainer extends DurableObject<BatchEnv> {
     const safeStatus: BatchStatusResponse = {
       job_id: result.job_id,
       job_type: result.job_type,
+      code_commit: result.code_commit,
       status: result.status,
       started_at: result.started_at,
       updated_at: result.completed_at || new Date().toISOString(),
@@ -351,7 +358,12 @@ export class BatchContainer extends DurableObject<BatchEnv> {
     try {
       const obj = await this.env.PRIVATE_BUCKET.get(statusKey);
       if (!obj) return null;
-      return await obj.json() as BatchStatusResponse;
+      const status = await obj.json() as BatchStatusResponse;
+      const manifestKey = `control/jobs/${status.job_type}/${jobId}/manifest.json`;
+      const bucket = ["artist_factor_tape_build_v1", "artist_sentiment_build_v1", "terminal_serving_build_v1"].includes(status.job_type)
+        ? this.env.LAKE_BUCKET : this.env.PRIVATE_BUCKET;
+      const manifest = await bucket.get(manifestKey);
+      return manifest ? withJobManifest(status, await manifest.json() as Record<string, unknown>) as BatchStatusResponse : status;
     } catch {
       return null;
     }
@@ -368,6 +380,10 @@ export class BatchContainer extends DurableObject<BatchEnv> {
     status: BatchStatusResponse | null;
     durable_source: "memory" | "r2" | "none";
   }> {
+    if (jobId) {
+      const durable = await this.reconstructDurableStatus(jobId);
+      if (durable) return { container_ready: this.containerReady, current_job: this.currentJob, status: durable, durable_source: "r2" };
+    }
     // If we have in-memory state, use it (but strip unsafe fields).
     if (this.lastResult) {
       const r = this.lastResult;
