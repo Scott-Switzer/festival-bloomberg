@@ -696,9 +696,18 @@ def _resolve_estate(lake, work: Path) -> tuple[Path, str, str, int]:
 
 
 def _resolve_affinity(lake, work: Path) -> tuple[Path, str, int]:
-    """Resolve the ListenBrainz pilot Gold affinity parquet from LAKE."""
-    candidates = ["gold/listenbrainz_pilot/artist_audience_affinity.parquet"]
-    if not lake.verify_object_exists(lake.config.lake_bucket, candidates[0]):
+    """Resolve ListenBrainz affinity parquet from LAKE (prefer 25K gold CURRENT)."""
+    candidates: list[str] = []
+    current = lake.read_checkpoint(lake.config.lake_bucket, "gold/artist_audience_affinity/CURRENT.json")
+    if current and current.get("object_key"):
+        candidates.append(str(current["object_key"]))
+    candidates.append("gold/listenbrainz_pilot/artist_audience_affinity.parquet")
+    chosen = None
+    for key in candidates:
+        if lake.verify_object_exists(lake.config.lake_bucket, key):
+            chosen = key
+            break
+    if not chosen:
         objs = lake.list_prefix(lake.config.lake_bucket, "gold/", limit=500)
         aff = sorted(
             (o for o in objs if "affinity" in o["key"] and o["key"].endswith(".parquet")),
@@ -709,10 +718,10 @@ def _resolve_affinity(lake, work: Path) -> tuple[Path, str, int]:
                 "GOLD_AFFINITY_NOT_FOUND: no gold/*affinity*.parquet object in LAKE; "
                 "audience peers/alternatives cannot be materialized"
             )
-        candidates[0] = aff[0]["key"]
+        chosen = aff[0]["key"]
     dest = work / "affinity.parquet"
-    size = _download_to_scratch(lake, lake.config.lake_bucket, candidates[0], dest)
-    return dest, candidates[0], size
+    size = _download_to_scratch(lake, lake.config.lake_bucket, chosen, dest)
+    return dest, chosen, size
 
 
 def _compute_demo_artists(db_path: Path, limit: int = 10) -> list[dict]:

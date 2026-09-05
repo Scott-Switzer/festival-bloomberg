@@ -1,6 +1,6 @@
 {
   "scorecard": "DATA_FLYWHEEL_SCORECARD_V1",
-  "as_of": "2026-09-05T22:42:58Z",
+  "as_of": "2026-09-05T23:16:57Z",
   "canonical_artists_identity_graph": 25000,
   "artists_security_universe_25000_local": 0,
   "factor_observations_local": 0,
@@ -40,9 +40,8 @@
     "r2_lake_serving_approx_mb": 896,
     "r2_lake_gold_approx_mb": 35,
     "stored_not_activated": [
-      "ListenBrainz/Wikidata/MusicBrainz bulk raw",
-      "local 25k/factor tables empty",
-      "factor unattended refresh"
+      "ListenBrainz FULL map/reduce beyond pilot (PARTIAL_PROCESSING_ACTIVE)",
+      "local research DB 25k/factor tables empty (cloud gold/serving authoritative)"
     ],
     "fast_queue_bound": true,
     "bootstrap_enqueue": "WORKING"
@@ -57,5 +56,50 @@
     "ge1_target": "MET",
     "ge2_target": "MET"
   },
-  "pr": "https://github.com/Scott-Switzer/festival-bloomberg/pull/71"
+  "pr": "https://github.com/Scott-Switzer/festival-bloomberg/pull/71",
+  "bulk_corpus_activation": {
+    "milestone": "BULK_CORPUS_ACTIVATION_V1",
+    "generation": "bulk_activation_20260905T225703Z",
+    "musicbrainz_artists_with_events": 25000,
+    "musicbrainz_event_edges": 177986,
+    "wikidata_artists_with_qid": 10078,
+    "wikidata_geography_artists": 9414,
+    "listenbrainz_affinity_artists": 10429,
+    "listenbrainz_affinity_edges": 508894,
+    "listenbrainz_full_map_reduce": "PARTIAL_PROCESSING_ACTIVE",
+    "stored_not_activated_note": "Raw dumps remain in R2; useful 25K projections now in gold CURRENT pointers",
+    "raw_bulk_total_gb": 256.2,
+    "listenbrainz_full_scan_blockers": [
+      "missing lb_tar_index.json",
+      "missing listenbrainz_full_scan checkpoint",
+      "local free disk below map minimum",
+      "prior reducer-correctness gates"
+    ],
+    "serving_generation": "terminal_v1_20260905T231452Z",
+    "serving_bytes": 183250944,
+    "qid_collision_groups": 7,
+    "qid_collision_policy": "AMBIGUOUS_SHARED_QID preserved \u2014 never silently merged",
+    "affinity_label": "LISTENBRAINZ CONSUMPTION AFFINITY"
+  },
+  "pr71_merged": "c590be9cc56f36ba4d55cdfa826eafda4e7908bc",
+  "STORED_NOT_ACTIVATED_BYTES": 256171149034,
+  "STORED_NOT_ACTIVATED_GB": 256.2,
+  "ACTIVATED_GOLD_BYTES_NOTE": "25K projections: reference_ids+geography+event_history+affinity (~12MB) + prior ticket/factor gold",
+  "PRODUCT_UNIVERSE_ARTISTS": 25000,
+  "MusicBrainz_artists_covered": 25000,
+  "Wikidata_ID_coverage": 10078,
+  "Wikidata_geography_coverage": 9414,
+  "ListenBrainz_affinity_coverage": 10429,
+  "MusicBrainz_event_rows": 177986,
+  "ListenBrainz_affinity_edges": 508894,
+  "ACTIVATED_GOLD_BYTES": 12075424,
+  "SERVING_BYTES": 183250944,
+  "serving_generation": "terminal_v1_20260905T231452Z",
+  "serving_sha256": "63b15269a48605f4c413fca3ed78be4248c5998f9549d582a96d83181a79470a",
+  "corpus_activation_class": {
+    "MusicBrainz": "PARTIALLY_ACTIVATED",
+    "Wikidata": "PARTIALLY_ACTIVATED",
+    "ListenBrainz": "PARTIALLY_ACTIVATED",
+    "ListenBrainz_full_corpus": "NOT_YET_COMPLETE"
+  }
 }

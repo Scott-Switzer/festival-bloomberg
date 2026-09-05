@@ -1,0 +1,73 @@
+{
+  "milestone": "BULK_CORPUS_ACTIVATION_V1",
+  "as_of": "2026-09-05T23:00:00Z",
+  "base_main_sha": "c590be9cc56f36ba4d55cdfa826eafda4e7908bc",
+  "branch": "feat/bulk-corpus-activation-v1",
+  "raw_bulk_total_bytes": 256171149034,
+  "raw_bulk_total_gb": 256.2,
+  "inventory_source": "R2 HEAD + lake catalog recon (no redownload)",
+  "r2_estate": [
+    {
+      "SOURCE": "MusicBrainz",
+      "VERSION_DATE": "relational 20260826-002522; JSON wave-1 20260826-001001",
+      "R2_PREFIX": "festival-intelligence-raw/bulk/musicbrainz/",
+      "OBJECT_COUNT": 6,
+      "COMPRESSED_BYTES": 7768508935,
+      "HASH_MANIFEST_STATUS": "PUBLISHER_CHECKSUM_VERIFIED; silver events/venues/series published on lake",
+      "EXISTING_PROCESSOR": "python/festival_bloomberg/musicbrainz/dumps.py; scripts/build_mb_silver_graph.py; scripts/mb_wave1_acquire_and_ingest.py; scripts/acquire_mb_dumps_25k.py; scripts/ingest_mb_event_dump.py",
+      "EXISTING_PILOT_OUTPUTS": "silver/events (124898), event_artist_edges (354364), venues (82790), series (37469), areas (12168)",
+      "EXISTING_CHECKPOINTS": "R2 objects complete; warehouse raw.musicbrainz_* + reference.musicbrainz_artists",
+      "CURRENT_CANONICAL_ROWS": "reference.musicbrainz_artists ~2.2M; 25K gold event edges 177986",
+      "CURRENT_GOLD_ROWS": "gold/artist_event_history CURRENT bulk_activation_20260905T225703Z",
+      "CURRENT_SERVING_ROWS": "event_history + festival_appearances via terminal_serving_build",
+      "ACTIVATION_STATUS": "RAW_STORED + SILVER_BUILT + 25K_GOLD_PROJECTED (full relational mbdump still underused vs JSON wave-1)"
+    },
+    {
+      "SOURCE": "Wikidata",
+      "VERSION_DATE": "latest-truthy-20260828 / silver run 20260905T172934Z-1606",
+      "R2_PREFIX": "festival-intelligence-raw/bulk/wikidata/dump=latest-truthy/ → silver/wikidata/generations/20260905T172934Z-1606/",
+      "OBJECT_COUNT": 1,
+      "COMPRESSED_BYTES": 43329477419,
+      "HASH_MANIFEST_STATUS": "PUBLISHED; CURRENT.json; manifest sha 1ada1cc95ac21903b50d755d748a8b469a7a2be67bb4963c0539231252df90d2",
+      "EXISTING_PROCESSOR": "scripts/build_wikidata_music_graph.py; scripts/verify_wikidata_generation.py",
+      "EXISTING_PILOT_OUTPUTS": "12 silver artifacts (artist_external_ids 209645, locations 524103, genres 258830, …)",
+      "EXISTING_CHECKPOINTS": "silver/wikidata/CURRENT.json (no byte-resume; full re-stream if rebuild)",
+      "CURRENT_CANONICAL_ROWS": "silver artist_ids 209645; locations 524103",
+      "CURRENT_GOLD_ROWS": "gold/artist_reference_ids + artist_geography (25K projection)",
+      "CURRENT_SERVING_ROWS": "artist_external_ids folded in terminal_serving_build; geography gold not yet folded",
+      "ACTIVATION_STATUS": "RAW_STORED + SILVER_PUBLISHED + 25K_GOLD_PROJECTED"
+    },
+    {
+      "SOURCE": "ListenBrainz",
+      "VERSION_DATE": "dump 2593-20260712-000004; pilot affinity 2026-08-29",
+      "R2_PREFIX": "festival-intelligence-raw/bulk/listenbrainz/dump=2593-20260712-000004/",
+      "OBJECT_COUNT": 1,
+      "COMPRESSED_BYTES": 205073162240,
+      "HASH_MANIFEST_STATUS": "SIZE_VERIFIED+MULTIPART_COMPLETE; pilot gold published; full-scan index ABSENT",
+      "EXISTING_PROCESSOR": "scripts/lb_pilot.py; scripts/lb_full_scan.py; scripts/lb_format_inventory.py; cloud batch_jobs listenbrainz_map/reduce",
+      "EXISTING_PILOT_OUTPUTS": "gold/listenbrainz_pilot/artist_audience_affinity.parquet (508894); silver listener_artist_aggregate (2894447)",
+      "EXISTING_CHECKPOINTS": "control/lake/listenbrainz_full_scan/current.json ABSENT; control/lake/lb_tar_index.json ABSENT; ready_for_bounded_map=false",
+      "CURRENT_CANONICAL_ROWS": "pilot edges filtered to 25K×25K = 508894",
+      "CURRENT_GOLD_ROWS": "gold/artist_audience_affinity CURRENT bulk_activation_20260905T225703Z",
+      "CURRENT_SERVING_ROWS": "artist_peers in terminal (pilot)",
+      "ACTIVATION_STATUS": "RAW_STORED + PILOT_ACTIVATED_ON_25K; FULL_MAP_REDUCE=PARTIAL_PROCESSING_ACTIVE",
+      "FULL_SCAN_BLOCKERS": [
+        "missing tar index (lb_tar_index.json)",
+        "missing full_scan checkpoint",
+        "local free disk below map minimum (~388MB vs ~966MB at last check)",
+        "prior reducer-correctness / stats gates in docs/data-moat-compounding-v1.md"
+      ]
+    }
+  ],
+  "coverage_matrix_25k": {
+    "MusicBrainz": {"artists_identified": 25000, "artists_with_data": 25000, "rows_edges": 177986, "PIT": true, "serving": true},
+    "Wikidata": {"artists_identified": 10078, "artists_with_data": 10078, "rows_edges": 10082, "geography_artists": 9414, "PIT": true, "serving": "partial"},
+    "ListenBrainz": {"artists_identified": 10429, "artists_with_data": 10429, "rows_edges": 508894, "PIT": "pilot", "serving": true, "label": "consumption affinity NOT ticket demand"},
+    "Ticket market": {"pairs": 500, "ge1": 440, "ge2": 313, "ge3": 12, "serving": "terminal_v1_20260905T224121Z"}
+  },
+  "gold_generation": "bulk_activation_20260905T225703Z",
+  "stored_not_activated_bytes_before": 256171149034,
+  "stored_not_activated_bytes_after_note": "Raw dumps remain; useful 25K projections now in gold CURRENT. STORED_NOT_ACTIVATED decreases as product joins use gold rather than requiring raw re-scan.",
+  "no_redownload": true,
+  "tickets_dev": "OUT_OF_SCOPE"
+}

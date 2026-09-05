@@ -1,0 +1,151 @@
+{
+  "estate_source": "control/artist_security_25000/v1/estate_20260828T013314Z_f87e5d1d073e.json",
+  "universe_size": 25000,
+  "artifacts": {
+    "artist_reference_ids": {
+      "generation": "bulk_activation_20260905T225703Z",
+      "CURRENT_pointer": "gold/artist_reference_ids/CURRENT.json",
+      "object_key": "gold/artist_reference_ids/generations/bulk_activation_20260905T225703Z/artist_reference_ids.parquet",
+      "declared_sha256": "a28840e06ef6f378e348b10ba324b5af234d3cf7c1dee706d78d23b137fce5d9",
+      "readback_sha256": "a28840e06ef6f378e348b10ba324b5af234d3cf7c1dee706d78d23b137fce5d9",
+      "hash_match": true,
+      "bytes": 1501170,
+      "declared_rows": 25004,
+      "readback_rows": 25004,
+      "artist_count": 25000,
+      "universe": "artist_security_25000",
+      "estate_source": "control/artist_security_25000/v1/estate_20260828T013314Z_f87e5d1d073e.json",
+      "created_at": "2026-09-05T22:57:03.920980+00:00",
+      "implementation": "scripts/activate_bulk_corpora_25k.py",
+      "rights_state": "CC0_OPEN_DUMPS_PROJECTION; commercial_use review still product-level",
+      "join_quality": {
+        "rows_in_universe": 25004,
+        "rows_outside_universe": 0,
+        "artists_with_multiple_rows": 4,
+        "name_only_fallback": false,
+        "mbid_matches": 25000,
+        "wikidata_qid_matches": 10078,
+        "unresolved_wikidata": 14922,
+        "qid_collision_groups": 7,
+        "mbid_collision_groups": 0,
+        "exact_external_id_join": "musicbrainz_artist_id = estate.musicbrainz_id"
+      },
+      "columns": [
+        "artist_key",
+        "musicbrainz_id",
+        "artist_name",
+        "wikidata_qid",
+        "external_id_property",
+        "external_id_name",
+        "external_id_value",
+        "source_system",
+        "knowledge_time",
+        "wikidata_generation"
+      ]
+    },
+    "artist_geography": {
+      "generation": "bulk_activation_20260905T225703Z",
+      "CURRENT_pointer": "gold/artist_geography/CURRENT.json",
+      "object_key": "gold/artist_geography/generations/bulk_activation_20260905T225703Z/artist_geography.parquet",
+      "declared_sha256": "28da74957455b009676be6eb284ca870faefb426d5a7b9fe8db2712015b34b61",
+      "readback_sha256": "28da74957455b009676be6eb284ca870faefb426d5a7b9fe8db2712015b34b61",
+      "hash_match": true,
+      "bytes": 560565,
+      "declared_rows": 10640,
+      "readback_rows": 10640,
+      "artist_count": 10078,
+      "universe": "artist_security_25000",
+      "estate_source": "control/artist_security_25000/v1/estate_20260828T013314Z_f87e5d1d073e.json",
+      "created_at": "2026-09-05T22:57:11.185317+00:00",
+      "implementation": "scripts/activate_bulk_corpora_25k.py",
+      "rights_state": "CC0_OPEN_DUMPS_PROJECTION; commercial_use review still product-level",
+      "join_quality": {
+        "rows_in_universe": 10640,
+        "rows_outside_universe": 0,
+        "artists_with_multiple_rows": 516,
+        "name_only_fallback": false,
+        "artists_with_location_qid": 9414,
+        "unresolved_geography": 15586
+      },
+      "columns": [
+        "artist_key",
+        "musicbrainz_id",
+        "artist_name",
+        "wikidata_qid",
+        "location_property",
+        "location_qid",
+        "source_system",
+        "knowledge_time",
+        "wikidata_generation"
+      ]
+    },
+    "artist_event_history": {
+      "generation": "bulk_activation_20260905T225703Z",
+      "CURRENT_pointer": "gold/artist_event_history/CURRENT.json",
+      "object_key": "gold/artist_event_history/generations/bulk_activation_20260905T225703Z/artist_event_history.parquet",
+      "declared_sha256": "fe102ed374765924f5382b790d818c687c3ae515d1665102031335224f76f9b8",
+      "readback_sha256": "fe102ed374765924f5382b790d818c687c3ae515d1665102031335224f76f9b8",
+      "hash_match": true,
+      "bytes": 6208947,
+      "declared_rows": 177986,
+      "readback_rows": 177986,
+      "artist_count": 25000,
+      "universe": "artist_security_25000",
+      "estate_source": "control/artist_security_25000/v1/estate_20260828T013314Z_f87e5d1d073e.json",
+      "created_at": "2026-09-05T22:57:16.371988+00:00",
+      "implementation": "scripts/activate_bulk_corpora_25k.py",
+      "rights_state": "CC0_OPEN_DUMPS_PROJECTION; commercial_use review still product-level",
+      "join_quality": {
+        "rows_in_universe": 177986,
+        "rows_outside_universe": 0,
+        "artists_with_multiple_rows": 15967,
+        "name_only_fallback": false,
+        "artists_with_events": 25000,
+        "unresolved_events": 0,
+        "exact_mbid_join": "event_artist_edges.artist_mbid = estate.musicbrainz_id"
+      },
+      "columns": [
+        "artist_key",
+        "musicbrainz_id",
+        "artist_name",
+        "event_mbid",
+        "event_name",
+        "event_type",
+        "begin_date",
+        "end_date",
+        "source_system",
+        "knowledge_time",
+        "musicbrainz_dump_version"
+      ]
+    },
+    "artist_audience_affinity": {
+      "generation": "bulk_activation_20260905T225703Z",
+      "CURRENT_pointer": "gold/artist_audience_affinity/CURRENT.json",
+      "object_key": "gold/artist_audience_affinity/generations/bulk_activation_20260905T225703Z/artist_audience_affinity.parquet",
+      "declared_sha256": "7a760e336a1574ae0bbb4cdab63e3fb05a5ee8c033050be4a647fd6f61916798",
+      "readback_sha256": "7a760e336a1574ae0bbb4cdab63e3fb05a5ee8c033050be4a647fd6f61916798",
+      "hash_match": true,
+      "bytes": 3804742,
+      "declared_rows": 508894,
+      "readback_rows": 508894,
+      "artist_count": 10429,
+      "universe": "artist_security_25000",
+      "estate_source": "control/artist_security_25000/v1/estate_20260828T013314Z_f87e5d1d073e.json",
+      "created_at": "2026-09-05T22:57:23.800023+00:00",
+      "implementation": "scripts/activate_bulk_corpora_25k.py",
+      "rights_state": "CC0_OPEN_DUMPS_PROJECTION; commercial_use review still product-level",
+      "join_quality": {
+        "exact_artist_key_edges_in_universe": 508894,
+        "edges_outside_universe": 0,
+        "name_only_fallback": false
+      },
+      "columns": [
+        "artist_key_a",
+        "artist_key_b",
+        "shared_listeners",
+        "jaccard",
+        "knowledge_time"
+      ]
+    }
+  }
+}
