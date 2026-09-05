@@ -28,6 +28,7 @@ COPY scripts/ scripts/
 
 # Copy batch entrypoint (context = this docker/ dir)
 COPY batch_entrypoint.py .
+COPY build_identity.json /app/build_identity.json
 
 # Copy schema migrations (needed by some jobs)
 COPY schema/ schema/

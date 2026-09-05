@@ -38,6 +38,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
+from festival_bloomberg.lake.publication_guard import guard_s3_client
+
 import boto3
 import requests
 from botocore.config import Config
@@ -227,7 +230,7 @@ def create_r2_client():
     sk = os.environ.get("R2_SECRET_ACCESS_KEY", "")
     if not ak or not sk:
         raise RuntimeError("R2 credentials not found. Set R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY or configure rclone.")
-    return boto3.client(
+    return guard_s3_client(boto3.client(
         "s3",
         endpoint_url=R2_ENDPOINT,
         aws_access_key_id=ak,
@@ -237,7 +240,7 @@ def create_r2_client():
             retries={"max_attempts": 3, "mode": "adaptive"},
         ),
         region_name="auto",
-    )
+    ))
 
 
 def start_multipart_upload(s3, bucket: str, key: str) -> str:

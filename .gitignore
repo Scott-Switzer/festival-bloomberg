@@ -70,3 +70,5 @@ terminal-runtime/docker/public/
 terminal-runtime/docker/requirements.txt
 terminal-runtime/node_modules
 terminal-runtime/worker-configuration.d.ts
+
+cloud-runtime/docker/build_identity.json

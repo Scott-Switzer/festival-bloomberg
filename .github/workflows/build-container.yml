@@ -40,6 +40,14 @@ jobs:
           cp -r ../scripts docker/scripts
           cp -r ../schema docker/schema
           cp ../requirements.txt docker/requirements.txt
+          python - <<'PYBUILD'
+          import json, os
+          from pathlib import Path
+          Path("docker/build_identity.json").write_text(json.dumps({
+              "git_commit": os.environ["GITHUB_SHA"],
+              "build_identity": "github-actions:" + os.environ["GITHUB_RUN_ID"] + ":" + os.environ["GITHUB_RUN_ATTEMPT"],
+          }, sort_keys=True))
+          PYBUILD
 
       - name: Deploy worker + build container
         working-directory: cloud-runtime

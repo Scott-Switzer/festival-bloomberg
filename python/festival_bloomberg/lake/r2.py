@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from festival_bloomberg.lake.publication_guard import guard_s3_client
+
 import configparser
 import os
 from pathlib import Path
@@ -35,11 +37,11 @@ def r2_client():
     ak, sk = load_r2_credentials()
     if not ak or not sk:
         raise RuntimeError("R2 credentials not found (env or ~/.config/rclone/rclone.conf)")
-    return boto3.client(
+    return guard_s3_client(boto3.client(
         "s3",
         endpoint_url=R2_ENDPOINT,
         aws_access_key_id=ak,
         aws_secret_access_key=sk,
         config=Config(max_pool_connections=8, retries={"max_attempts": 3, "mode": "adaptive"}),
         region_name="auto",
-    )
+    ))

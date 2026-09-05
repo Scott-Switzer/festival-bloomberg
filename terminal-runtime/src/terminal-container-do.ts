@@ -53,6 +53,8 @@ export class TerminalContainer extends DurableObject<TerminalRuntimeEnv> {
     await this.ensureContainerStarted(origin);
     const forwardedUrl = new URL(request.url);
     forwardedUrl.pathname = logicalPath;
+    // The product server on the private container port speaks plain HTTP.
+    forwardedUrl.protocol = "http:";
     const forwardedHeaders = new Headers(request.headers);
     forwardedHeaders.delete("X-Terminal-Access-Prefix");
     return this.http!.fetch(new Request(forwardedUrl, {
@@ -130,15 +132,14 @@ export class TerminalContainer extends DurableObject<TerminalRuntimeEnv> {
       });
 
     const http = container.getTcpPort(PRODUCT_PORT);
-    const originUrl = new URL(origin);
-    const internalHealthUrl = `${originUrl.origin}/health`;
+    const internalHealthUrl = "http://container/health";
 
     // Poll /health until the entrypoint reports a verified, open generation.
     const deadline = Date.now() + START_TIMEOUT_MS;
     let lastError = "no health response yet";
     while (Date.now() < deadline) {
       try {
-        const health = await http.fetch(new Request(internalHealthUrl));
+        const health = await http.fetch(new Request(internalHealthUrl, { signal: AbortSignal.timeout(10_000) }));
         if (health.ok) {
           this.http = http;
           return;

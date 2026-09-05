@@ -109,14 +109,20 @@ AFFINITY_METRIC_UNIVERSE = {
 
 
 def _git_commit() -> str:
-    """Best-effort git commit hash (available in container build context)."""
+    """Exact immutable build provenance, with a development checkout fallback."""
+    build_path = Path("/app/build_identity.json")
+    if build_path.exists():
+        commit = json.loads(build_path.read_text())["git_commit"]
+        if len(commit) != 40 or any(c not in "0123456789abcdef" for c in commit):
+            raise RuntimeError("INVALID_BUILD_COMMIT")
+        return commit
     try:
         import subprocess
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
             capture_output=True, text=True, cwd=PROJECT_ROOT, timeout=5,
         )
-        return result.stdout.strip()[:12] if result.returncode == 0 else "unknown"
+        return result.stdout.strip() if result.returncode == 0 else "unknown"
     except Exception:
         return "unknown"
 
@@ -1508,6 +1514,8 @@ def run_terminal_serving_build(spec: dict, scratch_dir: Path) -> dict:
     work.mkdir(parents=True, exist_ok=True)
 
     try:
+        serving_current_key = f"{TERMINAL_SERVING_PREFIX}/CURRENT.json"
+        _, serving_parent_etag = lake.read_versioned_json(lake.config.lake_bucket, serving_current_key)
         if max_events_per_artist < 1:
             raise ValueError("max_events_per_artist must be >= 1")
 
@@ -1667,6 +1675,7 @@ def run_terminal_serving_build(spec: dict, scratch_dir: Path) -> dict:
                 "estate_bucket": estate_bucket,
                 "inputs": {name: key for name, key in fixed_parquet_keys.items()},
                 "wikidata_artist_external_ids": wd_key,
+                "factor_gold": json.loads((work / "factor_gold_lineage.json").read_text()) if (work / "factor_gold_lineage.json").exists() else None,
                 "code_commit": _git_commit(),
             },
             "row_counts": counts,
@@ -1677,10 +1686,8 @@ def run_terminal_serving_build(spec: dict, scratch_dir: Path) -> dict:
         current_sha = hashlib.sha256(current_bytes).hexdigest()
         current_key = f"{TERMINAL_SERVING_PREFIX}/CURRENT.json"
         try:
-            lake.put_bytes(
-                lake.config.lake_bucket, current_key, current_bytes,
-                content_type="application/json",
-                metadata={"job_id": job_id, "sha256": current_sha, "generation": generation},
+            lake.put_json_if_version(
+                lake.config.lake_bucket, current_key, current_payload, serving_parent_etag,
             )
         except Exception:
             manifest.error_code = ERR_PUBLICATION_FAILED
@@ -1854,6 +1861,14 @@ def _fold_gold_artist_intelligence(
         tape_key = str(current["object_key"])
         tape_path = work / "gold_artist_factor_tape.parquet"
         size = _download_to_scratch(lake, lake.config.lake_bucket, tape_key, tape_path)
+        actual_sha = _streaming_sha256(tape_path)
+        if not current.get("sha256") or actual_sha != current["sha256"]:
+            conn.close()
+            raise RuntimeError("FACTOR_GOLD_HASH_MISMATCH")
+        (work / "factor_gold_lineage.json").write_text(json.dumps({
+            "generation": current["generation"], "object_key": tape_key,
+            "sha256": actual_sha, "factor_rows": current.get("factor_rows"),
+        }, sort_keys=True))
         manifest.source_paths.append(f"r2://{lake.config.lake_bucket}/{tape_key}")
         manifest.r2_read_bytes += size
         # Immutable rows only: a new snapshot is a new row, never an update.
