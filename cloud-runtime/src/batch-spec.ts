@@ -16,6 +16,7 @@ export const ALLOWED_BATCH_JOB_TYPES = new Set([
   "identity_graph_v2",
   "listenbrainz_map",
   "listenbrainz_reduce",
+  "listenbrainz_tar_map",
   "cloud_smoke",
   "terminal_serving_build_v1",
   "artist_factor_tape_build_v1",

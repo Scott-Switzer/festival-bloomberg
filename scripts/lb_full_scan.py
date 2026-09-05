@@ -61,12 +61,22 @@ RAW_KEY = ("bulk/listenbrainz/dump=2593-20260712-000004/"
 DUMP_VERSION = "2593-20260712-000004"
 
 # Local plumbing (survives per-session; contents are transient, uploaded + deleted)
-INDEX_CACHE = Path("control/lake/lb_tar_index.json")
+# Cloud batch overrides via FI_LB_SCAN_ROOT + FI_LB_CHECKPOINT_AUTHORITY=CLOUD_JOB_R2
+_SCAN_ROOT = Path(os.environ["FI_LB_SCAN_ROOT"]) if os.environ.get("FI_LB_SCAN_ROOT") else None
+INDEX_CACHE = (
+    (_SCAN_ROOT / "lb_tar_index.json")
+    if _SCAN_ROOT
+    else Path("control/lake/lb_tar_index.json")
+)
 ESTATE_JSON = Path("data/control/artist_security_25000/v1/"
                    "estate_20260828T013314Z_f87e5d1d073e.json")
-CHECKPOINT = Path("control/lake/listenbrainz_full_scan/current.json")
-SPILL = Path("/tmp/lb_full_spill")
-LOCAL = Path("/tmp/lb_full_local")
+CHECKPOINT = (
+    (_SCAN_ROOT / "checkpoint.json")
+    if _SCAN_ROOT
+    else Path("control/lake/listenbrainz_full_scan/current.json")
+)
+SPILL = (_SCAN_ROOT / "spill") if _SCAN_ROOT else Path("/tmp/lb_full_spill")
+LOCAL = (_SCAN_ROOT / "local") if _SCAN_ROOT else Path("/tmp/lb_full_local")
 
 # Policy (from P1/P2 sensitivity study — see control/lake/listenbrainz_sensitivity_summary.json)
 TOP_K = 25                      # per-listener global artist cap
@@ -85,12 +95,26 @@ PIPELINE_VERSION = 3
 # ~1.5 GiB free and per-batch peak local use is ~0.4 GiB at batch=4 with a
 # 512 MB DuckDB cap).  The pipeline is resume-safe: a batch that fails on disk
 # pressure is simply redone on restart.
-MIN_FREE_DISK_BYTES = int(0.9 * 1024 * 1024 * 1024)
-RUN_LOCK = Path("/tmp/festival_listenbrainz_full_scan.lock")
+# Cloud standard-4 has 20 GiB ephemeral — require 8 GiB free before map.
+_CLOUD_AUTH = os.environ.get("FI_LB_CHECKPOINT_AUTHORITY", "").strip()
+MIN_FREE_DISK_BYTES = (
+    int(8 * 1024 * 1024 * 1024)
+    if _CLOUD_AUTH == "CLOUD_JOB_R2"
+    else int(0.9 * 1024 * 1024 * 1024)
+)
+RUN_LOCK = (_SCAN_ROOT / "run.lock") if _SCAN_ROOT else Path("/tmp/festival_listenbrainz_full_scan.lock")
 PRIVATE_PARTIAL_ROOT = "listenbrainz/listener_level"
 PRIVATE_REDUCER_ACCESS = "LISTENER_LEVEL_REDUCER_ONLY"
 HOST_FINGERPRINT = hashlib.sha256(socket.gethostname().encode()).hexdigest()[:16]
-CHECKPOINT_AUTHORITY = "LOCAL_HOST_ONLY"
+CHECKPOINT_AUTHORITY = (
+    "CLOUD_JOB_R2" if _CLOUD_AUTH == "CLOUD_JOB_R2" else "LOCAL_HOST_ONLY"
+)
+CLOUD_JOB_ID = os.environ.get("FI_LB_JOB_ID", "").strip() or None
+CLOUD_CHECKPOINT_KEY = (
+    f"control/jobs/listenbrainz_tar_map/{CLOUD_JOB_ID}/checkpoint.json"
+    if CLOUD_JOB_ID
+    else None
+)
 COMPETING_HEAVY_MARKERS = (
     "build_wikidata_music_graph.py",
     "dense_derived_artifacts.py",
@@ -142,6 +166,17 @@ def load_checkpoint() -> dict:
             return json.loads(CHECKPOINT.read_text())
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(f"checkpoint is not valid JSON: {CHECKPOINT}") from exc
+    # Cloud: durable resume authority is the per-job R2 checkpoint.
+    if CHECKPOINT_AUTHORITY == "CLOUD_JOB_R2" and CLOUD_CHECKPOINT_KEY:
+        try:
+            s3 = r2_client()
+            body = s3.get_object(Bucket=LAKE_BUCKET, Key=CLOUD_CHECKPOINT_KEY)["Body"].read()
+            ckpt = json.loads(body)
+            CHECKPOINT.parent.mkdir(parents=True, exist_ok=True)
+            CHECKPOINT.write_text(json.dumps(ckpt, indent=2) + "\n")
+            return ckpt
+        except Exception:  # noqa: BLE001 — missing key → fresh checkpoint
+            pass
     return {
         "pipeline": "listenbrainz_full_scan",
         "pipeline_version": PIPELINE_VERSION,
@@ -229,9 +264,20 @@ def validate_checkpoint(ckpt: dict, *, partitions: int | None = None) -> None:
     ):
         raise RuntimeError("checkpoint is missing exact index/universe input digests")
     if completed and ckpt.get("checkpoint_authority") != CHECKPOINT_AUTHORITY:
-        raise RuntimeError("checkpoint is not declared local-host authoritative")
-    if completed and ckpt.get("execution_host_fingerprint") != HOST_FINGERPRINT:
-        raise RuntimeError("multi-host resume is prohibited for this pipeline")
+        raise RuntimeError("checkpoint authority does not match this runtime mode")
+    if (
+        completed
+        and CHECKPOINT_AUTHORITY == "LOCAL_HOST_ONLY"
+        and ckpt.get("execution_host_fingerprint") != HOST_FINGERPRINT
+    ):
+        raise RuntimeError("multi-host resume is prohibited for LOCAL_HOST_ONLY")
+    if (
+        completed
+        and CHECKPOINT_AUTHORITY == "CLOUD_JOB_R2"
+        and CLOUD_JOB_ID
+        and ckpt.get("cloud_job_id") not in (None, CLOUD_JOB_ID)
+    ):
+        raise RuntimeError("cloud checkpoint job_id does not match FI_LB_JOB_ID")
     if ckpt.get("completed_batches") and not ckpt.get("batch_partition_coverage"):
         raise RuntimeError("checkpoint is missing per-batch partition coverage markers")
     namespace = ckpt.get("run_namespace")
@@ -462,15 +508,17 @@ def cleanup_local_transients() -> None:
 
 
 def save_checkpoint(s3, ckpt: dict) -> None:
-    """Atomically save the sole resume authority, then refresh an R2 backup.
+    """Atomically save checkpoint, then refresh R2 (backup or cloud authority).
 
-    The local checkpoint is intentionally authoritative and host-bound. R2 is
-    disaster-recovery evidence only; this pipeline never resumes from it and
-    explicitly rejects a different host fingerprint.
+    LOCAL_HOST_ONLY: local file is authoritative; R2 host_backups/ is DR only.
+    CLOUD_JOB_R2: R2 control/jobs/listenbrainz_tar_map/<job_id>/checkpoint.json
+    is the durable resume authority (container ephemeral disk is not).
     """
     ckpt["updated_at"] = now_iso()
     ckpt["checkpoint_authority"] = CHECKPOINT_AUTHORITY
     ckpt["execution_host_fingerprint"] = HOST_FINGERPRINT
+    if CLOUD_JOB_ID:
+        ckpt["cloud_job_id"] = CLOUD_JOB_ID
     CHECKPOINT.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(ckpt, indent=2) + "\n"
     fd, tmp_name = tempfile.mkstemp(prefix=".checkpoint.", suffix=".json", dir=CHECKPOINT.parent)
@@ -484,14 +532,22 @@ def save_checkpoint(s3, ckpt: dict) -> None:
         if os.path.exists(tmp_name):
             os.unlink(tmp_name)
     try:
-        s3.put_object(
-            Bucket=LAKE_BUCKET,
-            Key=(
-                "control/listenbrainz_full_scan/host_backups/"
-                f"{HOST_FINGERPRINT}.json"
-            ),
-            Body=payload.encode(),
-        )
+        if CHECKPOINT_AUTHORITY == "CLOUD_JOB_R2" and CLOUD_CHECKPOINT_KEY:
+            s3.put_object(
+                Bucket=LAKE_BUCKET,
+                Key=CLOUD_CHECKPOINT_KEY,
+                Body=payload.encode(),
+                ContentType="application/json",
+            )
+        else:
+            s3.put_object(
+                Bucket=LAKE_BUCKET,
+                Key=(
+                    "control/listenbrainz_full_scan/host_backups/"
+                    f"{HOST_FINGERPRINT}.json"
+                ),
+                Body=payload.encode(),
+            )
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError("checkpoint R2 copy failed; remote resume state is stale") from exc
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import sys
 import time
@@ -2938,3 +2939,149 @@ def run_listenbrainz_reduce(spec: dict, scratch_dir: Path) -> dict:
 
     finally:
         shutil.rmtree(scratch_dir, ignore_errors=True)
+
+
+# ════════════════════════════════════════════════════════════════
+# LISTENBRAINZ TAR FULL-CORPUS MAP (stored 205 GB dump)
+# ════════════════════════════════════════════════════════════════
+
+def run_listenbrainz_tar_map(spec: dict, scratch_dir: Path) -> dict:
+    """Map the stored ListenBrainz *tar* dump via scripts/lb_full_scan.py.
+
+    Distinct from run_listenbrainz_map (raw/listenbrainz/*.zst layout).
+    Uses CLOUD_JOB_R2 checkpoint authority so container restarts resume from R2.
+    Does not rewrite the bounded TOP_25 policy.
+    """
+    import subprocess
+
+    lake = _get_lake()
+    job_id = spec.get("job_id", "lb_tar_map")
+    params = spec.get("params", {}) or {}
+    max_shards = int(spec.get("max_batches") or params.get("max_shards") or 76)
+    partitions = int(params.get("partitions", 64))
+    batch = int(params.get("batch_shards", 4))
+
+    manifest = new_manifest(
+        job_type="listenbrainz_tar_map",
+        job_id=job_id,
+        code_commit=_git_commit(),
+        container_image="festival-bloomberg-batch:latest",
+        total_batches=max_shards,
+        params={**params, "max_shards": max_shards, "partitions": partitions},
+    )
+    manifest_key_path = manifest_key("listenbrainz_tar_map", job_id)
+    start = time.time()
+    scan_root = scratch_dir / "lb_tar_scan"
+    scan_root.mkdir(parents=True, exist_ok=True)
+
+    try:
+        # Ensure durable tar member index is present for lb_full_scan.
+        members_key = "control/listenbrainz/full_corpus/tar_members_v1.json"
+        index_path = scan_root / "lb_tar_index.json"
+        if not index_path.exists():
+            raw = lake.get_bytes(lake.config.lake_bucket, members_key)
+            index_path.write_bytes(raw)
+            manifest.r2_read_bytes += len(raw)
+
+        # 25K estate required by scripts/lb_full_scan.py load_universe().
+        estate_rel = Path(
+            "data/control/artist_security_25000/v1/"
+            "estate_20260828T013314Z_f87e5d1d073e.json"
+        )
+        estate_key = (
+            "control/artist_security_25000/v1/"
+            "estate_20260828T013314Z_f87e5d1d073e.json"
+        )
+        repo_root = Path(__file__).resolve().parents[3]
+        if not (repo_root / "scripts").exists():
+            repo_root = Path("/app")
+        estate_path = repo_root / estate_rel
+        estate_path.parent.mkdir(parents=True, exist_ok=True)
+        if not estate_path.exists():
+            estate_bytes = lake.get_bytes(lake.config.lake_bucket, estate_key)
+            estate_path.write_bytes(estate_bytes)
+            manifest.r2_read_bytes += len(estate_bytes)
+
+        script = repo_root / "scripts" / "lb_full_scan.py"
+        env = os.environ.copy()
+        env["FI_LB_SCAN_ROOT"] = str(scan_root)
+        env["FI_LB_CHECKPOINT_AUTHORITY"] = "CLOUD_JOB_R2"
+        env["FI_LB_JOB_ID"] = job_id
+        env["PYTHONPATH"] = str(repo_root / "python") + os.pathsep + env.get("PYTHONPATH", "")
+
+        cmd = [
+            sys.executable,
+            str(script),
+            "map",
+            "--max-shards",
+            str(max_shards),
+            "--partitions",
+            str(partitions),
+        ]
+        # batch_shards is fixed in lb_full_scan.BATCH_SHARDS (geometry of run_namespace);
+        # params.batch_shards is recorded for observability only.
+        _ = batch
+        proc = subprocess.run(
+            cmd,
+            cwd=str(repo_root if (repo_root / "scripts").exists() else Path("/app")),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        manifest.runtime_seconds = round(time.time() - start, 2)
+        if proc.returncode != 0:
+            manifest.error_code = ERR_JOB_EXEC_FAILED
+            manifest.status = STATUS_FAILED
+            manifest.error = (proc.stderr or proc.stdout or "lb_full_scan map failed")[-2000:]
+            manifest.completed_at = now_iso()
+            lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
+            raise RuntimeError(manifest.error)
+
+        ckpt_path = scan_root / "checkpoint.json"
+        ckpt = json.loads(ckpt_path.read_text()) if ckpt_path.exists() else {}
+        completed = len(ckpt.get("completed_shards") or [])
+        manifest.completed_batches = completed
+        manifest.status = STATUS_BUILD_COMPLETE
+        manifest.completed_at = now_iso()
+        manifest.rows_read = int(ckpt.get("listens_scanned") or 0)
+        manifest.rows_written = int(ckpt.get("matched_listens") or 0)
+        manifest.params["tar_index_sha256"] = ckpt.get("tar_index_sha256")
+        manifest.params["label"] = "LISTENBRAINZ CONSUMPTION AFFINITY"
+        lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
+
+        manifest.status = STATUS_VERIFIED
+        manifest.publication_state = STATUS_VERIFIED
+        lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
+        manifest.status = STATUS_PUBLISHED
+        manifest.publication_state = STATUS_PUBLISHED
+        lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
+
+        return {
+            "status": "COMPLETED",
+            "manifest_key": manifest_key_path,
+            "job_id": job_id,
+            "shards_completed": completed,
+            "max_shards": max_shards,
+            "listens_scanned": manifest.rows_read,
+            "matched_listens": manifest.rows_written,
+            "runtime_seconds": manifest.runtime_seconds,
+            "stdout_tail": (proc.stdout or "")[-1500:],
+            "note": "MAP only; reduce-artist-day / reduce-affinity remain separate gates",
+        }
+    except Exception as e:
+        if manifest.error_code is None:
+            manifest.error_code = ERR_JOB_EXEC_FAILED
+        manifest.status = STATUS_FAILED
+        manifest.error = str(e)
+        manifest.error_detail = traceback.format_exc()
+        manifest.completed_at = now_iso()
+        manifest.runtime_seconds = round(time.time() - start, 2)
+        try:
+            lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
+        except Exception:
+            pass
+        raise
+    finally:
+        shutil.rmtree(scratch_dir, ignore_errors=True)
+

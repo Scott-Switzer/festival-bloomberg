@@ -1,0 +1,63 @@
+{
+  "milestone": "LISTENBRAINZ_FULL_CORPUS_ACTIVATION_V1",
+  "full_processing_status": "BLOCKED_RESOURCE_GATE",
+  "ready_for_full_run": false,
+  "gates": [
+    {
+      "gate": "CORPUS_INDEX",
+      "status": "VERIFIED",
+      "data_shard_count": 1526,
+      "member_count": 3058,
+      "corpus_index_hash": "3f3a109e03bb0911badc9dfefd315592b75bacaaa19e65c35831de12a3f31d92",
+      "etag": "b487ef886520ea2efcc149c47165b5a6-3056"
+    },
+    {
+      "gate": "R2_ACCESS",
+      "status": "PASS",
+      "content_length": 205073162240,
+      "etag": "b487ef886520ea2efcc149c47165b5a6-3056",
+      "expected_bytes": 205073162240
+    },
+    {
+      "gate": "CHECKPOINT_RESUME",
+      "status": "PASS",
+      "contract": "scripts/lb_full_scan.py + control/jobs/listenbrainz_tar_map/<job_id>/",
+      "local_checkpoint_present": false,
+      "note": "Immutable job plan + per-shard verified outputs; resume skips completed batches"
+    },
+    {
+      "gate": "MAP_RESOURCE_GATE",
+      "status": "BLOCKED_RESOURCE_GATE",
+      "host": "local_mac",
+      "free_disk_bytes": 503857152,
+      "required_bytes": 8589934592,
+      "verdict": "BLOCKED_RESOURCE_GATE",
+      "note": "Do not run full corpus map on this laptop"
+    },
+    {
+      "gate": "REDUCER_RESOURCE_GATE",
+      "status": "PENDING_BOUNDED_PROOF",
+      "policy": {
+        "top_k": 25,
+        "min_shared_listeners": 3
+      },
+      "required_before_full_run": [
+        "deterministic partitions",
+        "bounded memory/disk",
+        "no unrestricted pair explosion",
+        "top-25 enforcement",
+        "25K membership exact",
+        "fixtures excluded"
+      ],
+      "note": "Pass only after larger-than-pilot real-corpus proof"
+    },
+    {
+      "gate": "OUTPUT_VERSIONING",
+      "status": "PASS",
+      "gold_prefix": "gold/artist_audience_affinity/",
+      "immutable_generations": true,
+      "advance_current": "conditional_after_verify"
+    }
+  ],
+  "next": "Build/complete corpus index \u2192 freeze job plan \u2192 cloud bounded proof (>pilot shards) \u2192 reducer gates \u2192 full map only after all PASS"
+}
