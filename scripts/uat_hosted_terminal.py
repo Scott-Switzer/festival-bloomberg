@@ -176,8 +176,8 @@ def _browser_uat(
             artist_route = "/#/artist/" + urllib.parse.quote(left["artist_key"], safe="")
             artist = visit(artist_route, "Artist factor tape", "02_artist_factor_tape.png")
             record("artist_security_loads", left["name"] in artist)
-            record("factor_tape_visible", "Artist factor tape" in artist)
-            record("sentiment_visible", "Sentiment" in artist)
+            record("factor_tape_visible", "artist factor tape" in artist.casefold())
+            record("sentiment_visible", "sentiment" in artist.casefold())
             record("youtube_value_visible", "YOUTUBE_API" in artist)
             record("provenance_visible", "OFFICIAL_API" in artist or "RIGHTS" in artist.upper())
             record("underwrite_action_visible", "Underwrite" in artist)
@@ -192,13 +192,13 @@ def _browser_uat(
                 + urllib.parse.quote(right["artist_key"], safe="")
             )
             compare = visit(compare_route, "Compare")
-            record("compare_load", "Dimensions" in compare or "Evidence" in compare)
+            record("compare_load", "dimensions" in compare.casefold() or "evidence" in compare.casefold())
 
             underwrite = visit(
                 "/#/underwrite?a=" + urllib.parse.quote(left["artist_key"], safe=""),
                 "Underwrite",
             )
-            record("underwrite_load", "Pre-offer buyer brief" in underwrite)
+            record("underwrite_load", "pre-offer buyer brief" in underwrite.casefold())
 
             portfolio = visit("/#/portfolio", "Portfolio")
             record("portfolio_load", "Portfolio" in portfolio)
