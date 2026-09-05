@@ -308,7 +308,11 @@ def test_fold_gold_into_serving_artifact(fake_lake, tmp_path: Path):
         sentiment_current="gold/artist_sentiment/CURRENT.json",
         manifest=manifest,
     )
-    assert counts == {"artist_factor_observations": 0, "artist_sentiment_observations": 0}
+    assert counts == {
+        "artist_factor_observations": 0,
+        "artist_sentiment_observations": 0,
+        "ticket_market_observations": 0,
+    }
 
     # With gold products present → tables materialize with the tape rows.
     fake_lake.objects["lake/staging/youtube/date=2026-08-27/hour=22/minute=04/a.json"] = json.dumps(

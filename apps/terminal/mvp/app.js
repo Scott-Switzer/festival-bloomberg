@@ -379,6 +379,8 @@ async function renderArtist(key) {
     <div class="panel"><h3>Forward events ${statusChip(p.future.status)}</h3><div id="futureBox"></div></div>
   </div>
   <div style="height:14px"></div>
+  <div class="panel"><h3>PUBLIC TICKET MARKET ${statusChip((p.public_ticket_market && p.public_ticket_market.status) || "UNKNOWN")}</h3><div id="ticketMarketBox"></div><p class="note">${esc((p.public_ticket_market && p.public_ticket_market.note) || "")}</p></div>
+  <div style="height:14px"></div>
   <div class="panel"><h3>Evidence summary</h3><div id="evidenceBox"></div></div>`;
 
   document.getElementById("shortlistBtn").onclick = () => quickShortlist(a, p);
@@ -402,6 +404,7 @@ async function renderArtist(key) {
   renderHistory(p.history);
   renderFestivals(p.festivals);
   renderFuture(p.future);
+  renderPublicTicketMarket(p.public_ticket_market || {});
   renderEvidence(p.evidence);
 
   // Alternative provider link events: clicking an alt fills compare.
@@ -637,6 +640,42 @@ function renderFuture(future) {
       </tr>`;
     }).join("")}</tbody></table>
     <p class="note">${esc(future.note || "Advertised structured ranges only — not transactions or sales.")}</p>`;
+}
+
+function renderPublicTicketMarket(tm) {
+  const box = document.getElementById("ticketMarketBox");
+  if (!box) return;
+  const events = (tm && tm.events) || [];
+  if (!events.length) {
+    box.innerHTML = `<div class="empty">No public ticket-market observations linked to this artist in the current serving generation.</div>`;
+    return;
+  }
+  const fmtPrice = (p, cur, basis) => {
+    if (p == null || p === "") return "— (missing)";
+    return `${money(p)} ${esc(cur || "")}`.trim() + (basis ? ` <span class="small muted">[${esc(basis)}]</span>` : "");
+  };
+  box.innerHTML = events.slice(0, 12).map((e) => {
+    const cur = e.current || {};
+    const priors = e.prior_observations || [];
+    const ch1 = e.change_1d && e.change_1d.status === "OBSERVED"
+      ? `1D ${e.change_1d.delta >= 0 ? "+" : ""}${money(e.change_1d.delta)}` : "1D —";
+    const ch7 = e.change_7d && e.change_7d.status === "OBSERVED"
+      ? `7D ${e.change_7d.delta >= 0 ? "+" : ""}${money(e.change_7d.delta)}` : "7D —";
+    return `<div style="margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid var(--border, #ddd)">
+      <div><b>${esc(e.marketplace || "")}</b> · ${esc(fmtDate(e.event_date))} · ${esc(e.venue_name || e.city || e.event_key || "")}</div>
+      <div class="small">Current @ ${esc(fmtDate(cur.observed_at))}: ${fmtPrice(cur.price, cur.currency, cur.price_basis)} · evidence ${esc(cur.evidence_status || "UNKNOWN")}</div>
+      <div class="small muted">${esc(ch1)} · ${esc(ch7)} · ${e.observation_count || 1} observation(s)</div>
+      ${priors.length ? `<table style="margin-top:6px"><thead><tr><th>Prior observed</th><th>Price</th><th>Basis</th><th>Evidence</th></tr></thead><tbody>
+        ${priors.slice(0, 8).map((p) => `<tr>
+          <td class="small">${esc(fmtDate(p.observed_at))}</td>
+          <td>${p.price == null ? "— (missing)" : esc(money(p.price))}</td>
+          <td class="small muted">${esc(p.price_basis || "UNKNOWN")}</td>
+          <td class="small muted">${esc(p.evidence_status || "UNKNOWN")}</td>
+        </tr>`).join("")}
+      </tbody></table>` : `<div class="small muted">No prior observations yet.</div>`}
+      ${cur.evidence_ref ? `<div class="small muted">evidence_ref ${esc(String(cur.evidence_ref).slice(0, 16))}…</div>` : ""}
+    </div>`;
+  }).join("");
 }
 
 function renderEvidence(evidence) {

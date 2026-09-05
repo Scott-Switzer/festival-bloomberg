@@ -1,6 +1,6 @@
 {
   "scorecard": "DATA_FLYWHEEL_SCORECARD_V1",
-  "as_of": "2026-09-05T19:33:01.737863+00:00",
+  "as_of": "2026-09-05T22:28:00Z",
   "canonical_artists_identity_graph": 25000,
   "artists_security_universe_25000_local": 0,
   "factor_observations_local": 0,
@@ -8,18 +8,34 @@
   "distinct_tm_events": 33383,
   "forward_watch_events": 562,
   "ticket_cohort_pairs": 500,
-  "ticket_pairs_ge1": 313,
-  "ticket_pairs_ge2": 232,
-  "ticket_pairs_ge3": 5,
-  "ticket_snapshots": 331,
-  "ticket_raw_evidence_hashes": 313,
-  "ticket_spend_usd": 0.4959,
+  "ticket_pairs_ge1": 347,
+  "ticket_pairs_ge2": 309,
+  "ticket_pairs_ge3": 12,
+  "ticket_snapshots": 671,
+  "ticket_rows_with_price": 92,
+  "ticket_raw_evidence_hashes": 348,
+  "ticket_spend_usd": 0.5653,
   "sandbox_ticket_rows": 0,
+  "ticket_gold": {
+    "generation": "ticket_market_obs_20260905T222619Z",
+    "rows": 671,
+    "distinct_pairs": 348,
+    "sha256": "cb4a314709109e4268526b5fbfe472793b450deddbb22c49021931fcb360260b"
+  },
+  "serving": {
+    "generation": "terminal_v1_20260905T222658Z",
+    "sha256": "90aaf46b9d4d7a38c0b43249a20dd850bcb929f68e43e7a4284bcd4b0c58df1d",
+    "ticket_market_observations": 671,
+    "ticket_artists_linked": 134,
+    "label": "PUBLIC TICKET MARKET"
+  },
   "cloud": {
     "watch_universe_size": 500,
     "active_paid_acquisition_size": 500,
-    "last_cron_at": "2026-08-31T09:37:50.927Z",
-    "cron_status": "IDLE_LAST_2026-08-31_INVESTIGATE",
+    "last_cron_at": "2026-09-05T22:20:12.031Z",
+    "cron_status": "ACTIVE_LAST_CRON_POINTER",
+    "cron_root_cause_resolved": "health used truncated R2 list (oldest 1000); cron was not idle; TM excluded from Monid web rail until planner fix",
+    "ticket_web_candidates_post_fix": 450,
     "r2_raw_bulk_approx_gb": 239,
     "r2_lake_serving_approx_mb": 896,
     "r2_lake_gold_approx_mb": 35,
@@ -35,8 +51,10 @@
     "ticket_ge1": "400/500",
     "ticket_ge2": "250/500",
     "ticket_ge3": "100/500",
-    "progress_ge1": "313/500",
-    "progress_ge2": "232/500"
+    "progress_ge1": "347/500",
+    "progress_ge2": "309/500",
+    "progress_ge3": "12/500",
+    "ge2_target": "MET"
   },
   "pr": "https://github.com/Scott-Switzer/festival-bloomberg/pull/71"
 }
