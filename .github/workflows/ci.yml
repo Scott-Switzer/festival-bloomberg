@@ -59,6 +59,9 @@ jobs:
       - name: Run cloud-runtime tests
         working-directory: cloud-runtime
         run: npx vitest run
+      - name: Terminal runtime and buyer rendering checks
+        working-directory: terminal-runtime
+        run: npm ci && npm run typecheck && npm test
       - name: Validate Wrangler config
         working-directory: cloud-runtime
         run: npx wrangler types 2>&1 || echo "wrangler types check done"

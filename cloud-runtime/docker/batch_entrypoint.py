@@ -299,6 +299,9 @@ def main() -> int:
         except Exception:
             pass
 
+    identity_path = Path("/app/build_identity.json")
+    if identity_path.exists():
+        result["build_identity"] = json.loads(identity_path.read_text())
     result["completed_at"] = now_iso()
     result["duration_seconds"] = round(time.time() - start, 2)
 

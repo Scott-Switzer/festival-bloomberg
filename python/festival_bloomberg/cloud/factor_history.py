@@ -221,6 +221,7 @@ def run_factor_history(spec, scratch_dir: Path, *, lake, normalize):
                 lake.write_manifest(bucket, manifest_path, manifest.to_dict())
                 chunk_path.unlink()
         # Never silently reconcile two different payloads sharing an observation key.
+        input_observations = conn.execute("SELECT count(*) FROM tape").fetchone()[0]
         conn.execute("CREATE TABLE unique_rows AS SELECT DISTINCT * FROM tape")
         if conn.execute("SELECT 1 FROM unique_rows GROUP BY factor_observation_key HAVING count(*) > 1 LIMIT 1").fetchone():
             raise RuntimeError("OBSERVATION_KEY_CONFLICT")
@@ -261,10 +262,14 @@ def run_factor_history(spec, scratch_dir: Path, *, lake, normalize):
                    "generation": generation, "object_key": tape_key, "sha256": tape_sha, "bytes": tape_path.stat().st_size,
                    "ledger_key": ledger_key, "ledger_sha256": ledger_sha, "created_at": now_iso(),
                    "source_prefix": SOURCE, "tick_rows_read": len(selected), "factor_rows": count, "artists": artists,
-                   "skipped": 0, "parent_generation": parent and parent["generation"], "parent_rows": parent_rows,
+                   "skipped": 0, "failed_ticks": 0, "normalized_observations": input_observations - parent_rows,
+                   "deduplicated_overlaps": input_observations - count,
+                   "skipped_ledgered_ticks": plan["inventory_count"] - plan["pending_count"],
+                   "parent_etag": plan["parent_etag"], "parent_generation": parent and parent["generation"], "parent_rows": parent_rows,
                    "added_rows": count - parent_rows, "inventory_count": plan["inventory_count"],
                    "pending_ticks": plan["pending_count"] - len(selected), "coverage": "BOUNDED_INVENTORY_AS_OF_PLAN",
-                   "time_min": first, "time_max": last, "code_commit": _git_commit(), "plan_key": f"{control}/plan.json"}
+                   "time_min": first, "time_max": last, "code_commit": _git_commit(),
+                   "build_identity": json.loads(Path("/app/build_identity.json").read_text()) if Path("/app/build_identity.json").exists() else {"git_commit": _git_commit(), "build_identity": "development-checkout"}, "plan_key": f"{control}/plan.json"}
         live, _ = lake.read_versioned_json(bucket, CURRENT)
         # Retry after an uncertain successful publish must not restore an older generation.
         if not live or live.get("generation") != generation:

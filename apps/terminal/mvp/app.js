@@ -438,6 +438,9 @@ function renderTape(tape, changes) {
   const changed = (changes || []);
   const changeHtml = changed.length
     ? `<div style="margin-bottom:8px">${changed.slice(0, 12).map((c) => {
+        if (c.comparability !== "COMPARABLE") {
+          return `<span class="chip" style="margin:1px 6px 1px 0" title="${esc(c.comparability_reason || "Measurement context is incomplete or differs")}">${esc(c.factor_name)} · NOT_COMPARABLE</span>`;
+        }
         const pct = c.delta_pct != null ? ` (${(Number(c.delta_pct) >= 0 ? "+" : "")}${Number(c.delta_pct).toFixed(1)}%)` : "";
         return `<span class="chip" style="margin:1px 6px 1px 0" title="${esc((c.period && (c.period.from + " → " + c.period.to)) || "")} · ${esc(c.source || "")} · ${esc(c.generation || "")}">${esc(c.factor_name)} ${fmtDelta(c.delta)}${pct}</span>`;
       }).join("")}</div><div class="small muted">what changed — deltas only from comparable observations</div>`

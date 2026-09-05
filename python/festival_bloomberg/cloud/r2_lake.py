@@ -9,6 +9,8 @@ appropriate. Checkpoints are JSON manifests that survive container restart.
 
 from __future__ import annotations
 
+from festival_bloomberg.lake.publication_guard import guard_s3_client
+
 import hashlib
 import io
 import json
@@ -61,13 +63,13 @@ class R2Lake:
 
     def __init__(self, config: R2LakeConfig | None = None):
         self.config = config or R2LakeConfig.from_env()
-        self._s3 = boto3.client(
+        self._s3 = guard_s3_client(boto3.client(
             "s3",
             endpoint_url=self.config.endpoint,
             aws_access_key_id=self.config.access_key_id,
             aws_secret_access_key=self.config.secret_access_key,
             region_name="auto",
-        )
+        ))
 
     # ── Object I/O ──────────────────────────────────────────────
 

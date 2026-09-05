@@ -18,6 +18,8 @@ Usage:
 
 from __future__ import annotations
 
+from festival_bloomberg.lake.publication_guard import guard_s3_client
+
 import hashlib
 import io
 import json
@@ -113,13 +115,13 @@ class R2ObjectStore:
                 "(or explicit constructor args)."
             )
 
-        self._s3 = boto3.client(
+        self._s3 = guard_s3_client(boto3.client(
             "s3",
             endpoint_url=endpoint,
             aws_access_key_id=access_key,
             aws_secret_access_key=secret_key,
             region_name=region_name,
-        )
+        ))
         self._compressor = zstd.ZstdCompressor(level=ZSTD_LEVEL)
         self._decompressor = zstd.ZstdDecompressor()
 
