@@ -218,7 +218,7 @@ export default {
     }
     if (logicalPath.startsWith("/static/")) {
       const assetUrl = new URL(request.url);
-      assetUrl.pathname = logicalPath;
+      assetUrl.pathname = logicalPath.slice("/static".length);
       return env.ASSETS.fetch(new Request(assetUrl, request));
     }
     // Root static assets contain UI code only. They are safe to serve at the
