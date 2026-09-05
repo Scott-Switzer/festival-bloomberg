@@ -27,6 +27,8 @@ semantics:
   - "models propose evidence; deterministic code decides admissibility"
 
 milestones:
+  TICKET_MARKET_LONGITUDINAL_COHORT_V2: "PARTIAL_COVERAGE (cohort TICKET_MARKET_COHORT_V2_20260905 frozen: 500 events / 500 EXACT_PROVIDER_ID pairs across ticketmaster.com+ticketweb.com; FAST Monid via cloud Worker proven 57 snapshots / 5 pairs with >=3 distinct observed_at; DEEP=NOT_CONFIGURED; 3rd marketplace catalog blocked; hosted serving acceptance pending)"
+
   BASELINE_RESEARCH_V1: "COMPS_SIGNAL_ONLY (negative result preserved)"
   DATA_FLYWHEEL_AND_COVERAGE_V1: "PASS"
   DATA_ACQUISITION_ACTIVATION_V1: "PARTIAL (forward watch + hunt execution real; strict PIT warm-start = 0)"
