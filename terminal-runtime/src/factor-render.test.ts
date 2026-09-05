@@ -27,3 +27,20 @@ describe('buyer factor comparability', () => {
     expect(render(change,0)).toContain('<td>0 ');
   });
 });
+
+
+describe('home navigation during pending requests', () => {
+  for (const reject of [false, true]) {
+    it(`ignores a stale home request when it ${reject ? 'rejects' : 'resolves'}`, async () => {
+      let settle!: (value: unknown) => void;
+      const pending = new Promise((resolve, fail) => { settle = reject ? fail : resolve; });
+      const context = { routeVersion: 1, view: {innerHTML: ''}, setNav: () => {}, api: () => pending,
+        document: {getElementById: () => { throw new Error('stale DOM access'); }} };
+      const home = source.slice(source.indexOf('async function renderHome()'), source.indexOf('function demoCard('));
+      const result = runInNewContext(`${home}\nrenderHome();`, context);
+      context.routeVersion = 2;
+      settle(reject ? new Error('request failed') : {counts: {}});
+      await expect(result).resolves.toBeUndefined();
+    });
+  }
+});
