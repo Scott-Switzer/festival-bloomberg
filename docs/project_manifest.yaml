@@ -27,8 +27,9 @@ semantics:
   - "models propose evidence; deterministic code decides admissibility"
 
 milestones:
-  DATA_MOAT_CONVERGENCE_AND_ACTIVATION_V1: "IN_PROGRESS (asset map + scorecard; ticket cohort wired to cloud universe; cron idle since 2026-08-31 pending FAST_QUEUE deploy; bulk R2 STORED_NOT_ACTIVATED; local 25k/factor empty)"
-  TICKET_MARKET_LONGITUDINAL_COHORT_V2: "PARTIAL_COVERAGE_ACTIVATING (cohort frozen 500 pairs; cloud watch_universe pointed at cohort; 313/500 >=1, 232/500 >=2, 5/500 >=3; FAST_QUEUE bind fix pending deploy; DEEP/tickets.dev OUT_OF_SCOPE)"
+  BULK_CORPUS_ACTIVATION_V1: "IN_PROGRESS (25K gold projections published for MB/WD/LB pilot; full LB map/reduce PARTIAL_PROCESSING_ACTIVE)"
+  DATA_MOAT_CONVERGENCE_AND_ACTIVATION_V1: "PASS_TICKET_CLOSED (PR #71); bulk R2 activation continues as BULK_CORPUS_ACTIVATION_V1"
+  TICKET_MARKET_LONGITUDINAL_COHORT_V2: "PASS (PR #71 merged c590be9; 440/500 >=1, 313/500 >=2; cron LAST_CRON + Monid FAST; serving terminal_v1_20260905T224121Z PUBLIC TICKET MARKET; tickets.dev OUT_OF_SCOPE)"
 
   BASELINE_RESEARCH_V1: "COMPS_SIGNAL_ONLY (negative result preserved)"
   DATA_FLYWHEEL_AND_COVERAGE_V1: "PASS"

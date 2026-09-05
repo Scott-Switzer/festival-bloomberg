@@ -1,0 +1,80 @@
+{
+  "milestone": "BULK_CORPUS_ACTIVATION_V1",
+  "generation": "bulk_activation_20260905T225703Z",
+  "coverage_matrix": {
+    "MusicBrainz": {
+      "artists_identified": 25000,
+      "artists_with_data": 25000,
+      "rows_edges": 177986,
+      "pit_history": "event begin_date + knowledge_time",
+      "serving": "via terminal_serving_build silver events (existing)"
+    },
+    "Wikidata": {
+      "artists_identified": 10078,
+      "artists_with_data": 10078,
+      "rows_edges": 10082,
+      "geography_artists": 9414,
+      "pit_history": "dump knowledge_time",
+      "serving": "external_ids already folded; geography gold new"
+    },
+    "ListenBrainz": {
+      "artists_identified": 10429,
+      "artists_with_data": 10429,
+      "rows_edges": 508894,
+      "pit_history": "pilot knowledge_time; full map/reduce may still be PARTIAL",
+      "serving": "artist_peers in terminal (pilot)",
+      "label": "ListenBrainz consumption affinity \u2014 NOT ticket demand"
+    }
+  },
+  "artifacts": {
+    "artist_reference_ids": {
+      "artifact": "artist_reference_ids",
+      "generation": "bulk_activation_20260905T225703Z",
+      "object_key": "gold/artist_reference_ids/generations/bulk_activation_20260905T225703Z/artist_reference_ids.parquet",
+      "sha256": "a28840e06ef6f378e348b10ba324b5af234d3cf7c1dee706d78d23b137fce5d9",
+      "bytes": 1501170,
+      "rows": 25004,
+      "universe": "artist_security_25000",
+      "estate_source": "control/artist_security_25000/v1/estate_20260828T013314Z_f87e5d1d073e.json",
+      "created_at": "2026-09-05T22:57:03.920980+00:00",
+      "implementation": "scripts/activate_bulk_corpora_25k.py"
+    },
+    "artist_geography": {
+      "artifact": "artist_geography",
+      "generation": "bulk_activation_20260905T225703Z",
+      "object_key": "gold/artist_geography/generations/bulk_activation_20260905T225703Z/artist_geography.parquet",
+      "sha256": "28da74957455b009676be6eb284ca870faefb426d5a7b9fe8db2712015b34b61",
+      "bytes": 560565,
+      "rows": 10640,
+      "universe": "artist_security_25000",
+      "estate_source": "control/artist_security_25000/v1/estate_20260828T013314Z_f87e5d1d073e.json",
+      "created_at": "2026-09-05T22:57:11.185317+00:00",
+      "implementation": "scripts/activate_bulk_corpora_25k.py"
+    },
+    "artist_event_history": {
+      "artifact": "artist_event_history",
+      "generation": "bulk_activation_20260905T225703Z",
+      "object_key": "gold/artist_event_history/generations/bulk_activation_20260905T225703Z/artist_event_history.parquet",
+      "sha256": "fe102ed374765924f5382b790d818c687c3ae515d1665102031335224f76f9b8",
+      "bytes": 6208947,
+      "rows": 177986,
+      "universe": "artist_security_25000",
+      "estate_source": "control/artist_security_25000/v1/estate_20260828T013314Z_f87e5d1d073e.json",
+      "created_at": "2026-09-05T22:57:16.371988+00:00",
+      "implementation": "scripts/activate_bulk_corpora_25k.py"
+    },
+    "artist_audience_affinity": {
+      "artifact": "artist_audience_affinity",
+      "generation": "bulk_activation_20260905T225703Z",
+      "object_key": "gold/artist_audience_affinity/generations/bulk_activation_20260905T225703Z/artist_audience_affinity.parquet",
+      "sha256": "7a760e336a1574ae0bbb4cdab63e3fb05a5ee8c033050be4a647fd6f61916798",
+      "bytes": 3804742,
+      "rows": 508894,
+      "universe": "artist_security_25000",
+      "estate_source": "control/artist_security_25000/v1/estate_20260828T013314Z_f87e5d1d073e.json",
+      "created_at": "2026-09-05T22:57:23.800023+00:00",
+      "implementation": "scripts/activate_bulk_corpora_25k.py"
+    }
+  },
+  "created_at": "2026-09-05T22:57:29.550361+00:00"
+}

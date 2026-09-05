@@ -1,0 +1,62 @@
+{
+  "milestone": "BULK_CORPUS_ACTIVATION_V1",
+  "as_of": "2026-09-05T22:57:30Z",
+  "base_main_sha": "c590be9cc56f36ba4d55cdfa826eafda4e7908bc",
+  "branch": "feat/bulk-corpus-activation-v1",
+  "r2_estate": [
+    {
+      "SOURCE": "Wikidata",
+      "VERSION_DATE": "latest-truthy-20260828 / silver run 20260905T172934Z-1606",
+      "R2_PREFIX": "bulk/wikidata/dump=latest-truthy/ (raw) → silver/wikidata/generations/20260905T172934Z-1606/",
+      "OBJECT_COUNT": 12,
+      "COMPRESSED_BYTES": 43329477419,
+      "HASH_MANIFEST_STATUS": "PUBLISHED; CURRENT.json + manifest sha 1ada1cc9…",
+      "EXISTING_PROCESSOR": "scripts/build_wikidata_music_graph.py; scripts/verify_wikidata_generation.py",
+      "EXISTING_PILOT_OUTPUTS": "artist_external_ids, entity_locations, genres, relationships, music_entities, …",
+      "EXISTING_CHECKPOINTS": "silver/wikidata/CURRENT.json",
+      "CURRENT_CANONICAL_ROWS": "silver artist_ids 209645; locations 524103",
+      "CURRENT_GOLD_ROWS": "gold/artist_reference_ids + artist_geography (25K projection)",
+      "CURRENT_SERVING_ROWS": "artist_external_ids folded in terminal_serving_build",
+      "ACTIVATION_STATUS": "SILVER_COMPLETE + 25K_GOLD_PROJECTED"
+    },
+    {
+      "SOURCE": "MusicBrainz",
+      "VERSION_DATE": "20260826-001001",
+      "R2_PREFIX": "bulk/musicbrainz/ + silver/events|venues|series|areas",
+      "OBJECT_COUNT": "silver events graph present",
+      "COMPRESSED_BYTES": "see raw catalog ~tens of GB under bulk/musicbrainz",
+      "HASH_MANIFEST_STATUS": "silver events/venues/series published",
+      "EXISTING_PROCESSOR": "scripts/build_mb_silver_graph.py; scripts/ingest_mb_event_dump.py; scripts/acquire_mb_dumps_25k.py",
+      "EXISTING_PILOT_OUTPUTS": "silver/events/*.parquet, silver/venues, silver/series",
+      "EXISTING_CHECKPOINTS": "used by terminal_serving_build_v1",
+      "CURRENT_CANONICAL_ROWS": "event_artist_edges → 177986 rows on 25K",
+      "CURRENT_GOLD_ROWS": "gold/artist_event_history (25K projection)",
+      "CURRENT_SERVING_ROWS": "event_history + festival_appearances in terminal",
+      "ACTIVATION_STATUS": "SILVER_IN_SERVING + 25K_GOLD_PROJECTED"
+    },
+    {
+      "SOURCE": "ListenBrainz",
+      "VERSION_DATE": "pilot affinity 2026-08-29; full dump STORED",
+      "R2_PREFIX": "bulk/listenbrainz/ + gold/listenbrainz_pilot/ + silver/listenbrainz/",
+      "OBJECT_COUNT": "pilot affinity 1 object; full map/reduce shards PARTIAL",
+      "COMPRESSED_BYTES": "~100GB+ raw (part of ~239GB bulk estate)",
+      "HASH_MANIFEST_STATUS": "pilot parquet published; full map checkpoints under control/jobs/listenbrainz_map/",
+      "EXISTING_PROCESSOR": "scripts/lb_full_scan.py; scripts/lb_pilot.py; cloud batch listenbrainz_map/reduce",
+      "EXISTING_PILOT_OUTPUTS": "gold/listenbrainz_pilot/artist_audience_affinity.parquet",
+      "EXISTING_CHECKPOINTS": "control/jobs/listenbrainz_map/*",
+      "CURRENT_CANONICAL_ROWS": "pilot edges filtered to 25K×25K = 508894",
+      "CURRENT_GOLD_ROWS": "gold/artist_audience_affinity (25K projection)",
+      "CURRENT_SERVING_ROWS": "artist_peers in terminal (pilot)",
+      "ACTIVATION_STATUS": "PILOT_ACTIVATED_ON_25K; FULL_MAP_REDUCE=PARTIAL_PROCESSING_ACTIVE"
+    }
+  ],
+  "coverage_matrix_25k": {
+    "MusicBrainz": {"artists_identified": 25000, "artists_with_data": 25000, "rows_edges": 177986, "PIT": true, "serving": true},
+    "Wikidata": {"artists_identified": 10078, "artists_with_data": 10078, "rows_edges": 10082, "geography_artists": 9414, "PIT": true, "serving": "partial"},
+    "ListenBrainz": {"artists_identified": 10429, "artists_with_data": 10429, "rows_edges": 508894, "PIT": "pilot", "serving": true, "label": "consumption affinity NOT ticket demand"},
+    "Ticket market": {"pairs": 500, "ge1": 440, "ge2": 313, "ge3": 12, "serving": "terminal_v1_20260905T224121Z"}
+  },
+  "gold_generation": "bulk_activation_20260905T225703Z",
+  "no_redownload": true,
+  "tickets_dev": "OUT_OF_SCOPE"
+}
