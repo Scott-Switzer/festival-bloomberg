@@ -100,10 +100,12 @@ class R2Lake:
 
     def list_prefix(self, bucket: str, prefix: str, limit: int = 1000) -> list[dict]:
         """List objects under a prefix."""
+        if limit <= 0:
+            return []
         results: list[dict] = []
         token: str | None = None
         while True:
-            kwargs: dict = {"Bucket": bucket, "Prefix": prefix, "MaxKeys": limit}
+            kwargs: dict = {"Bucket": bucket, "Prefix": prefix, "MaxKeys": min(1000, limit - len(results))}
             if token:
                 kwargs["ContinuationToken"] = token
             resp = self._s3.list_objects_v2(**kwargs)
@@ -118,6 +120,30 @@ class R2Lake:
             if len(results) >= limit:
                 break
         return results
+
+    def read_versioned_json(self, bucket: str, key: str) -> tuple[dict | None, str | None]:
+        """Read control state and the ETag from the SAME response."""
+        try:
+            response = self._s3.get_object(Bucket=bucket, Key=key)
+        except self._s3.exceptions.ClientError as exc:
+            if exc.response["Error"]["Code"] in {"404", "NoSuchKey"}:
+                return None, None
+            raise
+        with response["Body"] as body:
+            return json.loads(body.read()), response["ETag"]
+
+    def put_json_if_version(self, bucket: str, key: str, payload: dict, etag: str | None) -> None:
+        """Atomic publish: a stale writer must never erase a newer generation."""
+        condition = {"IfMatch": etag} if etag else {"IfNoneMatch": "*"}
+        self._s3.put_object(
+            Bucket=bucket, Key=key, Body=json.dumps(payload, sort_keys=True).encode(),
+            ContentType="application/json", **condition,
+        )
+
+    def get_bytes_if_match(self, bucket: str, key: str, etag: str) -> bytes:
+        response = self._s3.get_object(Bucket=bucket, Key=key, IfMatch=etag)
+        with response["Body"] as body:
+            return body.read()
 
     def delete_object(self, bucket: str, key: str) -> None:
         """Delete an object from R2."""
