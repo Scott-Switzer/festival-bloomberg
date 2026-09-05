@@ -17,6 +17,7 @@ export { TerminalContainer } from "./terminal-container-do";
 import {
   isDeniedProductPath,
   isPublicDemoPathBlocked,
+  PUBLIC_DEMO_PRIVATE_PREFIXES,
 } from "./routing";
 
 const CURRENT_KEY = "serving/artist_security_terminal_v1/CURRENT.json";
@@ -83,7 +84,7 @@ async function serveShell(
     .replace('src="/static/', `src="${assetPrefix}/static/`)
     .replace(
       "<!-- TERMINAL_ENV_BADGE -->",
-      `<span class="env-badge">${label}</span>`,
+      `<span class="env-badge" data-unavailable-api-prefixes='${JSON.stringify(publicDemo ? PUBLIC_DEMO_PRIVATE_PREFIXES : [])}'>${label}</span>`,
     );
   return new Response(body, {
     status: response.status,

@@ -23,6 +23,12 @@ function terminalApiPath(path) {
 }
 
 async function api(path, opts) {
+  const mode = document.querySelector("[data-unavailable-api-prefixes]");
+  const unavailable = mode ? JSON.parse(mode.dataset.unavailableApiPrefixes) : [];
+  const pathname = String(path).split("?")[0];
+  if (unavailable.some((prefix) => pathname === prefix || pathname.startsWith(prefix + "/"))) {
+    throw new Error("Private workspace features are unavailable in this public demo.");
+  }
   const res = await fetch(terminalApiPath(path), opts);
   if (!res.ok) {
     let msg = res.status + " " + path;
