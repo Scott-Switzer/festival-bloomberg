@@ -13,9 +13,9 @@ name: Browser UAT
 #                  /terminal/bootstrap/current endpoint, so the EXACT
 #                  published generation is what gets tested.
 #
-# Until ADMIN_TOKEN is provisioned the job is skipped (not failed), so
-# unrelated PRs are not blocked; the gate activates automatically once the
-# secret exists.
+# Until ADMIN_TOKEN is provisioned, acceptance steps are skipped and the
+# summary explicitly reports NOT_AVAILABLE. This is not browser proof.
+# The gate activates automatically once the secret exists.
 
 on:
   workflow_dispatch:
@@ -30,27 +30,36 @@ permissions:
 jobs:
   browser-uat:
     runs-on: ubuntu-latest
-    if: ${{ secrets.ADMIN_TOKEN != '' }}
+    env:
+      HAS_UAT_TOKEN: ${{ secrets.ADMIN_TOKEN != '' }}
     steps:
+      - name: Report unavailable artifact credentials
+        if: env.HAS_UAT_TOKEN != 'true'
+        run: echo "Browser UAT NOT_AVAILABLE — ADMIN_TOKEN is not configured" >> "$GITHUB_STEP_SUMMARY"
+
       - uses: actions/checkout@v4
+        if: env.HAS_UAT_TOKEN == 'true'
 
       - name: Setup Python
+        if: env.HAS_UAT_TOKEN == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
       - name: Install Python deps (duckdb + app)
+        if: env.HAS_UAT_TOKEN == 'true'
         run: |
           python -m pip install --quiet --upgrade pip
-          python -m pip install --quiet duckdb
-          pip install --quiet -e python 2>/dev/null || true
+          python -m pip install --quiet -r requirements.txt
 
       - name: Install headless Chrome (playwright-managed, pinned)
+        if: env.HAS_UAT_TOKEN == 'true'
         run: |
           python -m pip install --quiet playwright
           python -m playwright install --with-deps chromium
 
       - name: Atomic UAT against CURRENT serving generation
+        if: env.HAS_UAT_TOKEN == 'true'
         id: uat
         env:
           ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
@@ -71,7 +80,7 @@ jobs:
         shell: bash
 
       - name: Upload UAT evidence
-        if: always()
+        if: always() && env.HAS_UAT_TOKEN == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: artist-security-uat-evidence
