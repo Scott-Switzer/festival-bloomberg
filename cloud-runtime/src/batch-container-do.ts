@@ -121,8 +121,9 @@ export class BatchContainer extends DurableObject<BatchEnv> {
     try {
       const containerEnv = buildContainerEnv(this.containerEnvSource());
       // Exec-based batch work must outlive the short default inactivity window.
+      // Tar-map slices are ~1h; keep the instance alive for the full exec.
       // Completed jobs release their instance in monitorJob's finally block.
-      await this.ctx.container!.setInactivityTimeout(30 * 60 * 1000);
+      await this.ctx.container!.setInactivityTimeout(3 * 60 * 60 * 1000);
       await this.ctx.container!.start({
         env: containerEnv,
         enableInternet: true, // R2 S3 API needs outbound

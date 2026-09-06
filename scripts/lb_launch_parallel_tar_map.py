@@ -39,14 +39,14 @@ WAVE = "lb_par_1526"
 
 
 def load_admin_token() -> str:
-    tok = os.environ.get("ADMIN_TOKEN", "").strip()
+    tok = os.environ.get("ADMIN_TOKEN", "").strip().strip('"').strip("'")
     if tok:
         return tok
     env_path = Path(".env")
     if env_path.exists():
         for line in env_path.read_text().splitlines():
             if line.startswith("ADMIN_TOKEN="):
-                return line.split("=", 1)[1].strip()
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
     raise SystemExit("ADMIN_TOKEN missing")
 
 
@@ -85,6 +85,8 @@ def http_json(method: str, url: str, token: str, body: dict | None = None) -> di
         headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
+            # Cloudflare bot fight (1010) rejects default urllib User-Agent.
+            "User-Agent": "festival-bloomberg-lb-parallel/1.0",
         },
     )
     try:
@@ -95,15 +97,29 @@ def http_json(method: str, url: str, token: str, body: dict | None = None) -> di
         raise RuntimeError(f"HTTP {exc.code} {url}: {detail}") from exc
 
 
-def trigger_wave(plan: list[dict], *, token: str, stagger_s: float = 1.5) -> None:
-    for i, worker in enumerate(plan):
-        # Restart DO so a fresh container picks up the current image.
-        http_json(
-            "POST",
-            f"{WORKER}/ops/container/restart?job_id={worker['job_id']}",
-            token,
-        )
-        time.sleep(0.3)
+def trigger_wave(
+    plan: list[dict],
+    *,
+    token: str,
+    stagger_s: float = 5.0,
+    restart: bool = True,
+    limit: int | None = None,
+) -> None:
+    """Trigger workers with capacity-friendly staggering.
+
+    Never exceed ~max_instances (20). Prefer limit<=18 so cron/other batch
+    work still has headroom. Restart destroys the container — only use when
+    the slice is known-dead or needs a new image.
+    """
+    selected = plan if limit is None else plan[:limit]
+    for i, worker in enumerate(selected):
+        if restart:
+            http_json(
+                "POST",
+                f"{WORKER}/ops/container/restart?job_id={worker['job_id']}",
+                token,
+            )
+            time.sleep(0.5)
         body = {
             "job_type": "listenbrainz_tar_map",
             "job_id": worker["job_id"],
@@ -117,12 +133,12 @@ def trigger_wave(plan: list[dict], *, token: str, stagger_s: float = 1.5) -> Non
         }
         result = http_json("POST", f"{WORKER}/batch/trigger", token, body)
         print(
-            f"[{i+1}/{len(plan)}] triggered {worker['job_id']} "
+            f"[{i+1}/{len(selected)}] triggered {worker['job_id']} "
             f"slice=[{worker['shard_start']},{worker['shard_start']+worker['max_shards']}) "
             f"status={result.get('status')}",
             flush=True,
         )
-        if i + 1 < len(plan):
+        if i + 1 < len(selected):
             time.sleep(stagger_s)
 
 
@@ -222,14 +238,56 @@ def main() -> int:
     ap.add_argument("--trigger", action="store_true")
     ap.add_argument("--seal", action="store_true")
     ap.add_argument("--chunk", type=int, default=CHUNK)
+    ap.add_argument("--limit", type=int, default=None, help="max workers to trigger (cap under max_instances)")
+    ap.add_argument("--stagger", type=float, default=5.0)
+    ap.add_argument("--no-restart", action="store_true", help="do not destroy containers before trigger")
+    ap.add_argument(
+        "--only-missing",
+        action="store_true",
+        help="trigger only slices with no checkpoint or incomplete covered range",
+    )
     args = ap.parse_args()
     plan = wave_plan(chunk=args.chunk)
+    if args.only_missing:
+        from festival_bloomberg.localenv import load_local_env
+        from festival_bloomberg.lake.r2 import r2_client
+
+        load_local_env()
+        s3 = r2_client()
+        lake = "festival-intelligence-lake"
+        filtered = []
+        for worker in plan:
+            key = f"control/jobs/listenbrainz_tar_map/{worker['job_id']}/checkpoint.json"
+            try:
+                ckpt = json.loads(s3.get_object(Bucket=lake, Key=key)["Body"].read())
+            except Exception:
+                filtered.append(worker)
+                continue
+            covered = set()
+            for a, b in ckpt.get("completed_batches") or []:
+                covered.update(range(a, b + 1))
+            need = set(
+                range(
+                    worker["shard_start"],
+                    worker["shard_start"] + worker["max_shards"],
+                )
+            )
+            # Re-queue if any shard in the slice is still missing.
+            if need - covered:
+                filtered.append(worker)
+        plan = filtered
     print(json.dumps({"workers": len(plan), "chunk": args.chunk, "plan": plan}, indent=2))
     if args.dry_run and not args.trigger and not args.seal:
         return 0
     if args.trigger:
         token = load_admin_token()
-        trigger_wave(plan, token=token)
+        trigger_wave(
+            plan,
+            token=token,
+            stagger_s=args.stagger,
+            restart=not args.no_restart,
+            limit=args.limit,
+        )
     if args.seal:
         sealed = seal_checkpoints(plan)
         print(json.dumps({
