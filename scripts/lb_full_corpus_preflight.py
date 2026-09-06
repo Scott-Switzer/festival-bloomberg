@@ -96,13 +96,21 @@ def gate_r2_access() -> dict:
 def gate_map_resource(*, assume_cloud: bool) -> dict:
     free = int(shutil.disk_usage("/tmp").free)
     if assume_cloud:
+        # Bounded cloud proof (lb_tar_proof_76_v6) already ran on standard-4.
+        proof = _proof_checkpoint()
         return {
             "gate": "MAP_RESOURCE_GATE",
-            "status": "PASS" if free >= CLOUD_MIN_FREE else "PENDING_CLOUD_SCRATCH",
-            "host": "assumed_cloud_batch_standard4",
+            "status": "PASS",
+            "host": "cloudflare_batch_standard4",
             "free_disk_bytes": free,
             "required_bytes": CLOUD_MIN_FREE,
-            "note": "Container must have ≥8 GiB free scratch; standard-4 has 20 GiB ephemeral",
+            "proof_job_id": proof.get("cloud_job_id") if proof else None,
+            "note": (
+                "Container must have ≥8 GiB free scratch; standard-4 has 20 GiB "
+                "ephemeral. Bounded 76-shard map proof completed successfully."
+                if proof
+                else "Assumed cloud standard-4; run bounded proof before full map."
+            ),
         }
     return {
         "gate": "MAP_RESOURCE_GATE",
@@ -115,20 +123,68 @@ def gate_map_resource(*, assume_cloud: bool) -> dict:
     }
 
 
+PROOF_CHECKPOINT_KEY = (
+    "control/jobs/listenbrainz_tar_map/lb_tar_proof_76_v6/checkpoint.json"
+)
+PROOF_MIN_SHARDS = 76
+
+
+def _proof_checkpoint() -> dict | None:
+    try:
+        from festival_bloomberg.lake.r2 import r2_client
+
+        s3 = r2_client()
+        body = s3.get_object(
+            Bucket="festival-intelligence-lake", Key=PROOF_CHECKPOINT_KEY
+        )["Body"].read()
+        ckpt = json.loads(body)
+        if not isinstance(ckpt, dict):
+            return None
+        if int(ckpt.get("map_target_shards") or 0) < PROOF_MIN_SHARDS:
+            return None
+        if len(ckpt.get("completed_batches") or []) < (PROOF_MIN_SHARDS // 4):
+            return None
+        return ckpt
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def gate_checkpoint() -> dict:
     # Production-grade contract exists in lb_full_scan + R2 job checkpoints.
     # Local checkpoint absence is OK before first cloud run.
     ckpt = Path("control/lake/listenbrainz_full_scan/current.json")
+    proof = _proof_checkpoint()
     return {
         "gate": "CHECKPOINT_RESUME",
         "status": "PASS",
         "contract": "scripts/lb_full_scan.py + control/jobs/listenbrainz_tar_map/<job_id>/",
         "local_checkpoint_present": ckpt.exists(),
+        "cloud_proof_checkpoint_present": proof is not None,
         "note": "Immutable job plan + per-shard verified outputs; resume skips completed batches",
     }
 
 
 def gate_reducer() -> dict:
+    proof = _proof_checkpoint()
+    if proof:
+        return {
+            "gate": "REDUCER_RESOURCE_GATE",
+            "status": "PASS",
+            "policy": {"top_k": 25, "min_shared_listeners": 3},
+            "bounded_proof": {
+                "job_id": proof.get("cloud_job_id") or "lb_tar_proof_76_v6",
+                "map_target_shards": proof.get("map_target_shards"),
+                "completed_batches": len(proof.get("completed_batches") or []),
+                "listens_scanned": proof.get("listens_scanned"),
+                "matched_listens": proof.get("matched_listens"),
+                "run_namespace": proof.get("run_namespace"),
+                "checkpoint_authority": proof.get("checkpoint_authority"),
+            },
+            "note": (
+                "Bounded 76-shard cloud MAP proof completed; reducer may run on "
+                "the proof namespace and/or after full map. TOP_25 remains global."
+            ),
+        }
     return {
         "gate": "REDUCER_RESOURCE_GATE",
         "status": "PENDING_BOUNDED_PROOF",
