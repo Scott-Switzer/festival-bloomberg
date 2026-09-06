@@ -233,10 +233,12 @@ export class BatchContainer extends DurableObject<BatchEnv> {
     start: number,
     result: BatchJobResult,
   ): Promise<void> {
+    let observedExit = false;
     try {
       const output = await (execResult as {
         output(): Promise<{ stdout: Uint8Array; stderr: Uint8Array; exitCode: number }>;
       }).output();
+      observedExit = true;
       const decoder = new TextDecoder();
       const stdout = decoder.decode(output.stdout);
       const stderr = decoder.decode(output.stderr);
@@ -302,16 +304,37 @@ export class BatchContainer extends DurableObject<BatchEnv> {
         }));
       }
     } catch (e: unknown) {
+      // Durable Object reset/eviction while awaiting a long exec must NOT be
+      // treated as job failure and must NOT destroy the container — that was
+      // killing ~1h ListenBrainz map slices after a few minutes. The container
+      // keeps running; /batch/status reconstructs progress from R2 checkpoints.
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error(JSON.stringify({
+        event: "BATCH_MONITOR_INTERRUPTED",
+        job_id: spec.job_id,
+        job_type: spec.job_type,
+        error: msg.slice(0, 500),
+        observed_exit: observedExit,
+      }));
+      if (!observedExit) {
+        // Leave logical status as RUNNING in R2; do not overwrite with FAILED.
+        return;
+      }
       result.status = "FAILED";
       result.last_safe_error_code = mapErrorToCode(e, BATCH_ERROR_CODES.JOB_EXEC_FAILED);
       result.completed_at = new Date().toISOString();
       result.duration_ms = Date.now() - start;
       await this.persistDurableStatus(result).catch(() => {});
     } finally {
-      this.lastResult = result;
-      this.currentJob = null;
-      this.containerReady = false;
-      await this.ctx.container!.destroy().catch(() => {});
+      if (observedExit) {
+        this.lastResult = result;
+        this.currentJob = null;
+        this.containerReady = false;
+        await this.ctx.container!.destroy().catch(() => {});
+      }
+      // If the monitor was interrupted before process exit, keep currentJob
+      // and containerReady so a subsequent status/restart path can reconnect
+      // without immediately spawning a replacement that steals the instance.
     }
   }
 
