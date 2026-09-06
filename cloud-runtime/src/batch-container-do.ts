@@ -360,7 +360,17 @@ export class BatchContainer extends DurableObject<BatchEnv> {
       if (!obj) return null;
       const status = await obj.json() as BatchStatusResponse;
       const manifestKey = `control/jobs/${status.job_type}/${jobId}/manifest.json`;
-      const bucket = ["artist_factor_tape_build_v1", "artist_sentiment_build_v1", "terminal_serving_build_v1"].includes(status.job_type)
+      const lakeJobTypes = new Set([
+        "artist_factor_tape_build_v1",
+        "artist_sentiment_build_v1",
+        "terminal_serving_build_v1",
+        "listenbrainz_tar_map",
+        "listenbrainz_map",
+        "listenbrainz_reduce",
+        "identity_graph_v2",
+        "cloud_smoke",
+      ]);
+      const bucket = lakeJobTypes.has(status.job_type)
         ? this.env.LAKE_BUCKET : this.env.PRIVATE_BUCKET;
       const manifest = await bucket.get(manifestKey);
       return manifest ? withJobManifest(status, await manifest.json() as Record<string, unknown>) as BatchStatusResponse : status;
