@@ -462,12 +462,25 @@ def require_capacity_for_artifacts(
 
 
 def competing_heavy_jobs() -> list[str]:
-    result = subprocess.run(
-        ["ps", "-axo", "command="],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    """Detect known local bulk jobs that must not share a Mac host.
+
+    Cloud batch containers (CLOUD_JOB_R2) are single-tenant and often lack
+    `ps`/procps; host contention checks do not apply there.
+    """
+    if CHECKPOINT_AUTHORITY == "CLOUD_JOB_R2":
+        return []
+    try:
+        result = subprocess.run(
+            ["ps", "-axo", "command="],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError(
+            "unable to inspect process table for competing heavy jobs "
+            "(ps unavailable); refuse to run on this host"
+        ) from exc
     conflicts = [
         line.strip()
         for line in result.stdout.splitlines()

@@ -3033,7 +3033,9 @@ def run_listenbrainz_tar_map(spec: dict, scratch_dir: Path) -> dict:
         if proc.returncode != 0:
             manifest.error_code = ERR_JOB_EXEC_FAILED
             manifest.status = STATUS_FAILED
-            manifest.error = (proc.stderr or proc.stdout or "lb_full_scan map failed")[-2000:]
+            # Prefer stderr; fall back to stdout. Keep the tail for diagnosis.
+            detail = (proc.stderr or "").strip() or (proc.stdout or "").strip() or "lb_full_scan map failed"
+            manifest.error = detail[-3500:]
             manifest.completed_at = now_iso()
             lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
             raise RuntimeError(manifest.error)

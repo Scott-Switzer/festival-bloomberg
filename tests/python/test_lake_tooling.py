@@ -187,6 +187,18 @@ def test_full_scan_resource_guards_fail_closed(monkeypatch):
         scan.require_no_competing_heavy_job()
 
 
+def test_full_scan_skips_competing_job_check_under_cloud_authority(monkeypatch):
+    scan = _load_full_scan()
+    monkeypatch.setattr(scan, "CHECKPOINT_AUTHORITY", "CLOUD_JOB_R2")
+
+    def _ps_should_not_run(*_args, **_kwargs):
+        raise AssertionError("cloud authority must not invoke host ps")
+
+    monkeypatch.setattr(scan.subprocess, "run", _ps_should_not_run)
+    assert scan.competing_heavy_jobs() == []
+    scan.require_no_competing_heavy_job()
+
+
 def test_full_scan_exclusive_lock_rejects_a_second_pipeline(tmp_path, monkeypatch):
     scan = _load_full_scan()
     monkeypatch.setattr(scan, "RUN_LOCK", tmp_path / "run.lock")
