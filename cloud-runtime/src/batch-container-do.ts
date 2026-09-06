@@ -206,9 +206,17 @@ export class BatchContainer extends DurableObject<BatchEnv> {
         }
       );
 
-      // Launch background monitoring. Do NOT await output() — the trigger
-      // must return 202 before the job completes.
-      void this.monitorJob(spec, execResult, start, result);
+      // Keep the Durable Object alive for the full exec. A bare `void`
+      // lets the DO idle-evict after the 202 returns, which destroys the
+      // container mid-job on Cloudflare's side.
+      this.ctx.waitUntil(this.monitorJob(spec, execResult, start, result));
+      // Heartbeat alarm so long maps (~1h) are not treated as idle even if
+      // the waitUntil edge case trips.
+      try {
+        await this.ctx.storage.setAlarm(Date.now() + 60_000);
+      } catch (e) {
+        console.error("batch alarm schedule failed:", e);
+      }
     } catch (e: unknown) {
       result.status = "FAILED";
       result.last_safe_error_code = mapErrorToCode(e, BATCH_ERROR_CODES.CONTAINER_START_FAILED);
@@ -335,6 +343,20 @@ export class BatchContainer extends DurableObject<BatchEnv> {
       // If the monitor was interrupted before process exit, keep currentJob
       // and containerReady so a subsequent status/restart path can reconnect
       // without immediately spawning a replacement that steals the instance.
+    }
+  }
+
+  /**
+   * Keep long-running batch execs from looking idle to the platform.
+   * Reschedules while a job is in memory; no-ops when idle.
+   */
+  async alarm(): Promise<void> {
+    if (this.currentJob) {
+      try {
+        await this.ctx.storage.setAlarm(Date.now() + 60_000);
+      } catch (e) {
+        console.error("batch alarm reschedule failed:", e);
+      }
     }
   }
 
