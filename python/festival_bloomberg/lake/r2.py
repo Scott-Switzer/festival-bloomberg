@@ -12,8 +12,15 @@ R2_ENDPOINT = "https://51b88c6a6ef833b3c2ff46e98d5d9356.r2.cloudflarestorage.com
 
 
 def load_r2_credentials() -> tuple[str, str]:
-    ak = os.environ.get("R2_ACCESS_KEY_ID", "")
-    sk = os.environ.get("R2_SECRET_ACCESS_KEY", "")
+    # Prefer canonical lake script vars; accept cloud-container FI_* aliases.
+    ak = (
+        os.environ.get("R2_ACCESS_KEY_ID", "")
+        or os.environ.get("FI_R2_ACCESS_KEY_ID", "")
+    )
+    sk = (
+        os.environ.get("R2_SECRET_ACCESS_KEY", "")
+        or os.environ.get("FI_R2_SECRET_ACCESS_KEY", "")
+    )
     if ak and sk:
         return ak, sk
     rclone_conf = Path.home() / ".config" / "rclone" / "rclone.conf"

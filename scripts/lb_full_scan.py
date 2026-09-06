@@ -513,9 +513,18 @@ def configure_duckdb(con) -> None:
 
 
 def cleanup_local_transients() -> None:
-    """Remove only this pipeline's rebuildable, lock-protected /tmp state."""
+    """Remove only this pipeline's rebuildable, lock-protected scratch state."""
+    allowed_prefixes = ("/tmp/lb_full_",)
+    if CHECKPOINT_AUTHORITY == "CLOUD_JOB_R2" and _SCAN_ROOT is not None:
+        # Cloud batch scratch lives under FI_SCRATCH_DIR / FI_LB_SCAN_ROOT.
+        allowed_prefixes = (
+            "/tmp/lb_full_",
+            "/tmp/festival-bloomberg/",
+            str(_SCAN_ROOT.resolve()) + os.sep,
+        )
     for path in (LOCAL, SPILL):
-        if not str(path).startswith("/tmp/lb_full_"):
+        resolved = str(path.resolve())
+        if not resolved.startswith(allowed_prefixes):
             raise RuntimeError(f"refusing unsafe transient cleanup target: {path}")
         shutil.rmtree(path, ignore_errors=True)
 
