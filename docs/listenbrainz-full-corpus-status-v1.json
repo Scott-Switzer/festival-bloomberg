@@ -1,6 +1,6 @@
 {
   "milestone": "LISTENBRAINZ_FULL_CORPUS_ACTIVATION_V1",
-  "status": "BOUNDED_MAP_PROOF_PASS__FULL_MAP_QUEUED",
+  "status": "FULL_MAP_RUNNING",
   "as_of": "2026-09-06T20:50:00Z",
   "parent_pr72": {
     "merge_sha": "0594a9fc4abb8b2fc1844614df079e901c17cb8a",
@@ -51,7 +51,7 @@
   ],
   "map_proof": "PASS",
   "reducer_proof": "PENDING_EXECUTION_ON_PROOF_NAMESPACE",
-  "full_processing_status": "READY_FOR_FULL_MAP",
+  "full_processing_status": "FULL_MAP_RUNNING",
   "coverage": {
     "pilot_affinity_artists": 10429,
     "pilot_affinity_edges": 508894,
@@ -62,5 +62,15 @@
     "Trigger full 1526-shard listenbrainz_tar_map on Cloudflare standard-4",
     "Run reduce-artist-day / reduce-affinity / reduce-pairs on proof or full map namespace",
     "Publish new Gold affinity generation + serving rebuild + hosted acceptance"
-  ]
+  ],
+  "full_map": {
+    "job_id": "lb_full_map_1526",
+    "job_type": "listenbrainz_tar_map",
+    "max_shards": 1526,
+    "partitions": 256,
+    "started_at": "2026-09-06T20:48:15.509Z",
+    "projected_hours": 20.7,
+    "status_api": "https://fi-acquisition-runtime.scswitzer.workers.dev/batch/status?job_id=lb_full_map_1526",
+    "checkpoint_key": "control/jobs/listenbrainz_tar_map/lb_full_map_1526/checkpoint.json"
+  }
 }
