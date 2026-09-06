@@ -1072,18 +1072,38 @@ def cmd_map(args) -> None:
     ckpt["source_shard_count"] = total_shards
     ckpt["started_at"] = ckpt.get("started_at") or now_iso()
 
-    max_shards = min(args.max_shards, total_shards)
+    shard_start = int(getattr(args, "shard_start", 0) or 0)
+    if shard_start < 0:
+        raise ValueError("--shard-start must be >= 0")
+    if shard_start % BATCH_SHARDS != 0:
+        raise ValueError(
+            f"--shard-start must be aligned to BATCH_SHARDS={BATCH_SHARDS}"
+        )
+    slice_count = int(args.max_shards)
+    if slice_count <= 0:
+        raise ValueError("--max-shards must be positive")
+    # Parallel workers share one full-corpus namespace via --map-target-shards.
+    map_target = int(getattr(args, "map_target_shards", None) or slice_count)
+    map_target = min(map_target, total_shards)
+    shard_end = min(shard_start + slice_count, map_target, total_shards)
+    if shard_end <= shard_start:
+        raise ValueError(
+            f"empty shard slice: start={shard_start} end={shard_end} target={map_target}"
+        )
+
     prior_target = ckpt.get("map_target_shards")
     has_committed_map = bool(ckpt.get("completed_batches") or ckpt.get("completed_shards"))
-    if has_committed_map and int(prior_target or 0) != max_shards:
+    if has_committed_map and int(prior_target or 0) != map_target:
         raise RuntimeError(
-            f"checkpoint target is {prior_target}, command requests {max_shards}; "
+            f"checkpoint target is {prior_target}, command requests {map_target}; "
             "use a fresh checkpoint and namespace for a different target"
         )
-    ckpt["map_target_shards"] = max_shards
+    ckpt["map_target_shards"] = map_target
+    ckpt["shard_slice_start"] = shard_start
+    ckpt["shard_slice_end"] = shard_end
     ckpt["run_namespace"] = scan_namespace(
         args.partitions,
-        max_shards,
+        map_target,
         tar_index_sha256=ckpt["tar_index_sha256"],
         artist_universe_sha256=ckpt["artist_universe_sha256"],
     )
@@ -1105,7 +1125,7 @@ def cmd_map(args) -> None:
     for rng in ckpt.get("completed_batches", []):
         for i in range(rng[0], rng[1] + 1):
             done_batches.add(i)
-    pending_shards = set(range(max_shards)) - done_batches
+    pending_shards = set(range(shard_start, shard_end)) - done_batches
     reductions_exist = bool(
         ckpt.get("completed_artist_day")
         or ckpt.get("completed_affinity_partitions")
@@ -1121,9 +1141,14 @@ def cmd_map(args) -> None:
     # Commit counters + shard set ONLY at batch boundaries (not per shard), so a
     # mid-batch crash cannot leave the checkpoint inconsistent with R2 partials.
     t_start = time.time()
-    idx = 0
-    while idx < max_shards:
-        batch_last = min(idx + BATCH_SHARDS, max_shards)
+    print(
+        f"map slice [{shard_start}..{shard_end}) of target {map_target} "
+        f"({len(pending_shards)} pending / {shard_end - shard_start} in slice)",
+        flush=True,
+    )
+    idx = shard_start
+    while idx < shard_end:
+        batch_last = min(idx + BATCH_SHARDS, shard_end)
         if all(i in done_batches for i in range(idx, batch_last)):
             artifacts = (ckpt.get("batch_artifacts") or {}).get(str(idx))
             if not artifacts:
@@ -1820,7 +1845,23 @@ def main() -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     pm = sub.add_parser("map")
-    pm.add_argument("--max-shards", type=int, default=1526)
+    pm.add_argument("--max-shards", type=int, default=1526,
+                    help="shard count for this worker slice (from --shard-start)")
+    pm.add_argument(
+        "--shard-start",
+        type=int,
+        default=0,
+        help="inclusive shard index for this worker (must be BATCH_SHARDS-aligned)",
+    )
+    pm.add_argument(
+        "--map-target-shards",
+        type=int,
+        default=None,
+        help=(
+            "full-corpus target used for run_namespace / completion scope; "
+            "parallel workers must share the same value (e.g. 1526)"
+        ),
+    )
     pm.add_argument("--partitions", type=int, default=256,
                     help="listener hash partitions for affinity (must be stable across run)")
     pm.add_argument(

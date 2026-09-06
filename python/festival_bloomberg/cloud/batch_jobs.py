@@ -2960,6 +2960,9 @@ def run_listenbrainz_tar_map(spec: dict, scratch_dir: Path) -> dict:
     max_shards = int(spec.get("max_batches") or params.get("max_shards") or 76)
     partitions = int(params.get("partitions", 64))
     batch = int(params.get("batch_shards", 4))
+    shard_start = int(params.get("shard_start") or 0)
+    map_target_shards = params.get("map_target_shards")
+    map_target_shards = int(map_target_shards) if map_target_shards is not None else None
 
     manifest = new_manifest(
         job_type="listenbrainz_tar_map",
@@ -2967,7 +2970,13 @@ def run_listenbrainz_tar_map(spec: dict, scratch_dir: Path) -> dict:
         code_commit=_git_commit(),
         container_image="festival-bloomberg-batch:latest",
         total_batches=max_shards,
-        params={**params, "max_shards": max_shards, "partitions": partitions},
+        params={
+            **params,
+            "max_shards": max_shards,
+            "partitions": partitions,
+            "shard_start": shard_start,
+            "map_target_shards": map_target_shards,
+        },
     )
     manifest_key_path = manifest_key("listenbrainz_tar_map", job_id)
     start = time.time()
@@ -3017,7 +3026,11 @@ def run_listenbrainz_tar_map(spec: dict, scratch_dir: Path) -> dict:
             str(max_shards),
             "--partitions",
             str(partitions),
+            "--shard-start",
+            str(shard_start),
         ]
+        if map_target_shards is not None:
+            cmd.extend(["--map-target-shards", str(map_target_shards)])
         # batch_shards is fixed in lb_full_scan.BATCH_SHARDS (geometry of run_namespace);
         # params.batch_shards is recorded for observability only.
         _ = batch
