@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Keep every incomplete ListenBrainz parallel tar-map worker online.
 
-Never restarts a worker whose checkpoint updated within LIVE_SEC.
-Every INTERVAL_SEC, requeues stale/missing/failed slices up to TARGET_LIVE
-concurrent workers (under Cloudflare max_instances).
+Never restarts a worker that is either:
+  - writing checkpoints within LIVE_SEC, or
+  - DO status RUNNING with started_at within RECENT_START_SEC
+    (protects the first batch before any checkpoint lands).
 
 Usage:
   PYTHONPATH=python .venv/bin/python scripts/lb_parallel_tar_map_watchdog.py
@@ -16,6 +17,7 @@ import argparse
 import json
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
@@ -23,22 +25,29 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.lb_launch_parallel_tar_map import (  # noqa: E402
     WAVE,
+    WORKER,
     http_json,
     load_admin_token,
     wave_plan,
 )
 
-LIVE_SEC = 480  # 8 min — batch boundary ~2–4 min; never touch fresher
-STALE_RESTART_SEC = 480
-TARGET_LIVE = 18  # under max_instances=20; leave headroom for cron/other
+LIVE_SEC = 600  # 10 min checkpoint freshness
+RECENT_START_SEC = 900  # 15 min — do not kill first-batch workers
+TARGET_LIVE = 18
 INTERVAL_SEC = 120
-WORKER = "https://fi-acquisition-runtime.scswitzer.workers.dev"
 LAKE = "festival-intelligence-lake"
 
 
-def classify(plan, s3) -> tuple[list, list, list, set[int]]:
-    from festival_bloomberg.lake.r2 import r2_client  # noqa: F401 — s3 passed in
+def _parse_iso(ts: str | None) -> float | None:
+    if not ts:
+        return None
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
 
+
+def classify(plan, s3, token: str) -> tuple[list, list, list, set[int]]:
     now = time.time()
     live: list = []
     need: list = []
@@ -65,15 +74,39 @@ def classify(plan, s3) -> tuple[list, list, list, set[int]]:
                 covered.update(range(a, b + 1))
         except Exception:
             pass
-        need_shards = set(range(w["shard_start"], w["shard_start"] + w["max_shards"])) - done
+
+        need_shards = (
+            set(range(w["shard_start"], w["shard_start"] + w["max_shards"])) - done
+        )
         if not need_shards:
             complete.append(w)
             continue
-        # Also treat DO FAILED as need even if somehow fresh (shouldn't happen)
-        if age is not None and age < LIVE_SEC:
+
+        do_status = None
+        started_at = None
+        err = None
+        try:
+            d = http_json("GET", f"{WORKER}/batch/status?job_id={jid}", token)
+            st = d.get("status") or {}
+            do_status = st.get("status")
+            started_at = _parse_iso(st.get("started_at"))
+            err = st.get("last_safe_error_code")
+        except Exception:
+            pass
+
+        recently_started = (
+            do_status == "RUNNING"
+            and started_at is not None
+            and (now - started_at) < RECENT_START_SEC
+        )
+        ckpt_fresh = age is not None and age < LIVE_SEC
+
+        if ckpt_fresh or recently_started:
             live.append(w)
-        else:
-            need.append(w)
+            continue
+
+        # FAILED / stale RUNNING / no DO — safe to requeue
+        need.append({**w, "_do_status": do_status, "_err": err, "_age": age})
     return live, need, complete, covered
 
 
@@ -96,35 +129,16 @@ def refill(need: list, *, token: str, slots: int) -> int:
                 },
             }
             r = http_json("POST", f"{WORKER}/batch/trigger", token, body)
-            print(f"  queued {jid} -> {r.get('status')}", flush=True)
+            print(
+                f"  queued {jid} -> {r.get('status')} "
+                f"(was {w.get('_do_status')}/{w.get('_err')} age={w.get('_age')})",
+                flush=True,
+            )
             launched += 1
         except Exception as exc:  # noqa: BLE001
             print(f"  fail {jid}: {exc}", flush=True)
-        time.sleep(3.0)
+        time.sleep(4.0)
     return launched
-
-
-def round_once(*, token: str, s3) -> bool:
-    """Return True when all shards covered."""
-    plan = wave_plan()
-    live, need, complete, covered = classify(plan, s3)
-    print(
-        f"{time.strftime('%H:%M:%S')} covered={len(covered)}/1526 "
-        f"live={len(live)} need={len(need)} complete_slices={len(complete)}",
-        flush=True,
-    )
-    if len(covered) >= 1526:
-        print("MAP_COMPLETE", flush=True)
-        return True
-    slots = max(0, TARGET_LIVE - len(live))
-    if slots and need:
-        print(f"  refilling {min(slots, len(need))} (target_live={TARGET_LIVE})", flush=True)
-        refill(need, token=token, slots=slots)
-    elif not need:
-        print("  all incomplete slices look live — holding", flush=True)
-    else:
-        print(f"  at capacity live={len(live)} — holding", flush=True)
-    return False
 
 
 def main() -> int:
@@ -143,13 +157,14 @@ def main() -> int:
     s3 = r2_client()
     print(
         f"watchdog start wave={WAVE} target_live={target_live} "
-        f"live_sec={LIVE_SEC} interval={args.interval}s",
+        f"live_sec={LIVE_SEC} recent_start_sec={RECENT_START_SEC} "
+        f"interval={args.interval}s",
         flush=True,
     )
 
-    def round_with_target() -> bool:
+    def round_once() -> bool:
         plan = wave_plan()
-        live, need, complete, covered = classify(plan, s3)
+        live, need, complete, covered = classify(plan, s3, token)
         print(
             f"{time.strftime('%H:%M:%S')} covered={len(covered)}/1526 "
             f"live={len(live)} need={len(need)} complete_slices={len(complete)}",
@@ -166,18 +181,18 @@ def main() -> int:
             )
             refill(need, token=token, slots=slots)
         elif not need:
-            print("  all incomplete slices look live — holding", flush=True)
+            print("  all incomplete slices protected/live — holding", flush=True)
         else:
             print(f"  at capacity live={len(live)} — holding", flush=True)
         return False
 
     if args.once:
-        round_with_target()
+        round_once()
         return 0
-    rounds = max(1, int(4 * 3600 / args.interval))
+    rounds = max(1, int(6 * 3600 / args.interval))
     for _ in range(rounds):
         try:
-            if round_with_target():
+            if round_once():
                 return 0
         except Exception as exc:  # noqa: BLE001
             print(f"round error: {exc}", flush=True)
