@@ -133,8 +133,7 @@ def main() -> int:
     ap.add_argument("--interval", type=int, default=INTERVAL_SEC)
     ap.add_argument("--target-live", type=int, default=TARGET_LIVE)
     args = ap.parse_args()
-    global TARGET_LIVE
-    TARGET_LIVE = args.target_live
+    target_live = args.target_live
 
     from festival_bloomberg.localenv import load_local_env
     from festival_bloomberg.lake.r2 import r2_client
@@ -143,18 +142,42 @@ def main() -> int:
     token = load_admin_token()
     s3 = r2_client()
     print(
-        f"watchdog start wave={WAVE} target_live={TARGET_LIVE} "
+        f"watchdog start wave={WAVE} target_live={target_live} "
         f"live_sec={LIVE_SEC} interval={args.interval}s",
         flush=True,
     )
+
+    def round_with_target() -> bool:
+        plan = wave_plan()
+        live, need, complete, covered = classify(plan, s3)
+        print(
+            f"{time.strftime('%H:%M:%S')} covered={len(covered)}/1526 "
+            f"live={len(live)} need={len(need)} complete_slices={len(complete)}",
+            flush=True,
+        )
+        if len(covered) >= 1526:
+            print("MAP_COMPLETE", flush=True)
+            return True
+        slots = max(0, target_live - len(live))
+        if slots and need:
+            print(
+                f"  refilling {min(slots, len(need))} (target_live={target_live})",
+                flush=True,
+            )
+            refill(need, token=token, slots=slots)
+        elif not need:
+            print("  all incomplete slices look live — holding", flush=True)
+        else:
+            print(f"  at capacity live={len(live)} — holding", flush=True)
+        return False
+
     if args.once:
-        round_once(token=token, s3=s3)
+        round_with_target()
         return 0
-    # ~4h max
     rounds = max(1, int(4 * 3600 / args.interval))
-    for i in range(rounds):
+    for _ in range(rounds):
         try:
-            if round_once(token=token, s3=s3):
+            if round_with_target():
                 return 0
         except Exception as exc:  # noqa: BLE001
             print(f"round error: {exc}", flush=True)
