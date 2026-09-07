@@ -213,7 +213,7 @@ export class BatchContainer extends DurableObject<BatchEnv> {
       // Heartbeat alarm so long maps (~1h) are not treated as idle even if
       // the waitUntil edge case trips.
       try {
-        await this.ctx.storage.setAlarm(Date.now() + 60_000);
+        await this.ctx.storage.setAlarm(Date.now() + 30_000);
       } catch (e) {
         console.error("batch alarm schedule failed:", e);
       }
@@ -353,7 +353,7 @@ export class BatchContainer extends DurableObject<BatchEnv> {
   async alarm(): Promise<void> {
     if (this.currentJob) {
       try {
-        await this.ctx.storage.setAlarm(Date.now() + 60_000);
+        await this.ctx.storage.setAlarm(Date.now() + 30_000);
       } catch (e) {
         console.error("batch alarm reschedule failed:", e);
       }
