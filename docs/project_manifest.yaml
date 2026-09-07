@@ -27,7 +27,8 @@ semantics:
   - "models propose evidence; deterministic code decides admissibility"
 
 milestones:
-  BULK_CORPUS_ACTIVATION_V1: "PASS (25K gold + serving fold terminal_v1_20260905T231452Z; LISTENBRAINZ_FULL_CORPUS=NOT_YET_COMPLETE)"
+  BULK_CORPUS_ACTIVATION_V1: "PASS (PR #72 merged 0594a9f; 25K gold + serving terminal_v1_20260905T231452Z; LISTENBRAINZ_FULL_CORPUS=NOT_YET_COMPLETE)"
+  LISTENBRAINZ_FULL_CORPUS_ACTIVATION_V1: "BOUNDED_MAP_PROOF_PASS (lb_tar_proof_76_v6 PUBLISHED on cloud standard-4; 76/76 shards, 119M listens / 81M matched in 3704s; ~20.7h projected full map; reducer on proof namespace + full 1526 map remain)"
   DATA_MOAT_CONVERGENCE_AND_ACTIVATION_V1: "PASS_TICKET_CLOSED (PR #71); bulk R2 activation continues as BULK_CORPUS_ACTIVATION_V1"
   TICKET_MARKET_LONGITUDINAL_COHORT_V2: "PASS (PR #71 merged c590be9; 440/500 >=1, 313/500 >=2; cron LAST_CRON + Monid FAST; serving terminal_v1_20260905T224121Z PUBLIC TICKET MARKET; tickets.dev OUT_OF_SCOPE)"
 

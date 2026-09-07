@@ -69,12 +69,21 @@
     "listenbrainz_full_map_reduce": "PARTIAL_PROCESSING_ACTIVE",
     "stored_not_activated_note": "Raw dumps remain in R2; useful 25K projections now in gold CURRENT pointers",
     "raw_bulk_total_gb": 256.2,
-    "listenbrainz_full_scan_blockers": [
+    "listenbrainz_full_scan_blockers_before": [
       "missing lb_tar_index.json",
-      "missing listenbrainz_full_scan checkpoint",
+      "missing listenbrainz_full_scan checkpoint / no cloud resume authority",
       "local free disk below map minimum",
-      "prior reducer-correctness gates"
+      "prior reducer-correctness gates",
+      "Mac host not appropriate for 191GB map"
     ],
+    "listenbrainz_full_scan_blockers_after": [
+      "CORPUS_INDEX: builder + upload path (scripts/lb_build_corpus_index.py)",
+      "CHECKPOINT_RESUME: CLOUD_JOB_R2 authority + listenbrainz_tar_map job",
+      "MAP_RESOURCE_GATE: local Mac remains BLOCKED; cloud standard-4 required",
+      "REDUCER_RESOURCE_GATE: PENDING_BOUNDED_PROOF before full reduce",
+      "full 191GB map: NOT STARTED"
+    ],
+    "listenbrainz_next_branch": "feat/listenbrainz-full-corpus-activation-v1",
     "serving_generation": "terminal_v1_20260905T231452Z",
     "serving_bytes": 183250944,
     "qid_collision_groups": 7,
@@ -82,6 +91,7 @@
     "affinity_label": "LISTENBRAINZ CONSUMPTION AFFINITY"
   },
   "pr71_merged": "c590be9cc56f36ba4d55cdfa826eafda4e7908bc",
+  "pr72_merged": "0594a9fc4abb8b2fc1844614df079e901c17cb8a",
   "STORED_NOT_ACTIVATED_BYTES": 256171149034,
   "STORED_NOT_ACTIVATED_GB": 256.2,
   "ACTIVATED_GOLD_BYTES_NOTE": "25K projections: reference_ids+geography+event_history+affinity (~12MB) + prior ticket/factor gold",

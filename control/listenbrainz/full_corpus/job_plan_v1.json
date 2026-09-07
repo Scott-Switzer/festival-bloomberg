@@ -1,0 +1,61 @@
+{
+  "schema_version": "listenbrainz_full_corpus_job_plan_v1",
+  "job_id": "lb_full_2593-20260712-000004_3f3a109e03bb_PENDING_UNIVERSE_TOP25_PENDING_COMMIT",
+  "status": "PLANNED_NOT_STARTED",
+  "dump_version": "2593-20260712-000004",
+  "artist_universe": {
+    "source": "control/artist_security_25000/v1/estate_20260828T013314Z_f87e5d1d073e.json",
+    "artifact_sha256": "f87e5d1d073e30bc6ba53279aea7c4f711e25e3ec122eb88b6bd4e24418c8fd0",
+    "universe_size": 25000,
+    "lake_mbids_key": "control/artist_security_25000/v1/artist_mbids.json"
+  },
+  "corpus_index_hash": "3f3a109e03bb0911badc9dfefd315592b75bacaaa19e65c35831de12a3f31d92",
+  "corpus_etag": "b487ef886520ea2efcc149c47165b5a6-3056",
+  "corpus_bytes": 205073162240,
+  "data_shard_count": 1526,
+  "member_count": 3058,
+  "corpus_index_key": "control/listenbrainz/full_corpus/index_v1.json",
+  "tar_members_key": "control/listenbrainz/full_corpus/tar_members_v1.json",
+  "algorithm_policy": {
+    "top_k_artists_per_listener": 25,
+    "min_shared_listeners": 3,
+    "label": "LISTENBRAINZ CONSUMPTION AFFINITY",
+    "not": [
+      "ticket_demand",
+      "local_demand",
+      "fan_crossover_probability",
+      "sales_affinity"
+    ]
+  },
+  "resource_limits": {
+    "duckdb_memory_limit": "512MB",
+    "batch_shards": 4,
+    "min_free_disk_bytes": 8589934592,
+    "compute": "cloudflare_batch_container_standard4_NOT_local_mac",
+    "container_ephemeral_disk_gb": 20
+  },
+  "output_prefixes": {
+    "private_partials": "listenbrainz/listener_level/",
+    "silver_artist_day": "silver/listenbrainz/artist_day/",
+    "gold_affinity": "gold/artist_audience_affinity/",
+    "checkpoint": "control/jobs/listenbrainz_tar_map/<job_id>/checkpoint.json"
+  },
+  "preflight_gates": {
+    "CORPUS_INDEX": "VERIFIED",
+    "CHECKPOINT_RESUME": "PASS",
+    "MAP_RESOURCE_GATE": "BLOCKED_ON_LOCAL_MAC__REQUIRE_CLOUD",
+    "REDUCER_RESOURCE_GATE": "PENDING_BOUNDED_PROOF",
+    "R2_ACCESS": "PASS",
+    "OUTPUT_VERSIONING": "PASS"
+  },
+  "processor": "scripts/lb_full_scan.py",
+  "cloud_job_type": "listenbrainz_tar_map",
+  "bounded_proof_plan": {
+    "job_id": "lb_tar_proof_76",
+    "max_shards": 76,
+    "partitions": 256,
+    "purpose": "Validate R2 throughput, spill, RSS, checkpoint resume, projected full runtime before 1526-shard run"
+  },
+  "created_at": "2026-09-05T23:44:04.788662+00:00",
+  "note": "Retries of the same job_id must reuse this plan. New inputs/policies require a new job_id. Do NOT run the full 191 GB map on the local MacBook."
+}

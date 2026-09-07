@@ -56,6 +56,7 @@ ALLOWED_JOB_TYPES = frozenset({
     "identity_graph_v2",
     "listenbrainz_map",
     "listenbrainz_reduce",
+    "listenbrainz_tar_map",
     "cloud_smoke",
     "terminal_serving_build_v1",
     "artist_factor_tape_build_v1",
@@ -257,6 +258,10 @@ def main() -> int:
         elif job_type == "listenbrainz_map":
             from festival_bloomberg.cloud.batch_jobs import run_listenbrainz_map
             outcome = run_listenbrainz_map(spec, scratch_dir)
+            result.update(outcome)
+        elif job_type == "listenbrainz_tar_map":
+            from festival_bloomberg.cloud.batch_jobs import run_listenbrainz_tar_map
+            outcome = run_listenbrainz_tar_map(spec, scratch_dir)
             result.update(outcome)
         elif job_type == "listenbrainz_reduce":
             from festival_bloomberg.cloud.batch_jobs import run_listenbrainz_reduce

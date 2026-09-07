@@ -1,0 +1,76 @@
+{
+  "milestone": "LISTENBRAINZ_FULL_CORPUS_ACTIVATION_V1",
+  "status": "FULL_MAP_RUNNING",
+  "as_of": "2026-09-06T20:50:00Z",
+  "parent_pr72": {
+    "merge_sha": "0594a9fc4abb8b2fc1844614df079e901c17cb8a",
+    "verdict": "BULK_CORPUS_ACTIVATION_V1=PASS",
+    "caveat": "LISTENBRAINZ_FULL_CORPUS=NOT_YET_COMPLETE"
+  },
+  "bounded_cloud_proof": {
+    "job_id": "lb_tar_proof_76_v6",
+    "job_type": "listenbrainz_tar_map",
+    "code_commit": "82916afd2e528a0d65e17a1bed9e115c67e3a6ec",
+    "status": "PUBLISHED",
+    "map_target_shards": 76,
+    "completed_batches": 19,
+    "listens_scanned": 119349189,
+    "matched_listens": 81359500,
+    "runtime_seconds": 3704.37,
+    "run_namespace": "v3-2593-20260712-000004-b4-p256-n76-i865ec1b744f4-uf87e5d1d073e",
+    "checkpoint_authority": "CLOUD_JOB_R2",
+    "label": "LISTENBRAINZ CONSUMPTION AFFINITY"
+  },
+  "projections_from_proof": {
+    "full_shards": 1526,
+    "projected_full_map_hours": 20.7,
+    "projected_full_listens": 2396406084,
+    "projected_full_matched": 1633613118,
+    "method": "linear scale of wall-clock and row counts from 76/1526 shards"
+  },
+  "corpus_index": {
+    "hash": "3f3a109e03bb0911badc9dfefd315592b75bacaaa19e65c35831de12a3f31d92",
+    "etag": "b487ef886520ea2efcc149c47165b5a6-3056",
+    "total_bytes": 205073162240,
+    "member_count": 3058,
+    "data_shard_count": 1526
+  },
+  "gates": {
+    "CORPUS_INDEX": "VERIFIED",
+    "R2_ACCESS": "PASS",
+    "CHECKPOINT_RESUME": "PASS",
+    "MAP_RESOURCE_GATE": "PASS (cloud standard-4; local Mac remains blocked)",
+    "REDUCER_RESOURCE_GATE": "PASS (bounded 76-shard proof)",
+    "OUTPUT_VERSIONING": "PASS"
+  },
+  "fixes_landed_for_cloud": [
+    "Skip host ps contention check under CLOUD_JOB_R2",
+    "Accept FI_R2_* credentials in r2_client (after rclone for local)",
+    "Allow FI_LB_SCAN_ROOT scratch cleanup under CLOUD_JOB_R2",
+    "Report completed_batches/rows on tar map status; reconstruct from lake manifests"
+  ],
+  "map_proof": "PASS",
+  "reducer_proof": "PENDING_EXECUTION_ON_PROOF_NAMESPACE",
+  "full_processing_status": "FULL_MAP_RUNNING",
+  "coverage": {
+    "pilot_affinity_artists": 10429,
+    "pilot_affinity_edges": 508894,
+    "bounded_proof_shards": 76,
+    "full_corpus": "NOT_YET_COMPLETE"
+  },
+  "next": [
+    "Trigger full 1526-shard listenbrainz_tar_map on Cloudflare standard-4",
+    "Run reduce-artist-day / reduce-affinity / reduce-pairs on proof or full map namespace",
+    "Publish new Gold affinity generation + serving rebuild + hosted acceptance"
+  ],
+  "full_map": {
+    "job_id": "lb_full_map_1526",
+    "job_type": "listenbrainz_tar_map",
+    "max_shards": 1526,
+    "partitions": 256,
+    "started_at": "2026-09-06T20:48:15.509Z",
+    "projected_hours": 20.7,
+    "status_api": "https://fi-acquisition-runtime.scswitzer.workers.dev/batch/status?job_id=lb_full_map_1526",
+    "checkpoint_key": "control/jobs/listenbrainz_tar_map/lb_full_map_1526/checkpoint.json"
+  }
+}

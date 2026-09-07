@@ -121,8 +121,9 @@ export class BatchContainer extends DurableObject<BatchEnv> {
     try {
       const containerEnv = buildContainerEnv(this.containerEnvSource());
       // Exec-based batch work must outlive the short default inactivity window.
+      // Tar-map slices are ~1h; keep the instance alive for the full exec.
       // Completed jobs release their instance in monitorJob's finally block.
-      await this.ctx.container!.setInactivityTimeout(30 * 60 * 1000);
+      await this.ctx.container!.setInactivityTimeout(3 * 60 * 60 * 1000);
       await this.ctx.container!.start({
         env: containerEnv,
         enableInternet: true, // R2 S3 API needs outbound
@@ -205,9 +206,17 @@ export class BatchContainer extends DurableObject<BatchEnv> {
         }
       );
 
-      // Launch background monitoring. Do NOT await output() — the trigger
-      // must return 202 before the job completes.
-      void this.monitorJob(spec, execResult, start, result);
+      // Keep the Durable Object alive for the full exec. A bare `void`
+      // lets the DO idle-evict after the 202 returns, which destroys the
+      // container mid-job on Cloudflare's side.
+      this.ctx.waitUntil(this.monitorJob(spec, execResult, start, result));
+      // Heartbeat alarm so long maps (~1h) are not treated as idle even if
+      // the waitUntil edge case trips.
+      try {
+        await this.ctx.storage.setAlarm(Date.now() + 30_000);
+      } catch (e) {
+        console.error("batch alarm schedule failed:", e);
+      }
     } catch (e: unknown) {
       result.status = "FAILED";
       result.last_safe_error_code = mapErrorToCode(e, BATCH_ERROR_CODES.CONTAINER_START_FAILED);
@@ -232,10 +241,12 @@ export class BatchContainer extends DurableObject<BatchEnv> {
     start: number,
     result: BatchJobResult,
   ): Promise<void> {
+    let observedExit = false;
     try {
       const output = await (execResult as {
         output(): Promise<{ stdout: Uint8Array; stderr: Uint8Array; exitCode: number }>;
       }).output();
+      observedExit = true;
       const decoder = new TextDecoder();
       const stdout = decoder.decode(output.stdout);
       const stderr = decoder.decode(output.stderr);
@@ -301,16 +312,51 @@ export class BatchContainer extends DurableObject<BatchEnv> {
         }));
       }
     } catch (e: unknown) {
+      // Durable Object reset/eviction while awaiting a long exec must NOT be
+      // treated as job failure and must NOT destroy the container — that was
+      // killing ~1h ListenBrainz map slices after a few minutes. The container
+      // keeps running; /batch/status reconstructs progress from R2 checkpoints.
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error(JSON.stringify({
+        event: "BATCH_MONITOR_INTERRUPTED",
+        job_id: spec.job_id,
+        job_type: spec.job_type,
+        error: msg.slice(0, 500),
+        observed_exit: observedExit,
+      }));
+      if (!observedExit) {
+        // Leave logical status as RUNNING in R2; do not overwrite with FAILED.
+        return;
+      }
       result.status = "FAILED";
       result.last_safe_error_code = mapErrorToCode(e, BATCH_ERROR_CODES.JOB_EXEC_FAILED);
       result.completed_at = new Date().toISOString();
       result.duration_ms = Date.now() - start;
       await this.persistDurableStatus(result).catch(() => {});
     } finally {
-      this.lastResult = result;
-      this.currentJob = null;
-      this.containerReady = false;
-      await this.ctx.container!.destroy().catch(() => {});
+      if (observedExit) {
+        this.lastResult = result;
+        this.currentJob = null;
+        this.containerReady = false;
+        await this.ctx.container!.destroy().catch(() => {});
+      }
+      // If the monitor was interrupted before process exit, keep currentJob
+      // and containerReady so a subsequent status/restart path can reconnect
+      // without immediately spawning a replacement that steals the instance.
+    }
+  }
+
+  /**
+   * Keep long-running batch execs from looking idle to the platform.
+   * Reschedules while a job is in memory; no-ops when idle.
+   */
+  async alarm(): Promise<void> {
+    if (this.currentJob) {
+      try {
+        await this.ctx.storage.setAlarm(Date.now() + 30_000);
+      } catch (e) {
+        console.error("batch alarm reschedule failed:", e);
+      }
     }
   }
 
@@ -360,7 +406,17 @@ export class BatchContainer extends DurableObject<BatchEnv> {
       if (!obj) return null;
       const status = await obj.json() as BatchStatusResponse;
       const manifestKey = `control/jobs/${status.job_type}/${jobId}/manifest.json`;
-      const bucket = ["artist_factor_tape_build_v1", "artist_sentiment_build_v1", "terminal_serving_build_v1"].includes(status.job_type)
+      const lakeJobTypes = new Set([
+        "artist_factor_tape_build_v1",
+        "artist_sentiment_build_v1",
+        "terminal_serving_build_v1",
+        "listenbrainz_tar_map",
+        "listenbrainz_map",
+        "listenbrainz_reduce",
+        "identity_graph_v2",
+        "cloud_smoke",
+      ]);
+      const bucket = lakeJobTypes.has(status.job_type)
         ? this.env.LAKE_BUCKET : this.env.PRIVATE_BUCKET;
       const manifest = await bucket.get(manifestKey);
       return manifest ? withJobManifest(status, await manifest.json() as Record<string, unknown>) as BatchStatusResponse : status;

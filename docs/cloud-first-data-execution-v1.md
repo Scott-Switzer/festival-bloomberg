@@ -61,7 +61,8 @@ Manages a reusable Cloudflare Container instance for heavy data jobs.
 
 Receives a job spec via `FI_BATCH_JOB` env var (JSON), dispatches to:
 - `identity_graph_v2` → `festival_bloomberg.cloud.batch_jobs.run_identity_graph_v2`
-- `listenbrainz_map` → `festival_bloomberg.cloud.batch_jobs.run_listenbrainz_map`
+- `listenbrainz_map` → `festival_bloomberg.cloud.batch_jobs.run_listenbrainz_map` (zst shard layout)
+- `listenbrainz_tar_map` → `festival_bloomberg.cloud.batch_jobs.run_listenbrainz_tar_map` (stored 205 GB tar dump via `scripts/lb_full_scan.py`)
 - `listenbrainz_reduce` → `festival_bloomberg.cloud.batch_jobs.run_listenbrainz_reduce`
 
 ### R2 buckets
