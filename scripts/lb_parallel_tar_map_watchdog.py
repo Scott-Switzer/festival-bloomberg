@@ -85,12 +85,14 @@ def classify(plan, s3, token: str) -> tuple[list, list, list, set[int]]:
         do_status = None
         started_at = None
         err = None
+        status_ok = False
         try:
             d = http_json("GET", f"{WORKER}/batch/status?job_id={jid}", token)
             st = d.get("status") or {}
             do_status = st.get("status")
             started_at = _parse_iso(st.get("started_at"))
             err = st.get("last_safe_error_code")
+            status_ok = True
         except Exception:
             pass
 
@@ -101,11 +103,19 @@ def classify(plan, s3, token: str) -> tuple[list, list, list, set[int]]:
         )
         ckpt_fresh = age is not None and age < LIVE_SEC
 
-        if ckpt_fresh or recently_started:
+        # Fail closed: if we cannot read DO status, do NOT restart — a refill
+        # storm was killing in-flight first batches.
+        if ckpt_fresh or recently_started or not status_ok:
             live.append(w)
             continue
 
-        # FAILED / stale RUNNING / no DO — safe to requeue
+        # Only requeue when we know the slice is dead/failed/stale.
+        if do_status == "RUNNING" and started_at is not None:
+            # Long-running but checkpoint stale — still protect until RECENT window ends
+            if (now - started_at) < RECENT_START_SEC:
+                live.append(w)
+                continue
+
         need.append({**w, "_do_status": do_status, "_err": err, "_age": age})
     return live, need, complete, covered
 
