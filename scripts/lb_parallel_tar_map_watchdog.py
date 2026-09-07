@@ -102,19 +102,17 @@ def classify(plan, s3, token: str) -> tuple[list, list, list, set[int]]:
             and (now - started_at) < RECENT_START_SEC
         )
         ckpt_fresh = age is not None and age < LIVE_SEC
+        # Any RUNNING DO is protected unless checkpoint is extremely stale
+        # (>20 min) — otherwise inter-batch gaps falsely trigger restarts.
+        running_protected = do_status == "RUNNING" and (
+            age is None or age < 1200
+        )
 
         # Fail closed: if we cannot read DO status, do NOT restart — a refill
         # storm was killing in-flight first batches.
-        if ckpt_fresh or recently_started or not status_ok:
+        if ckpt_fresh or recently_started or running_protected or not status_ok:
             live.append(w)
             continue
-
-        # Only requeue when we know the slice is dead/failed/stale.
-        if do_status == "RUNNING" and started_at is not None:
-            # Long-running but checkpoint stale — still protect until RECENT window ends
-            if (now - started_at) < RECENT_START_SEC:
-                live.append(w)
-                continue
 
         need.append({**w, "_do_status": do_status, "_err": err, "_age": age})
     return live, need, complete, covered
