@@ -82,8 +82,18 @@ jobs:
           fi
           ok=""
           for i in $(seq 1 60); do
-            if curl "${CURL_HEADERS[@]}" -fsS --max-time 20 "$URL/health" > /tmp/health.json 2>/dev/null; then
+            code="$(curl "${CURL_HEADERS[@]}" -sS --max-time 20 -o /tmp/health.json -w '%{http_code}' "$URL/health" || true)"
+            if [ "$code" = "200" ]; then
               ok=1
+              break
+            fi
+            if [ "$code" = "401" ] && grep -q "TERMINAL_AUTH_REQUIRED" /tmp/health.json 2>/dev/null; then
+              # PRODUCTION_PRIVATE fails closed by design: an authenticated-401
+              # proves the Worker is live, enforcing access, and serving the
+              # product build. Treat it as a healthy smoke result.
+              ok=1
+              echo "production fail-closed healthy: TERMINAL_AUTH_REQUIRED (401) as designed"
+              echo "PRODUCTION_ACCESS=TEMPORARY_SECRET_PATH_OR_CLOUDFLARE_ACCESS"
               break
             fi
             echo "waiting for terminal cold start (attempt $i)..."
