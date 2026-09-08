@@ -1474,11 +1474,34 @@ def cmd_reduce_affinity(args) -> None:
             raise RuntimeError(f"listener partition out of range in {artifact['key']}")
         artifacts_by_part.setdefault(part, []).append(artifact)
     parts = sorted(artifacts_by_part, key=int)
-    print(f"listener partitions seen: {len(parts)}")
+    part_offset = int(getattr(args, "part_offset", 0) or 0)
+    max_parts = getattr(args, "max_parts", None)
+    if part_offset < 0:
+        raise ValueError("--part-offset must be >= 0")
+    if max_parts is not None:
+        max_parts = int(max_parts)
+        if max_parts <= 0:
+            raise ValueError("--max-parts must be positive")
+        parts = parts[part_offset : part_offset + max_parts]
+    else:
+        parts = parts[part_offset:]
+    print(
+        f"listener partitions seen in slice: {len(parts)} "
+        f"(offset={part_offset}, max_parts={max_parts})",
+        flush=True,
+    )
     if not parts:
-        raise RuntimeError("map produced no listener-level affinity inputs")
-    ckpt["affinity_expected_partitions"] = parts
+        print("affinity slice empty (no non-empty partitions in range); done", flush=True)
+        return
+    # Full expected set stays authoritative for seal/pairs; slice only processes `parts`.
+    all_parts = sorted(artifacts_by_part, key=int)
+    ckpt["affinity_expected_partitions"] = all_parts
     done_parts = set(ckpt.get("completed_affinity_partitions", []))
+    map_job_id = (
+        os.environ.get("FI_LB_MAP_JOB_ID", "").strip()
+        or ckpt.get("cloud_job_id")
+        or CLOUD_JOB_ID
+    )
     for part in parts:
         if part in done_parts:
             artifacts = (ckpt.get("affinity_partition_artifacts") or {}).get(part)
@@ -1575,8 +1598,91 @@ def cmd_reduce_affinity(args) -> None:
         )
         record_resource_snapshot(ckpt, phase="affinity_partition_commit")
         save_checkpoint(s3, ckpt)
+        # Durable per-partition marker for parallel workers (shared map job).
+        if map_job_id:
+            marker_key = (
+                f"control/jobs/listenbrainz_tar_map/{map_job_id}/"
+                f"affinity_parts/part={part}.json"
+            )
+            marker = {
+                "part": part,
+                "artifacts": sorted(part_artifacts, key=lambda item: item["key"]),
+                "rows": n_rows,
+                "updated_at": now_iso(),
+                "worker_job_id": CLOUD_JOB_ID,
+            }
+            s3.put_object(
+                Bucket=LAKE_BUCKET,
+                Key=marker_key,
+                Body=(json.dumps(marker, indent=2) + "\n").encode(),
+                ContentType="application/json",
+            )
         print(f"  partition {part}: {n_rows:,} LA rows done", flush=True)
     con.close()
+
+
+def cmd_reduce_affinity_seal(args) -> None:
+    """Merge parallel affinity_parts markers into the shared map checkpoint."""
+    require_free_disk()
+    require_no_competing_heavy_job()
+    s3 = r2_client()
+    require_private_storage(s3)
+    ckpt = load_checkpoint()
+    validate_checkpoint(ckpt, partitions=args.partitions)
+    ensure_map_complete(ckpt)
+    ckpt["active_run_lock"] = args.run_lock
+    map_job_id = (
+        os.environ.get("FI_LB_MAP_JOB_ID", "").strip()
+        or ckpt.get("cloud_job_id")
+        or CLOUD_JOB_ID
+    )
+    if not map_job_id:
+        raise RuntimeError("affinity seal requires FI_LB_MAP_JOB_ID / cloud_job_id")
+    listener_artifacts = committed_listener_artifacts(s3, ckpt)
+    expected_parts = sorted(
+        {
+            artifact["key"].split("/part=", 1)[1].split("/", 1)[0]
+            for artifact in listener_artifacts
+        },
+        key=int,
+    )
+    prefix = f"control/jobs/listenbrainz_tar_map/{map_job_id}/affinity_parts/"
+    found: dict[str, dict] = {}
+    token = None
+    while True:
+        kw = {"Bucket": LAKE_BUCKET, "Prefix": prefix, "MaxKeys": 1000}
+        if token:
+            kw["ContinuationToken"] = token
+        resp = s3.list_objects_v2(**kw)
+        for obj in resp.get("Contents") or []:
+            key = obj["Key"]
+            if not key.endswith(".json"):
+                continue
+            marker = json.loads(s3.get_object(Bucket=LAKE_BUCKET, Key=key)["Body"].read())
+            part = str(marker.get("part"))
+            arts = marker.get("artifacts") or []
+            if len(arts) != 3:
+                raise RuntimeError(f"affinity part marker {key} malformed")
+            verify_artifact_manifest(s3, arts)
+            found[part] = marker
+        if not resp.get("IsTruncated"):
+            break
+        token = resp.get("NextContinuationToken")
+    missing = [p for p in expected_parts if p not in found]
+    if missing:
+        raise RuntimeError(
+            f"affinity seal incomplete: {len(found)}/{len(expected_parts)} parts; "
+            f"missing e.g. {missing[:8]}"
+        )
+    ckpt["affinity_expected_partitions"] = expected_parts
+    ckpt["completed_affinity_partitions"] = expected_parts
+    ckpt["affinity_partition_artifacts"] = {
+        part: sorted(found[part]["artifacts"], key=lambda item: item["key"])
+        for part in expected_parts
+    }
+    record_resource_snapshot(ckpt, phase="affinity_seal_complete")
+    save_checkpoint(s3, ckpt)
+    print(f"affinity sealed: {len(expected_parts)} partitions")
 
 
 def cmd_reduce_pairs(args) -> None:
@@ -1884,7 +1990,23 @@ def main() -> None:
 
     pa = sub.add_parser("reduce-affinity")
     pa.add_argument("--partitions", type=int, default=256)
+    pa.add_argument(
+        "--part-offset",
+        type=int,
+        default=0,
+        help="index into sorted non-empty listener partitions for this worker",
+    )
+    pa.add_argument(
+        "--max-parts",
+        type=int,
+        default=None,
+        help="max partitions for this worker slice (parallel affinity)",
+    )
     pa.set_defaults(fn=cmd_reduce_affinity)
+
+    pas = sub.add_parser("reduce-affinity-seal")
+    pas.add_argument("--partitions", type=int, default=256)
+    pas.set_defaults(fn=cmd_reduce_affinity_seal)
 
     pp = sub.add_parser("reduce-pairs")
     pp.set_defaults(fn=cmd_reduce_pairs)

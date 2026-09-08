@@ -3126,7 +3126,14 @@ def run_listenbrainz_tar_reduce(spec: dict, scratch_dir: Path) -> dict:
     map_job_id = str(params.get("map_job_id") or "lb_full_map_1526")
     phase = str(params.get("phase") or "all").strip().lower()
     partitions = int(params.get("partitions") or 256)
-    if phase not in {"artist_day", "affinity", "pairs", "all", "gold"}:
+    if phase not in {
+        "artist_day",
+        "affinity",
+        "affinity_seal",
+        "pairs",
+        "all",
+        "gold",
+    }:
         raise ValueError(f"invalid reduce phase: {phase}")
 
     manifest = new_manifest(
@@ -3177,12 +3184,41 @@ def run_listenbrainz_tar_reduce(spec: dict, scratch_dir: Path) -> dict:
         import duckdb as _duckdb
 
         map_ckpt["duckdb_version"] = _duckdb.__version__
-        map_ckpt["cloud_job_id"] = map_job_id
+        affinity_slice = phase == "affinity" and (
+            params.get("part_offset") is not None or params.get("max_parts") is not None
+        )
+        # Affinity slices keep a *worker-local* checkpoint so they never race
+        # the shared map job (artist-day / seal). Corpus progress is recorded
+        # in affinity_parts markers under the map job id.
+        if affinity_slice:
+            worker_ckpt_key = (
+                f"control/jobs/listenbrainz_tar_map/{job_id}/checkpoint.json"
+            )
+            try:
+                existing = json.loads(
+                    lake.get_bytes(lake.config.lake_bucket, worker_ckpt_key)
+                )
+                # Resume worker progress; keep map namespace / digests authoritative.
+                for k in (
+                    "completed_affinity_partitions",
+                    "affinity_partition_artifacts",
+                    "affinity_expected_partitions",
+                ):
+                    if k in existing:
+                        map_ckpt[k] = existing[k]
+            except Exception:
+                map_ckpt["completed_affinity_partitions"] = []
+                map_ckpt["affinity_partition_artifacts"] = {}
+            map_ckpt["cloud_job_id"] = job_id
+            ckpt_out_key = worker_ckpt_key
+        else:
+            map_ckpt["cloud_job_id"] = map_job_id
+            ckpt_out_key = map_ckpt_key
         map_ckpt_raw = (json.dumps(map_ckpt, indent=2) + "\n").encode()
         (scan_root / "checkpoint.json").write_bytes(map_ckpt_raw)
         lake.put_bytes(
             lake.config.lake_bucket,
-            map_ckpt_key,
+            ckpt_out_key,
             map_ckpt_raw,
             content_type="application/json",
         )
@@ -3192,8 +3228,8 @@ def run_listenbrainz_tar_reduce(spec: dict, scratch_dir: Path) -> dict:
         env = os.environ.copy()
         env["FI_LB_SCAN_ROOT"] = str(scan_root)
         env["FI_LB_CHECKPOINT_AUTHORITY"] = "CLOUD_JOB_R2"
-        # All reduce phases share the map job checkpoint so resume is coherent.
-        env["FI_LB_JOB_ID"] = map_job_id
+        env["FI_LB_MAP_JOB_ID"] = map_job_id
+        env["FI_LB_JOB_ID"] = job_id if affinity_slice else map_job_id
         env["FI_LB_DUCKDB_MEMORY"] = str(params.get("duckdb_memory") or "4GB")
         env["FI_LB_DUCKDB_THREADS"] = str(params.get("duckdb_threads") or "4")
         env["PYTHONPATH"] = str(repo_root / "python") + os.pathsep + env.get("PYTHONPATH", "")
@@ -3210,6 +3246,8 @@ def run_listenbrainz_tar_reduce(spec: dict, scratch_dir: Path) -> dict:
         phases: list[str]
         if phase == "all":
             phases = ["artist_day", "affinity", "pairs", "gold"]
+        elif phase == "affinity_seal":
+            phases = ["affinity_seal"]
         else:
             phases = [phase]
 
@@ -3218,8 +3256,18 @@ def run_listenbrainz_tar_reduce(spec: dict, scratch_dir: Path) -> dict:
             if step == "artist_day":
                 _run([sys.executable, str(script), "reduce-artist-day"])
             elif step == "affinity":
-                _run([
+                cmd = [
                     sys.executable, str(script), "reduce-affinity",
+                    "--partitions", str(partitions),
+                ]
+                if params.get("part_offset") is not None:
+                    cmd.extend(["--part-offset", str(int(params["part_offset"]))])
+                if params.get("max_parts") is not None:
+                    cmd.extend(["--max-parts", str(int(params["max_parts"]))])
+                _run(cmd)
+            elif step == "affinity_seal":
+                _run([
+                    sys.executable, str(script), "reduce-affinity-seal",
                     "--partitions", str(partitions),
                 ])
             elif step == "pairs":
