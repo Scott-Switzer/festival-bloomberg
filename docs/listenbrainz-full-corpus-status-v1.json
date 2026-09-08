@@ -72,5 +72,27 @@
     "projected_hours": 20.7,
     "status_api": "https://fi-acquisition-runtime.scswitzer.workers.dev/batch/status?job_id=lb_full_map_1526",
     "checkpoint_key": "control/jobs/listenbrainz_tar_map/lb_full_map_1526/checkpoint.json"
-  }
+  },
+  "updated_at": "2026-09-08T19:50:00Z",
+  "affinity": {
+    "map_job_id": "lb_full_map_1526",
+    "partitions": 256,
+    "affinity_edges": 1081761,
+    "gold_generation": "lb_full_20260908T193559Z",
+    "label": "LISTENBRAINZ CONSUMPTION AFFINITY",
+    "status": "PUBLISHED"
+  },
+  "serving": {
+    "generation": "terminal_v1_20260908T194538Z",
+    "job_id": "terminal_serving_lb_full_20260908T194425Z",
+    "affinity_source_key": "gold/artist_audience_affinity/generations/lb_full_20260908T193559Z/artist_audience_affinity.parquet",
+    "peer_edges_in_serving": 126898,
+    "status": "PUBLISHED",
+    "local_smoke": "http://127.0.0.1:8931 Alice Cooper peers OBSERVED with LISTENBRAINZ_CONSUMPTION_AFFINITY"
+  },
+  "artist_day": {
+    "job_id": "lb_tar_reduce_full_v6",
+    "status": "RUNNING_OR_UNKNOWN"
+  },
+  "caveat": "Artist-day reduce may still be in progress; affinity+serving path is complete."
 }
