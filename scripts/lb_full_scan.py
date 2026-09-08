@@ -95,10 +95,11 @@ PIPELINE_VERSION = 3
 # ~1.5 GiB free and per-batch peak local use is ~0.4 GiB at batch=4 with a
 # 512 MB DuckDB cap).  The pipeline is resume-safe: a batch that fails on disk
 # pressure is simply redone on restart.
-# Cloud standard-4 has 20 GiB ephemeral — require 8 GiB free before map.
+# Cloud standard-4 has 20 GiB ephemeral. Map keeps ~8 GiB headroom; reducers
+# download large parquet sets so use a lower floor and free inputs promptly.
 _CLOUD_AUTH = os.environ.get("FI_LB_CHECKPOINT_AUTHORITY", "").strip()
 MIN_FREE_DISK_BYTES = (
-    int(8 * 1024 * 1024 * 1024)
+    int(2 * 1024 * 1024 * 1024)
     if _CLOUD_AUTH == "CLOUD_JOB_R2"
     else int(0.9 * 1024 * 1024 * 1024)
 )
@@ -1360,6 +1361,10 @@ def cmd_reduce_artist_day(args) -> None:
     configure_duckdb(con)
     con.execute("CREATE TABLE ad AS "
                 "SELECT * FROM read_parquet([{}])".format(", ".join(f"'{p}'" for p in local_files)))
+    # Free download scratch before global materialize / output writes.
+    for f in local_files:
+        Path(f).unlink(missing_ok=True)
+    local_files.clear()
     materialize_artist_day_global(con)
     require_free_disk()
     # partition by year/month
@@ -1390,8 +1395,6 @@ def cmd_reduce_artist_day(args) -> None:
         ))
     total = con.execute("SELECT COUNT(*) FROM ad_global").fetchone()[0]
     con.close()
-    for f in local_files:
-        Path(f).unlink(missing_ok=True)
     scope = completion_scope(ckpt)
     register_dataset(
         dataset_id=(
