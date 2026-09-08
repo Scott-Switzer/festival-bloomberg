@@ -254,6 +254,11 @@ def seal_checkpoints(plan: list[dict]) -> dict:
             f"({len(cov)}/{len(expected_starts)} batch starts)"
         )
 
+    # Canonical reduce authority uses lb_full_map_1526 as FI_LB_JOB_ID.
+    sealed["cloud_job_id"] = "lb_full_map_1526"
+    sealed["source_dataset"] = sealed.get("source_dataset") or "raw.listenbrainz_full_dump"
+    sealed["pipeline"] = sealed.get("pipeline") or "listenbrainz_full_scan"
+
     out_key = f"control/jobs/listenbrainz_tar_map/{WAVE}_sealed/checkpoint.json"
     payload = (json.dumps(sealed, indent=2) + "\n").encode()
     s3.put_object(Bucket=lake, Key=out_key, Body=payload, ContentType="application/json")
