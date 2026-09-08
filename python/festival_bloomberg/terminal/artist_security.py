@@ -487,7 +487,7 @@ def _alternatives(peers: list[dict[str, Any]]) -> list[dict[str, Any]]:
     alternatives: list[dict[str, Any]] = []
     for peer in peers[:10]:
         reasons = [
-            f"{peer.get('shared_listeners')} shared listeners in the 1% ListenBrainz pilot",
+            f"{peer.get('shared_listeners')} shared listeners (ListenBrainz full corpus)",
             f"Jaccard {peer.get('jaccard')}",
         ]
         if peer.get("shared_festival_bills"):
@@ -499,11 +499,11 @@ def _alternatives(peers: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "artist_name": peer.get("resolved_peer_name") or peer.get("peer_name"),
             "reasons": reasons,
             "differences": [
-                "Audience affinity is descriptive pilot evidence, not interchangeability or availability.",
+                "Audience affinity is descriptive full-corpus consumption evidence, not interchangeability or availability.",
                 "Compare market, festival, forward, and ticket evidence before underwriting.",
             ],
             "source_system": peer.get("source_system") or "listenbrainz",
-            "source_scope": peer.get("source_scope") or "PILOT_1_PERCENT",
+            "source_scope": peer.get("source_scope") or "LISTENBRAINZ_FULL_CORPUS",
             "knowledge_time": peer.get("knowledge_time"),
         })
     return alternatives
@@ -989,7 +989,8 @@ def get_artist_security(conn, artist_key: str) -> dict[str, Any] | None:
             "label": "LISTENBRAINZ CONSUMPTION AFFINITY",
             "items": peers,
             "note": (
-                "LISTENBRAINZ CONSUMPTION AFFINITY — shared listening from the ListenBrainz pilot sample. "
+                "LISTENBRAINZ CONSUMPTION AFFINITY — shared listening from the full ListenBrainz dump "
+                "over the governed 25K artist universe (listener top-25 policy). "
                 "Not ticket demand, local demand, fan crossover probability, or a booking recommendation."
             ),
         },
@@ -1073,7 +1074,7 @@ def compare_artists(conn, artist_a: str, artist_b: str) -> dict[str, Any] | None
         "label": "Audience overlap",
         "left": shared["summary"],
         "right": shared["summary"],
-        "explanation": "LISTENBRAINZ CONSUMPTION AFFINITY from the pilot sample, if an observed edge exists. Not ticket demand, local demand, or fan crossover probability.",
+        "explanation": "LISTENBRAINZ CONSUMPTION AFFINITY from the full-corpus evidence graph, if an observed edge exists. Not ticket demand, local demand, or fan crossover probability.",
     }
     dimensions = [
         {"label": "Identity", "left": left_summary["identity"], "right": right_summary["identity"],
@@ -1081,7 +1082,7 @@ def compare_artists(conn, artist_a: str, artist_b: str) -> dict[str, Any] | None
         {"label": "Attention sources", "left": left_summary["attention"], "right": right_summary["attention"],
          "explanation": "Source-separated attention states; attention is not local demand."},
         {"label": "Audience peers", "left": left_summary["audience_peers"], "right": right_summary["audience_peers"],
-         "explanation": "Count of available 1% ListenBrainz pilot peer edges."},
+         "explanation": "Count of available ListenBrainz full-corpus consumption-affinity peer edges."},
         {"label": "Strongest observed markets", "left": left_summary["strongest_markets"], "right": right_summary["strongest_markets"],
          "explanation": "Ordered by observed historical shows; UNKNOWN dates stay unknown."},
         {"label": "Live history", "left": left_summary["historical_events"], "right": right_summary["historical_events"],
@@ -1127,7 +1128,7 @@ def _shared_audience_edge(conn, left_key: str, right_key: str) -> dict[str, Any]
         LIMIT 1
     """, [left_key, right_key, right_key, left_key])
     if row is None:
-        return {"has_edge": False, "summary": "No observed audience edge in the 1% ListenBrainz pilot."}
+        return {"has_edge": False, "summary": "No observed audience edge in the ListenBrainz full corpus."}
     parts: list[str] = []
     if row.get("shared_listeners") is not None:
         parts.append(f"{row['shared_listeners']} shared listeners")

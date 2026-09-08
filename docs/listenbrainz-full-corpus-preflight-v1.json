@@ -1,0 +1,65 @@
+{
+  "milestone": "LISTENBRAINZ_FULL_CORPUS_ACTIVATION_V1",
+  "full_processing_status": "READY_FOR_FULL_RUN",
+  "ready_for_full_run": true,
+  "gates": [
+    {
+      "gate": "CORPUS_INDEX",
+      "status": "VERIFIED",
+      "data_shard_count": 1526,
+      "member_count": 3058,
+      "corpus_index_hash": "3f3a109e03bb0911badc9dfefd315592b75bacaaa19e65c35831de12a3f31d92",
+      "etag": "b487ef886520ea2efcc149c47165b5a6-3056"
+    },
+    {
+      "gate": "R2_ACCESS",
+      "status": "PASS",
+      "content_length": 205073162240,
+      "etag": "b487ef886520ea2efcc149c47165b5a6-3056",
+      "expected_bytes": 205073162240
+    },
+    {
+      "gate": "CHECKPOINT_RESUME",
+      "status": "PASS",
+      "contract": "scripts/lb_full_scan.py + control/jobs/listenbrainz_tar_map/<job_id>/",
+      "local_checkpoint_present": false,
+      "cloud_proof_checkpoint_present": true,
+      "note": "Immutable job plan + per-shard verified outputs; resume skips completed batches"
+    },
+    {
+      "gate": "MAP_RESOURCE_GATE",
+      "status": "PASS",
+      "host": "cloudflare_batch_standard4",
+      "free_disk_bytes": 7031578624,
+      "required_bytes": 8589934592,
+      "proof_job_id": "lb_tar_proof_76_v6",
+      "note": "Container must have \u22658 GiB free scratch; standard-4 has 20 GiB ephemeral. Bounded 76-shard map proof completed successfully."
+    },
+    {
+      "gate": "REDUCER_RESOURCE_GATE",
+      "status": "PASS",
+      "policy": {
+        "top_k": 25,
+        "min_shared_listeners": 3
+      },
+      "bounded_proof": {
+        "job_id": "lb_tar_proof_76_v6",
+        "map_target_shards": 76,
+        "completed_batches": 19,
+        "listens_scanned": 119349189,
+        "matched_listens": 81359500,
+        "run_namespace": "v3-2593-20260712-000004-b4-p256-n76-i865ec1b744f4-uf87e5d1d073e",
+        "checkpoint_authority": "CLOUD_JOB_R2"
+      },
+      "note": "Bounded 76-shard cloud MAP proof completed; reducer may run on the proof namespace and/or after full map. TOP_25 remains global."
+    },
+    {
+      "gate": "OUTPUT_VERSIONING",
+      "status": "PASS",
+      "gold_prefix": "gold/artist_audience_affinity/",
+      "immutable_generations": true,
+      "advance_current": "conditional_after_verify"
+    }
+  ],
+  "next": "Build/complete corpus index \u2192 freeze job plan \u2192 cloud bounded proof (>pilot shards) \u2192 reducer gates \u2192 full map only after all PASS"
+}

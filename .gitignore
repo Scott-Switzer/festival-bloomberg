@@ -72,3 +72,11 @@ terminal-runtime/node_modules
 terminal-runtime/worker-configuration.d.ts
 
 cloud-runtime/docker/build_identity.json
+data/workspace/bulk_serving_fold/
+
+# ListenBrainz full-corpus member list (large; summary lives under control/listenbrainz/)
+control/lake/lb_tar_index.json
+control/lake/listenbrainz_full_scan/
+# 25K estate JSON (~15MB; authoritative copy on R2 backups/lake)
+control/artist_security_25000/
+data/control/artist_security_25000/

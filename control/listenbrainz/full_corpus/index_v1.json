@@ -1,0 +1,26 @@
+{
+  "schema_version": "listenbrainz_full_corpus_index_v1",
+  "dump_version": "2593-20260712-000004",
+  "r2_bucket": "festival-intelligence-raw",
+  "r2_key": "bulk/listenbrainz/dump=2593-20260712-000004/listenbrainz-spark-dump-2593-20260712-000004-full.tar",
+  "etag": "b487ef886520ea2efcc149c47165b5a6-3056",
+  "total_bytes": 205073162240,
+  "member_count": 3058,
+  "data_shard_count": 1526,
+  "corpus_index_hash": "3f3a109e03bb0911badc9dfefd315592b75bacaaa19e65c35831de12a3f31d92",
+  "built_at": "2026-09-05T23:44:04.788662+00:00",
+  "method": "ustar_header_range_walk",
+  "local_members_path": "control/lake/lb_tar_index.json",
+  "members_omitted_from_git": true,
+  "compat": "scripts/lb_full_scan.py INDEX_CACHE format [{name,offset,size}]",
+  "first_data_shard": {
+    "name": "listenbrainz-spark-dump-2593-20260712-000004-full/0.parquet",
+    "offset": 13824,
+    "size": 46783
+  },
+  "last_data_shard": {
+    "name": "listenbrainz-spark-dump-2593-20260712-000004-full/1525.parquet",
+    "offset": 204979665920,
+    "size": 93493170
+  }
+}

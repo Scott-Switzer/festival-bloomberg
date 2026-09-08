@@ -12,10 +12,18 @@ R2_ENDPOINT = "https://51b88c6a6ef833b3c2ff46e98d5d9356.r2.cloudflarestorage.com
 
 
 def load_r2_credentials() -> tuple[str, str]:
+    """Resolve R2 access keys for lake scripts and cloud batch containers.
+
+    Preference order:
+      1. R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY
+      2. ~/.config/rclone/rclone.conf [r2] (local Mac tooling)
+      3. FI_R2_ACCESS_KEY_ID / FI_R2_SECRET_ACCESS_KEY (Cloudflare container secrets)
+    """
     ak = os.environ.get("R2_ACCESS_KEY_ID", "")
     sk = os.environ.get("R2_SECRET_ACCESS_KEY", "")
     if ak and sk:
         return ak, sk
+
     rclone_conf = Path.home() / ".config" / "rclone" / "rclone.conf"
     if rclone_conf.exists():
         cfg = configparser.ConfigParser()
@@ -27,6 +35,11 @@ def load_r2_credentials() -> tuple[str, str]:
                 os.environ["R2_ACCESS_KEY_ID"] = ak
                 os.environ["R2_SECRET_ACCESS_KEY"] = sk
                 return ak, sk
+
+    ak = os.environ.get("FI_R2_ACCESS_KEY_ID", "")
+    sk = os.environ.get("FI_R2_SECRET_ACCESS_KEY", "")
+    if ak and sk:
+        return ak, sk
     return "", ""
 
 

@@ -61,12 +61,22 @@ RAW_KEY = ("bulk/listenbrainz/dump=2593-20260712-000004/"
 DUMP_VERSION = "2593-20260712-000004"
 
 # Local plumbing (survives per-session; contents are transient, uploaded + deleted)
-INDEX_CACHE = Path("control/lake/lb_tar_index.json")
+# Cloud batch overrides via FI_LB_SCAN_ROOT + FI_LB_CHECKPOINT_AUTHORITY=CLOUD_JOB_R2
+_SCAN_ROOT = Path(os.environ["FI_LB_SCAN_ROOT"]) if os.environ.get("FI_LB_SCAN_ROOT") else None
+INDEX_CACHE = (
+    (_SCAN_ROOT / "lb_tar_index.json")
+    if _SCAN_ROOT
+    else Path("control/lake/lb_tar_index.json")
+)
 ESTATE_JSON = Path("data/control/artist_security_25000/v1/"
                    "estate_20260828T013314Z_f87e5d1d073e.json")
-CHECKPOINT = Path("control/lake/listenbrainz_full_scan/current.json")
-SPILL = Path("/tmp/lb_full_spill")
-LOCAL = Path("/tmp/lb_full_local")
+CHECKPOINT = (
+    (_SCAN_ROOT / "checkpoint.json")
+    if _SCAN_ROOT
+    else Path("control/lake/listenbrainz_full_scan/current.json")
+)
+SPILL = (_SCAN_ROOT / "spill") if _SCAN_ROOT else Path("/tmp/lb_full_spill")
+LOCAL = (_SCAN_ROOT / "local") if _SCAN_ROOT else Path("/tmp/lb_full_local")
 
 # Policy (from P1/P2 sensitivity study — see control/lake/listenbrainz_sensitivity_summary.json)
 TOP_K = 25                      # per-listener global artist cap
@@ -85,12 +95,27 @@ PIPELINE_VERSION = 3
 # ~1.5 GiB free and per-batch peak local use is ~0.4 GiB at batch=4 with a
 # 512 MB DuckDB cap).  The pipeline is resume-safe: a batch that fails on disk
 # pressure is simply redone on restart.
-MIN_FREE_DISK_BYTES = int(0.9 * 1024 * 1024 * 1024)
-RUN_LOCK = Path("/tmp/festival_listenbrainz_full_scan.lock")
+# Cloud standard-4 has 20 GiB ephemeral. Map keeps ~8 GiB headroom; reducers
+# download large parquet sets so use a lower floor and free inputs promptly.
+_CLOUD_AUTH = os.environ.get("FI_LB_CHECKPOINT_AUTHORITY", "").strip()
+MIN_FREE_DISK_BYTES = (
+    int(2 * 1024 * 1024 * 1024)
+    if _CLOUD_AUTH == "CLOUD_JOB_R2"
+    else int(0.9 * 1024 * 1024 * 1024)
+)
+RUN_LOCK = (_SCAN_ROOT / "run.lock") if _SCAN_ROOT else Path("/tmp/festival_listenbrainz_full_scan.lock")
 PRIVATE_PARTIAL_ROOT = "listenbrainz/listener_level"
 PRIVATE_REDUCER_ACCESS = "LISTENER_LEVEL_REDUCER_ONLY"
 HOST_FINGERPRINT = hashlib.sha256(socket.gethostname().encode()).hexdigest()[:16]
-CHECKPOINT_AUTHORITY = "LOCAL_HOST_ONLY"
+CHECKPOINT_AUTHORITY = (
+    "CLOUD_JOB_R2" if _CLOUD_AUTH == "CLOUD_JOB_R2" else "LOCAL_HOST_ONLY"
+)
+CLOUD_JOB_ID = os.environ.get("FI_LB_JOB_ID", "").strip() or None
+CLOUD_CHECKPOINT_KEY = (
+    f"control/jobs/listenbrainz_tar_map/{CLOUD_JOB_ID}/checkpoint.json"
+    if CLOUD_JOB_ID
+    else None
+)
 COMPETING_HEAVY_MARKERS = (
     "build_wikidata_music_graph.py",
     "dense_derived_artifacts.py",
@@ -142,6 +167,17 @@ def load_checkpoint() -> dict:
             return json.loads(CHECKPOINT.read_text())
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(f"checkpoint is not valid JSON: {CHECKPOINT}") from exc
+    # Cloud: durable resume authority is the per-job R2 checkpoint.
+    if CHECKPOINT_AUTHORITY == "CLOUD_JOB_R2" and CLOUD_CHECKPOINT_KEY:
+        try:
+            s3 = r2_client()
+            body = s3.get_object(Bucket=LAKE_BUCKET, Key=CLOUD_CHECKPOINT_KEY)["Body"].read()
+            ckpt = json.loads(body)
+            CHECKPOINT.parent.mkdir(parents=True, exist_ok=True)
+            CHECKPOINT.write_text(json.dumps(ckpt, indent=2) + "\n")
+            return ckpt
+        except Exception:  # noqa: BLE001 — missing key → fresh checkpoint
+            pass
     return {
         "pipeline": "listenbrainz_full_scan",
         "pipeline_version": PIPELINE_VERSION,
@@ -229,9 +265,20 @@ def validate_checkpoint(ckpt: dict, *, partitions: int | None = None) -> None:
     ):
         raise RuntimeError("checkpoint is missing exact index/universe input digests")
     if completed and ckpt.get("checkpoint_authority") != CHECKPOINT_AUTHORITY:
-        raise RuntimeError("checkpoint is not declared local-host authoritative")
-    if completed and ckpt.get("execution_host_fingerprint") != HOST_FINGERPRINT:
-        raise RuntimeError("multi-host resume is prohibited for this pipeline")
+        raise RuntimeError("checkpoint authority does not match this runtime mode")
+    if (
+        completed
+        and CHECKPOINT_AUTHORITY == "LOCAL_HOST_ONLY"
+        and ckpt.get("execution_host_fingerprint") != HOST_FINGERPRINT
+    ):
+        raise RuntimeError("multi-host resume is prohibited for LOCAL_HOST_ONLY")
+    if (
+        completed
+        and CHECKPOINT_AUTHORITY == "CLOUD_JOB_R2"
+        and CLOUD_JOB_ID
+        and ckpt.get("cloud_job_id") not in (None, CLOUD_JOB_ID)
+    ):
+        raise RuntimeError("cloud checkpoint job_id does not match FI_LB_JOB_ID")
     if ckpt.get("completed_batches") and not ckpt.get("batch_partition_coverage"):
         raise RuntimeError("checkpoint is missing per-batch partition coverage markers")
     namespace = ckpt.get("run_namespace")
@@ -416,12 +463,25 @@ def require_capacity_for_artifacts(
 
 
 def competing_heavy_jobs() -> list[str]:
-    result = subprocess.run(
-        ["ps", "-axo", "command="],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    """Detect known local bulk jobs that must not share a Mac host.
+
+    Cloud batch containers (CLOUD_JOB_R2) are single-tenant and often lack
+    `ps`/procps; host contention checks do not apply there.
+    """
+    if CHECKPOINT_AUTHORITY == "CLOUD_JOB_R2":
+        return []
+    try:
+        result = subprocess.run(
+            ["ps", "-axo", "command="],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError(
+            "unable to inspect process table for competing heavy jobs "
+            "(ps unavailable); refuse to run on this host"
+        ) from exc
     conflicts = [
         line.strip()
         for line in result.stdout.splitlines()
@@ -445,32 +505,47 @@ def require_no_competing_heavy_job() -> None:
 def configure_duckdb(con) -> None:
     """Apply the same bounded resource contract to every pipeline phase."""
     SPILL.mkdir(parents=True, exist_ok=True)
-    # 512 MiB cap keeps the aggregate inside RAM on the constrained Mac (the
-    # batch=4 m-table is ~270-400 MB) and avoids OS swap pressure that eats
-    # the disk floor and kills the process mid-batch.
-    con.execute("PRAGMA memory_limit='512MB'")
+    # Cloud reducers get more RAM (standard-4 = 12 GiB); local Mac stays capped.
+    mem = os.environ.get("FI_LB_DUCKDB_MEMORY", "").strip()
+    if not mem:
+        mem = "4GB" if CHECKPOINT_AUTHORITY == "CLOUD_JOB_R2" else "512MB"
+    threads = os.environ.get("FI_LB_DUCKDB_THREADS", "").strip()
+    if not threads:
+        threads = "4" if CHECKPOINT_AUTHORITY == "CLOUD_JOB_R2" else "2"
+    con.execute(f"PRAGMA memory_limit='{mem}'")
     con.execute(f"SET temp_directory='{SPILL}'")
-    con.execute("SET threads=2")
+    con.execute(f"SET threads={int(threads)}")
 
 
 def cleanup_local_transients() -> None:
-    """Remove only this pipeline's rebuildable, lock-protected /tmp state."""
+    """Remove only this pipeline's rebuildable, lock-protected scratch state."""
+    allowed_prefixes = ("/tmp/lb_full_",)
+    if CHECKPOINT_AUTHORITY == "CLOUD_JOB_R2" and _SCAN_ROOT is not None:
+        # Cloud batch scratch lives under FI_SCRATCH_DIR / FI_LB_SCAN_ROOT.
+        allowed_prefixes = (
+            "/tmp/lb_full_",
+            "/tmp/festival-bloomberg/",
+            str(_SCAN_ROOT.resolve()) + os.sep,
+        )
     for path in (LOCAL, SPILL):
-        if not str(path).startswith("/tmp/lb_full_"):
+        resolved = str(path.resolve())
+        if not resolved.startswith(allowed_prefixes):
             raise RuntimeError(f"refusing unsafe transient cleanup target: {path}")
         shutil.rmtree(path, ignore_errors=True)
 
 
 def save_checkpoint(s3, ckpt: dict) -> None:
-    """Atomically save the sole resume authority, then refresh an R2 backup.
+    """Atomically save checkpoint, then refresh R2 (backup or cloud authority).
 
-    The local checkpoint is intentionally authoritative and host-bound. R2 is
-    disaster-recovery evidence only; this pipeline never resumes from it and
-    explicitly rejects a different host fingerprint.
+    LOCAL_HOST_ONLY: local file is authoritative; R2 host_backups/ is DR only.
+    CLOUD_JOB_R2: R2 control/jobs/listenbrainz_tar_map/<job_id>/checkpoint.json
+    is the durable resume authority (container ephemeral disk is not).
     """
     ckpt["updated_at"] = now_iso()
     ckpt["checkpoint_authority"] = CHECKPOINT_AUTHORITY
     ckpt["execution_host_fingerprint"] = HOST_FINGERPRINT
+    if CLOUD_JOB_ID:
+        ckpt["cloud_job_id"] = CLOUD_JOB_ID
     CHECKPOINT.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(ckpt, indent=2) + "\n"
     fd, tmp_name = tempfile.mkstemp(prefix=".checkpoint.", suffix=".json", dir=CHECKPOINT.parent)
@@ -484,14 +559,22 @@ def save_checkpoint(s3, ckpt: dict) -> None:
         if os.path.exists(tmp_name):
             os.unlink(tmp_name)
     try:
-        s3.put_object(
-            Bucket=LAKE_BUCKET,
-            Key=(
-                "control/listenbrainz_full_scan/host_backups/"
-                f"{HOST_FINGERPRINT}.json"
-            ),
-            Body=payload.encode(),
-        )
+        if CHECKPOINT_AUTHORITY == "CLOUD_JOB_R2" and CLOUD_CHECKPOINT_KEY:
+            s3.put_object(
+                Bucket=LAKE_BUCKET,
+                Key=CLOUD_CHECKPOINT_KEY,
+                Body=payload.encode(),
+                ContentType="application/json",
+            )
+        else:
+            s3.put_object(
+                Bucket=LAKE_BUCKET,
+                Key=(
+                    "control/listenbrainz_full_scan/host_backups/"
+                    f"{HOST_FINGERPRINT}.json"
+                ),
+                Body=payload.encode(),
+            )
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError("checkpoint R2 copy failed; remote resume state is stale") from exc
 
@@ -753,8 +836,15 @@ def artifact_manifest_sha256(artifacts: list[dict]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def committed_map_artifacts(s3, ckpt: dict, family: str) -> list[dict]:
-    """Return only exact, verified artifacts from committed map batches."""
+def committed_map_artifacts(
+    s3, ckpt: dict, family: str, *, verify: bool = True
+) -> list[dict]:
+    """Return only exact artifacts from committed map batches.
+
+    verify=True (default) HEADs every object. Affinity must pass verify=False:
+    ~98k listener_artist objects × N workers is pathological; per-partition
+    download still SHA-checks bytes before DuckDB reads them.
+    """
     ensure_map_complete(ckpt)
     target = int(ckpt["map_target_shards"])
     expected_ranges = [
@@ -776,7 +866,8 @@ def committed_map_artifacts(s3, ckpt: dict, family: str) -> list[dict]:
         artifacts = manifests[str(start)]
         if not artifacts:
             raise RuntimeError(f"committed batch {start} has no artifacts")
-        verify_artifact_manifest(s3, artifacts)
+        if verify:
+            verify_artifact_manifest(s3, artifacts)
         family_artifacts = [a for a in artifacts if a["key"].startswith(prefix)]
         if family == "artist_day" and len(family_artifacts) != 1:
             raise RuntimeError(
@@ -791,7 +882,9 @@ def committed_map_artifacts(s3, ckpt: dict, family: str) -> list[dict]:
 
 def committed_listener_artifacts(s3, ckpt: dict) -> list[dict]:
     """Verify explicit present/empty coverage for every batch and partition."""
-    artifacts = committed_map_artifacts(s3, ckpt, "listener_artist")
+    # Do not HEAD-verify ~98k listener objects here — coverage markers +
+    # per-download digests are the reduce-time integrity checks.
+    artifacts = committed_map_artifacts(s3, ckpt, "listener_artist", verify=False)
     target = int(ckpt["map_target_shards"])
     partitions = int(ckpt.get("listener_hash_partitions") or 0)
     if partitions <= 0:
@@ -994,18 +1087,38 @@ def cmd_map(args) -> None:
     ckpt["source_shard_count"] = total_shards
     ckpt["started_at"] = ckpt.get("started_at") or now_iso()
 
-    max_shards = min(args.max_shards, total_shards)
+    shard_start = int(getattr(args, "shard_start", 0) or 0)
+    if shard_start < 0:
+        raise ValueError("--shard-start must be >= 0")
+    if shard_start % BATCH_SHARDS != 0:
+        raise ValueError(
+            f"--shard-start must be aligned to BATCH_SHARDS={BATCH_SHARDS}"
+        )
+    slice_count = int(args.max_shards)
+    if slice_count <= 0:
+        raise ValueError("--max-shards must be positive")
+    # Parallel workers share one full-corpus namespace via --map-target-shards.
+    map_target = int(getattr(args, "map_target_shards", None) or slice_count)
+    map_target = min(map_target, total_shards)
+    shard_end = min(shard_start + slice_count, map_target, total_shards)
+    if shard_end <= shard_start:
+        raise ValueError(
+            f"empty shard slice: start={shard_start} end={shard_end} target={map_target}"
+        )
+
     prior_target = ckpt.get("map_target_shards")
     has_committed_map = bool(ckpt.get("completed_batches") or ckpt.get("completed_shards"))
-    if has_committed_map and int(prior_target or 0) != max_shards:
+    if has_committed_map and int(prior_target or 0) != map_target:
         raise RuntimeError(
-            f"checkpoint target is {prior_target}, command requests {max_shards}; "
+            f"checkpoint target is {prior_target}, command requests {map_target}; "
             "use a fresh checkpoint and namespace for a different target"
         )
-    ckpt["map_target_shards"] = max_shards
+    ckpt["map_target_shards"] = map_target
+    ckpt["shard_slice_start"] = shard_start
+    ckpt["shard_slice_end"] = shard_end
     ckpt["run_namespace"] = scan_namespace(
         args.partitions,
-        max_shards,
+        map_target,
         tar_index_sha256=ckpt["tar_index_sha256"],
         artist_universe_sha256=ckpt["artist_universe_sha256"],
     )
@@ -1027,7 +1140,7 @@ def cmd_map(args) -> None:
     for rng in ckpt.get("completed_batches", []):
         for i in range(rng[0], rng[1] + 1):
             done_batches.add(i)
-    pending_shards = set(range(max_shards)) - done_batches
+    pending_shards = set(range(shard_start, shard_end)) - done_batches
     reductions_exist = bool(
         ckpt.get("completed_artist_day")
         or ckpt.get("completed_affinity_partitions")
@@ -1043,9 +1156,14 @@ def cmd_map(args) -> None:
     # Commit counters + shard set ONLY at batch boundaries (not per shard), so a
     # mid-batch crash cannot leave the checkpoint inconsistent with R2 partials.
     t_start = time.time()
-    idx = 0
-    while idx < max_shards:
-        batch_last = min(idx + BATCH_SHARDS, max_shards)
+    print(
+        f"map slice [{shard_start}..{shard_end}) of target {map_target} "
+        f"({len(pending_shards)} pending / {shard_end - shard_start} in slice)",
+        flush=True,
+    )
+    idx = shard_start
+    while idx < shard_end:
+        batch_last = min(idx + BATCH_SHARDS, shard_end)
         if all(i in done_batches for i in range(idx, batch_last)):
             artifacts = (ckpt.get("batch_artifacts") or {}).get(str(idx))
             if not artifacts:
@@ -1253,6 +1371,10 @@ def cmd_reduce_artist_day(args) -> None:
     configure_duckdb(con)
     con.execute("CREATE TABLE ad AS "
                 "SELECT * FROM read_parquet([{}])".format(", ".join(f"'{p}'" for p in local_files)))
+    # Free download scratch before global materialize / output writes.
+    for f in local_files:
+        Path(f).unlink(missing_ok=True)
+    local_files.clear()
     materialize_artist_day_global(con)
     require_free_disk()
     # partition by year/month
@@ -1283,8 +1405,6 @@ def cmd_reduce_artist_day(args) -> None:
         ))
     total = con.execute("SELECT COUNT(*) FROM ad_global").fetchone()[0]
     con.close()
-    for f in local_files:
-        Path(f).unlink(missing_ok=True)
     scope = completion_scope(ckpt)
     register_dataset(
         dataset_id=(
@@ -1364,11 +1484,34 @@ def cmd_reduce_affinity(args) -> None:
             raise RuntimeError(f"listener partition out of range in {artifact['key']}")
         artifacts_by_part.setdefault(part, []).append(artifact)
     parts = sorted(artifacts_by_part, key=int)
-    print(f"listener partitions seen: {len(parts)}")
+    part_offset = int(getattr(args, "part_offset", 0) or 0)
+    max_parts = getattr(args, "max_parts", None)
+    if part_offset < 0:
+        raise ValueError("--part-offset must be >= 0")
+    if max_parts is not None:
+        max_parts = int(max_parts)
+        if max_parts <= 0:
+            raise ValueError("--max-parts must be positive")
+        parts = parts[part_offset : part_offset + max_parts]
+    else:
+        parts = parts[part_offset:]
+    print(
+        f"listener partitions seen in slice: {len(parts)} "
+        f"(offset={part_offset}, max_parts={max_parts})",
+        flush=True,
+    )
     if not parts:
-        raise RuntimeError("map produced no listener-level affinity inputs")
-    ckpt["affinity_expected_partitions"] = parts
+        print("affinity slice empty (no non-empty partitions in range); done", flush=True)
+        return
+    # Full expected set stays authoritative for seal/pairs; slice only processes `parts`.
+    all_parts = sorted(artifacts_by_part, key=int)
+    ckpt["affinity_expected_partitions"] = all_parts
     done_parts = set(ckpt.get("completed_affinity_partitions", []))
+    map_job_id = (
+        os.environ.get("FI_LB_MAP_JOB_ID", "").strip()
+        or ckpt.get("cloud_job_id")
+        or CLOUD_JOB_ID
+    )
     for part in parts:
         if part in done_parts:
             artifacts = (ckpt.get("affinity_partition_artifacts") or {}).get(part)
@@ -1465,8 +1608,91 @@ def cmd_reduce_affinity(args) -> None:
         )
         record_resource_snapshot(ckpt, phase="affinity_partition_commit")
         save_checkpoint(s3, ckpt)
+        # Durable per-partition marker for parallel workers (shared map job).
+        if map_job_id:
+            marker_key = (
+                f"control/jobs/listenbrainz_tar_map/{map_job_id}/"
+                f"affinity_parts/part={part}.json"
+            )
+            marker = {
+                "part": part,
+                "artifacts": sorted(part_artifacts, key=lambda item: item["key"]),
+                "rows": n_rows,
+                "updated_at": now_iso(),
+                "worker_job_id": CLOUD_JOB_ID,
+            }
+            s3.put_object(
+                Bucket=LAKE_BUCKET,
+                Key=marker_key,
+                Body=(json.dumps(marker, indent=2) + "\n").encode(),
+                ContentType="application/json",
+            )
         print(f"  partition {part}: {n_rows:,} LA rows done", flush=True)
     con.close()
+
+
+def cmd_reduce_affinity_seal(args) -> None:
+    """Merge parallel affinity_parts markers into the shared map checkpoint."""
+    require_free_disk()
+    require_no_competing_heavy_job()
+    s3 = r2_client()
+    require_private_storage(s3)
+    ckpt = load_checkpoint()
+    validate_checkpoint(ckpt, partitions=args.partitions)
+    ensure_map_complete(ckpt)
+    ckpt["active_run_lock"] = args.run_lock
+    map_job_id = (
+        os.environ.get("FI_LB_MAP_JOB_ID", "").strip()
+        or ckpt.get("cloud_job_id")
+        or CLOUD_JOB_ID
+    )
+    if not map_job_id:
+        raise RuntimeError("affinity seal requires FI_LB_MAP_JOB_ID / cloud_job_id")
+    listener_artifacts = committed_listener_artifacts(s3, ckpt)
+    expected_parts = sorted(
+        {
+            artifact["key"].split("/part=", 1)[1].split("/", 1)[0]
+            for artifact in listener_artifacts
+        },
+        key=int,
+    )
+    prefix = f"control/jobs/listenbrainz_tar_map/{map_job_id}/affinity_parts/"
+    found: dict[str, dict] = {}
+    token = None
+    while True:
+        kw = {"Bucket": LAKE_BUCKET, "Prefix": prefix, "MaxKeys": 1000}
+        if token:
+            kw["ContinuationToken"] = token
+        resp = s3.list_objects_v2(**kw)
+        for obj in resp.get("Contents") or []:
+            key = obj["Key"]
+            if not key.endswith(".json"):
+                continue
+            marker = json.loads(s3.get_object(Bucket=LAKE_BUCKET, Key=key)["Body"].read())
+            part = str(marker.get("part"))
+            arts = marker.get("artifacts") or []
+            if len(arts) != 3:
+                raise RuntimeError(f"affinity part marker {key} malformed")
+            verify_artifact_manifest(s3, arts)
+            found[part] = marker
+        if not resp.get("IsTruncated"):
+            break
+        token = resp.get("NextContinuationToken")
+    missing = [p for p in expected_parts if p not in found]
+    if missing:
+        raise RuntimeError(
+            f"affinity seal incomplete: {len(found)}/{len(expected_parts)} parts; "
+            f"missing e.g. {missing[:8]}"
+        )
+    ckpt["affinity_expected_partitions"] = expected_parts
+    ckpt["completed_affinity_partitions"] = expected_parts
+    ckpt["affinity_partition_artifacts"] = {
+        part: sorted(found[part]["artifacts"], key=lambda item: item["key"])
+        for part in expected_parts
+    }
+    record_resource_snapshot(ckpt, phase="affinity_seal_complete")
+    save_checkpoint(s3, ckpt)
+    print(f"affinity sealed: {len(expected_parts)} partitions")
 
 
 def cmd_reduce_pairs(args) -> None:
@@ -1742,7 +1968,23 @@ def main() -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     pm = sub.add_parser("map")
-    pm.add_argument("--max-shards", type=int, default=1526)
+    pm.add_argument("--max-shards", type=int, default=1526,
+                    help="shard count for this worker slice (from --shard-start)")
+    pm.add_argument(
+        "--shard-start",
+        type=int,
+        default=0,
+        help="inclusive shard index for this worker (must be BATCH_SHARDS-aligned)",
+    )
+    pm.add_argument(
+        "--map-target-shards",
+        type=int,
+        default=None,
+        help=(
+            "full-corpus target used for run_namespace / completion scope; "
+            "parallel workers must share the same value (e.g. 1526)"
+        ),
+    )
     pm.add_argument("--partitions", type=int, default=256,
                     help="listener hash partitions for affinity (must be stable across run)")
     pm.add_argument(
@@ -1758,7 +2000,23 @@ def main() -> None:
 
     pa = sub.add_parser("reduce-affinity")
     pa.add_argument("--partitions", type=int, default=256)
+    pa.add_argument(
+        "--part-offset",
+        type=int,
+        default=0,
+        help="index into sorted non-empty listener partitions for this worker",
+    )
+    pa.add_argument(
+        "--max-parts",
+        type=int,
+        default=None,
+        help="max partitions for this worker slice (parallel affinity)",
+    )
     pa.set_defaults(fn=cmd_reduce_affinity)
+
+    pas = sub.add_parser("reduce-affinity-seal")
+    pas.add_argument("--partitions", type=int, default=256)
+    pas.set_defaults(fn=cmd_reduce_affinity_seal)
 
     pp = sub.add_parser("reduce-pairs")
     pp.set_defaults(fn=cmd_reduce_pairs)

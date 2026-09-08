@@ -147,7 +147,9 @@
     {
       "class_name": "BatchContainer",
       "image": "./docker/Dockerfile.batch",
-      "max_instances": 1,
+      // Parallel ListenBrainz tar-map workers (standard-4 = 4 vCPU each).
+      // Account concurrent vCPU headroom allows ~20 of these.
+      "max_instances": 20,
       "instance_type": "standard-4"
     }
   ],
