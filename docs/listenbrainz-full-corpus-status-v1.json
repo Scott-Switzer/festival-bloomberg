@@ -109,6 +109,25 @@
       "hash deep-route renders with zero page errors", "static JS/CSS 200", "bootstrap restricted to serving artifact only"
     ]
   },
+  "production": {
+    "deployed": true,
+    "url": "https://festival-bloomberg-terminal-production.scswitzer.workers.dev",
+    "mode": "PRODUCTION_PRIVATE",
+    "deploy_run": "https://github.com/Scott-Switzer/festival-bloomberg/actions/runs/34283137611",
+    "deployed_commit": "48bb887e (post-merge main; smoke test fixed to treat designed 401 as healthy)",
+    "serving_generation": "terminal_v1_20260908T194538Z",
+    "serving_sha256": "d6b38393ad30ca38a6c299aa42126c7af4e56520a296fef2dc9afc1aeafae4d3",
+    "access_classification": "TEMPORARY_SECRET_PATH",
+    "unauthorized_test": "401 TERMINAL_AUTH_REQUIRED on /, /health, /api/status, and wrong prefixes",
+    "authorized_test": "operator secret path (high-entropy, stored only in local operator config, never in repo/CI/logs): /health 200, home renders with PRODUCTION / PRIVATE ACCESS badge, Alice Cooper label+peers correct, 0 console/page errors",
+    "note": "Cloudflare Access remains the preferred final front door; secret path is the repo's existing temporary fallback mechanism."
+  },
+  "merge": {
+    "pr": 73,
+    "state": "MERGED",
+    "merge_sha": "200c6ead2c95c94dee773062ddd13d75f59800f8",
+    "post_merge_ci": "GREEN (CI + Browser UAT + Terminal Staging Deploy + Build Container on 200c6ead; Terminal Production Deploy green on 48bb887e after smoke-test fix)"
+  },
   "gates": {
     "FULL_CORPUS_INPUT": "VERIFIED",
     "MAP_COMPLETENESS": "PASS",
@@ -119,12 +138,17 @@
     "HOSTED_STAGING_ACCEPTANCE": "PASS",
     "SEMANTIC_AUDIT": "PASS",
     "SANDBOX_FIXTURE_ROWS": 0,
-    "CI_EXACT_HEAD": "GREEN (86740d76)",
+    "CI_EXACT_HEAD": "GREEN (c016aef at merge; main CI green through 48bb887e)",
     "BROWSER_UAT_EXACT_HEAD": "GREEN",
     "WORKING_TREE_SOURCE_STATE": "CLEAN (serving/, artifacts/, .venv/ ignored generated outputs)",
     "PR_BODY": "CURRENT"
   },
   "verdict": "LISTENBRAINZ_FULL_CORPUS_ACTIVATION_V1 = PASS",
+  "verdicts": {
+    "LISTENBRAINZ_FULL_CORPUS_ACTIVATION_V1": "PASS",
+    "HOSTED_TERMINAL_LATEST_GENERATION": "PASS",
+    "PRODUCTION_PRIVATE_TERMINAL": "PASS (TEMPORARY_SECRET_PATH; Cloudflare Access preferred)"
+  },
   "caveats": [
     "Artist-day month-partition publication remains a partial side output (through 2005-11); not consumed by any product surface.",
     "24/7-up hosted container is reclaimed when idle; first request after idle incurs a cold start (~1-2 min) which re-verifies the same generation."
