@@ -187,13 +187,17 @@ def seal_checkpoints(plan: list[dict]) -> dict:
         cov = ckpt.get("batch_partition_coverage") or {}
         sealed.setdefault("batch_partition_coverage", {}).update(cov)
         for meta_key in (
+            "source_dataset",
             "source_object_last_modified",
             "source_first_access_at",
+            "pipeline",
             "pipeline_version",
             "listener_partition_algorithm",
             "duckdb_version",
             "batch_size_shards",
             "started_at",
+            "listener_level_access",
+            "active_run_lock",
         ):
             if ckpt.get(meta_key) is not None and sealed.get(meta_key) is None:
                 sealed[meta_key] = ckpt.get(meta_key)

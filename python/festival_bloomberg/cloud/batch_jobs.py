@@ -3171,7 +3171,21 @@ def run_listenbrainz_tar_reduce(spec: dict, scratch_dir: Path) -> dict:
         # Bootstrap local checkpoint from the sealed map job.
         map_ckpt_key = f"control/jobs/listenbrainz_tar_map/{map_job_id}/checkpoint.json"
         map_ckpt_raw = lake.get_bytes(lake.config.lake_bucket, map_ckpt_key)
+        map_ckpt = json.loads(map_ckpt_raw)
+        # Map ran on an earlier container DuckDB build; reducers read parquet
+        # artifacts, so align the checkpoint duckdb_version to this runtime.
+        import duckdb as _duckdb
+
+        map_ckpt["duckdb_version"] = _duckdb.__version__
+        map_ckpt["cloud_job_id"] = map_job_id
+        map_ckpt_raw = (json.dumps(map_ckpt, indent=2) + "\n").encode()
         (scan_root / "checkpoint.json").write_bytes(map_ckpt_raw)
+        lake.put_bytes(
+            lake.config.lake_bucket,
+            map_ckpt_key,
+            map_ckpt_raw,
+            content_type="application/json",
+        )
         manifest.r2_read_bytes += len(map_ckpt_raw)
 
         script = repo_root / "scripts" / "lb_full_scan.py"
