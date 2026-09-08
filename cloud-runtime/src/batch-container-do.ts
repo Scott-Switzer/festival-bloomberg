@@ -411,6 +411,7 @@ export class BatchContainer extends DurableObject<BatchEnv> {
         "artist_sentiment_build_v1",
         "terminal_serving_build_v1",
         "listenbrainz_tar_map",
+        "listenbrainz_tar_reduce",
         "listenbrainz_map",
         "listenbrainz_reduce",
         "identity_graph_v2",

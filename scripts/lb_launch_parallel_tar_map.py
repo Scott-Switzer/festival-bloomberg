@@ -181,6 +181,22 @@ def seal_checkpoints(plan: list[dict]) -> dict:
             sealed["completed_batches"].append(rng)
         arts = ckpt.get("batch_artifacts") or {}
         sealed["batch_artifacts"].update(arts)
+        # Reducer gates require completed_shards + batch_partition_coverage.
+        sealed.setdefault("completed_shards", [])
+        sealed["completed_shards"].extend(ckpt.get("completed_shards") or [])
+        cov = ckpt.get("batch_partition_coverage") or {}
+        sealed.setdefault("batch_partition_coverage", {}).update(cov)
+        for meta_key in (
+            "source_object_last_modified",
+            "source_first_access_at",
+            "pipeline_version",
+            "listener_partition_algorithm",
+            "duckdb_version",
+            "batch_size_shards",
+            "started_at",
+        ):
+            if ckpt.get(meta_key) is not None and sealed.get(meta_key) is None:
+                sealed[meta_key] = ckpt.get(meta_key)
         sealed["seal_workers"].append(
             {
                 "job_id": worker["job_id"],
@@ -216,9 +232,23 @@ def seal_checkpoints(plan: list[dict]) -> dict:
     covered = set()
     for a, b in sealed["completed_batches"]:
         covered.update(range(a, b + 1))
-    sealed["covered_shard_count"] = len(covered)
-    sealed["complete"] = len(covered) >= TOTAL_SHARDS
+    # Prefer explicit completed_shards from workers; fall back to batch ranges.
+    shard_set = {int(i) for i in (sealed.get("completed_shards") or [])}
+    if len(shard_set) < len(covered):
+        shard_set = set(covered)
+    sealed["completed_shards"] = sorted(shard_set)
+    sealed["covered_shard_count"] = len(shard_set)
+    sealed["complete"] = len(shard_set) >= TOTAL_SHARDS
+    sealed["batch_size_shards"] = sealed.get("batch_size_shards") or 4
     sealed["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    cov = sealed.get("batch_partition_coverage") or {}
+    expected_starts = {str(s) for s in range(0, TOTAL_SHARDS, 4)}
+    if sealed["complete"] and set(cov.keys()) != expected_starts:
+        raise RuntimeError(
+            f"seal missing batch_partition_coverage "
+            f"({len(cov)}/{len(expected_starts)} batch starts)"
+        )
 
     out_key = f"control/jobs/listenbrainz_tar_map/{WAVE}_sealed/checkpoint.json"
     payload = (json.dumps(sealed, indent=2) + "\n").encode()

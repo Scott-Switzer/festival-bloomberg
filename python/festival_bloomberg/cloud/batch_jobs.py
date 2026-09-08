@@ -3110,3 +3110,211 @@ def run_listenbrainz_tar_map(spec: dict, scratch_dir: Path) -> dict:
     finally:
         shutil.rmtree(scratch_dir, ignore_errors=True)
 
+
+def run_listenbrainz_tar_reduce(spec: dict, scratch_dir: Path) -> dict:
+    """Reduce a completed ListenBrainz *tar* map (artist-day → affinity → pairs).
+
+    Uses the sealed map checkpoint job_id (default lb_full_map_1526) as
+    CLOUD_JOB_R2 authority. Optional phase=artist_day|affinity|pairs|all|gold.
+    """
+    import subprocess
+    from datetime import datetime, timezone
+
+    lake = _get_lake()
+    job_id = spec.get("job_id", "lb_tar_reduce")
+    params = spec.get("params", {}) or {}
+    map_job_id = str(params.get("map_job_id") or "lb_full_map_1526")
+    phase = str(params.get("phase") or "all").strip().lower()
+    partitions = int(params.get("partitions") or 256)
+    if phase not in {"artist_day", "affinity", "pairs", "all", "gold"}:
+        raise ValueError(f"invalid reduce phase: {phase}")
+
+    manifest = new_manifest(
+        job_type="listenbrainz_tar_reduce",
+        job_id=job_id,
+        code_commit=_git_commit(),
+        container_image="festival-bloomberg-batch:latest",
+        total_batches=1,
+        params={**params, "map_job_id": map_job_id, "phase": phase, "partitions": partitions},
+    )
+    manifest_key_path = manifest_key("listenbrainz_tar_reduce", job_id)
+    start = time.time()
+    scan_root = scratch_dir / "lb_tar_reduce"
+    scan_root.mkdir(parents=True, exist_ok=True)
+
+    try:
+        members_key = "control/listenbrainz/full_corpus/tar_members_v1.json"
+        index_path = scan_root / "lb_tar_index.json"
+        if not index_path.exists():
+            raw = lake.get_bytes(lake.config.lake_bucket, members_key)
+            index_path.write_bytes(raw)
+            manifest.r2_read_bytes += len(raw)
+
+        estate_rel = Path(
+            "data/control/artist_security_25000/v1/"
+            "estate_20260828T013314Z_f87e5d1d073e.json"
+        )
+        estate_key = (
+            "control/artist_security_25000/v1/"
+            "estate_20260828T013314Z_f87e5d1d073e.json"
+        )
+        repo_root = Path(__file__).resolve().parents[3]
+        if not (repo_root / "scripts").exists():
+            repo_root = Path("/app")
+        estate_path = repo_root / estate_rel
+        estate_path.parent.mkdir(parents=True, exist_ok=True)
+        if not estate_path.exists():
+            estate_bytes = lake.get_bytes(lake.config.lake_bucket, estate_key)
+            estate_path.write_bytes(estate_bytes)
+            manifest.r2_read_bytes += len(estate_bytes)
+
+        # Bootstrap local checkpoint from the sealed map job.
+        map_ckpt_key = f"control/jobs/listenbrainz_tar_map/{map_job_id}/checkpoint.json"
+        map_ckpt_raw = lake.get_bytes(lake.config.lake_bucket, map_ckpt_key)
+        (scan_root / "checkpoint.json").write_bytes(map_ckpt_raw)
+        manifest.r2_read_bytes += len(map_ckpt_raw)
+
+        script = repo_root / "scripts" / "lb_full_scan.py"
+        env = os.environ.copy()
+        env["FI_LB_SCAN_ROOT"] = str(scan_root)
+        env["FI_LB_CHECKPOINT_AUTHORITY"] = "CLOUD_JOB_R2"
+        # All reduce phases share the map job checkpoint so resume is coherent.
+        env["FI_LB_JOB_ID"] = map_job_id
+        env["FI_LB_DUCKDB_MEMORY"] = str(params.get("duckdb_memory") or "4GB")
+        env["FI_LB_DUCKDB_THREADS"] = str(params.get("duckdb_threads") or "4")
+        env["PYTHONPATH"] = str(repo_root / "python") + os.pathsep + env.get("PYTHONPATH", "")
+        cwd = str(repo_root if (repo_root / "scripts").exists() else Path("/app"))
+
+        def _run(cmd: list[str]) -> None:
+            proc = subprocess.run(
+                cmd, cwd=cwd, env=env, capture_output=True, text=True, check=False
+            )
+            if proc.returncode != 0:
+                detail = (proc.stderr or "").strip() or (proc.stdout or "").strip() or "reduce failed"
+                raise RuntimeError(detail[-3500:])
+
+        phases: list[str]
+        if phase == "all":
+            phases = ["artist_day", "affinity", "pairs", "gold"]
+        else:
+            phases = [phase]
+
+        gold_meta: dict = {}
+        for step in phases:
+            if step == "artist_day":
+                _run([sys.executable, str(script), "reduce-artist-day"])
+            elif step == "affinity":
+                _run([
+                    sys.executable, str(script), "reduce-affinity",
+                    "--partitions", str(partitions),
+                ])
+            elif step == "pairs":
+                _run([sys.executable, str(script), "reduce-pairs"])
+            elif step == "gold":
+                gold_meta = _publish_listenbrainz_tar_gold(
+                    lake, map_job_id=map_job_id, scan_root=scan_root
+                )
+
+        ckpt = json.loads((scan_root / "checkpoint.json").read_text())
+        manifest.runtime_seconds = round(time.time() - start, 2)
+        manifest.completed_batches = 1
+        manifest.rows_written = int(ckpt.get("affinity_edges") or 0)
+        manifest.status = STATUS_BUILD_COMPLETE
+        manifest.completed_at = now_iso()
+        lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
+        manifest.status = STATUS_VERIFIED
+        manifest.publication_state = STATUS_VERIFIED
+        lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
+        manifest.status = STATUS_PUBLISHED
+        manifest.publication_state = STATUS_PUBLISHED
+        lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
+
+        return {
+            "status": "COMPLETED",
+            "manifest_key": manifest_key_path,
+            "job_id": job_id,
+            "code_commit": manifest.code_commit,
+            "phase": phase,
+            "map_job_id": map_job_id,
+            "completed_artist_day": bool(ckpt.get("completed_artist_day")),
+            "completed_affinity_partitions": len(ckpt.get("completed_affinity_partitions") or []),
+            "completed_pairs": bool(ckpt.get("completed_pairs")),
+            "affinity_edges": ckpt.get("affinity_edges"),
+            "affinity_output_key": ckpt.get("affinity_output_key"),
+            "gold": gold_meta,
+            "runtime_seconds": manifest.runtime_seconds,
+            "publication_state": manifest.publication_state,
+            "label": "LISTENBRAINZ CONSUMPTION AFFINITY",
+        }
+    except Exception as e:
+        if manifest.error_code is None:
+            manifest.error_code = ERR_JOB_EXEC_FAILED
+        manifest.status = STATUS_FAILED
+        manifest.error = str(e)
+        manifest.error_detail = traceback.format_exc()
+        manifest.completed_at = now_iso()
+        manifest.runtime_seconds = round(time.time() - start, 2)
+        try:
+            lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
+        except Exception:
+            pass
+        raise
+    finally:
+        shutil.rmtree(scratch_dir, ignore_errors=True)
+
+
+def _publish_listenbrainz_tar_gold(lake, *, map_job_id: str, scan_root: Path) -> dict:
+    """Promote silver affinity evidence → gold/artist_audience_affinity CURRENT."""
+    from datetime import datetime, timezone
+
+    ckpt = json.loads((scan_root / "checkpoint.json").read_text())
+    if not ckpt.get("completed_pairs"):
+        raise RuntimeError("gold publish requires completed reduce-pairs")
+    src_key = ckpt.get("affinity_output_key")
+    if not src_key:
+        raise RuntimeError("checkpoint missing affinity_output_key")
+    src = lake.get_bytes(lake.config.lake_bucket, src_key)
+    gen = "lb_full_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    dest_key = f"gold/artist_audience_affinity/generations/{gen}/artist_audience_affinity.parquet"
+    lake.put_bytes(
+        lake.config.lake_bucket,
+        dest_key,
+        src,
+        content_type="application/octet-stream",
+    )
+    current = {
+        "dataset": "gold.artist_audience_affinity",
+        "generation": gen,
+        "object_key": dest_key,
+        "source_silver_key": src_key,
+        "map_job_id": map_job_id,
+        "run_namespace": ckpt.get("run_namespace"),
+        "affinity_edges": ckpt.get("affinity_edges"),
+        "listens_scanned": ckpt.get("listens_scanned"),
+        "matched_listens": ckpt.get("matched_listens"),
+        "map_target_shards": ckpt.get("map_target_shards"),
+        "label": "LISTENBRAINZ CONSUMPTION AFFINITY",
+        "published_at": now_iso(),
+        "metric_universe": "LISTENER_TOP_25",
+        "artist_universe": "ARTIST_SECURITY_25000",
+    }
+    lake.put_bytes(
+        lake.config.lake_bucket,
+        "gold/artist_audience_affinity/CURRENT.json",
+        (json.dumps(current, indent=2) + "\n").encode(),
+        content_type="application/json",
+    )
+    ckpt["gold_affinity_generation"] = gen
+    ckpt["gold_affinity_object_key"] = dest_key
+    ckpt["gold_published_at"] = current["published_at"]
+    # Persist gold pointers onto the shared map checkpoint.
+    payload = (json.dumps(ckpt, indent=2) + "\n").encode()
+    (scan_root / "checkpoint.json").write_bytes(payload)
+    lake.put_bytes(
+        lake.config.lake_bucket,
+        f"control/jobs/listenbrainz_tar_map/{map_job_id}/checkpoint.json",
+        payload,
+        content_type="application/json",
+    )
+    return current
+

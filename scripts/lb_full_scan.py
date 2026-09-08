@@ -504,12 +504,16 @@ def require_no_competing_heavy_job() -> None:
 def configure_duckdb(con) -> None:
     """Apply the same bounded resource contract to every pipeline phase."""
     SPILL.mkdir(parents=True, exist_ok=True)
-    # 512 MiB cap keeps the aggregate inside RAM on the constrained Mac (the
-    # batch=4 m-table is ~270-400 MB) and avoids OS swap pressure that eats
-    # the disk floor and kills the process mid-batch.
-    con.execute("PRAGMA memory_limit='512MB'")
+    # Cloud reducers get more RAM (standard-4 = 12 GiB); local Mac stays capped.
+    mem = os.environ.get("FI_LB_DUCKDB_MEMORY", "").strip()
+    if not mem:
+        mem = "4GB" if CHECKPOINT_AUTHORITY == "CLOUD_JOB_R2" else "512MB"
+    threads = os.environ.get("FI_LB_DUCKDB_THREADS", "").strip()
+    if not threads:
+        threads = "4" if CHECKPOINT_AUTHORITY == "CLOUD_JOB_R2" else "2"
+    con.execute(f"PRAGMA memory_limit='{mem}'")
     con.execute(f"SET temp_directory='{SPILL}'")
-    con.execute("SET threads=2")
+    con.execute(f"SET threads={int(threads)}")
 
 
 def cleanup_local_transients() -> None:
