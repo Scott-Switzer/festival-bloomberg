@@ -355,6 +355,12 @@ async function renderArtist(key) {
     <div class="fact"><div class="n">${qf.audience_peers ?? "—"}</div><div class="l">Audience peers</div></div>
   </div>
   <div style="height:14px"></div>
+  <div class="panel" id="overviewPanel"><h3>Overview ${statusChip(p.overview ? "OBSERVED" : "UNKNOWN")}</h3><div id="overviewBox"></div></div>
+  <div style="height:14px"></div>
+  <div class="panel" id="momentumPanel"><h3>Attention / Consumption Momentum ${statusChip((p.momentum && p.momentum.status) || "UNKNOWN")}</h3><div id="momentumBox"></div><p class="note">${esc((p.momentum && p.momentum.note) || "")}</p></div>
+  <div style="height:14px"></div>
+  <div class="panel" id="newsPanel"><h3>News / Catalysts ${statusChip((p.news && p.news.status) || "UNKNOWN")}</h3><div id="newsBox"></div><p class="note">${esc((p.news && p.news.note) || "")}</p></div>
+  <div style="height:14px"></div>
   <div class="grid cols2" id="attentionPanels"></div>
   <div style="height:14px"></div>
   <div class="panel"><h3>Artist factor tape ${statusChip((p.factor_tape && p.factor_tape.status) || "UNKNOWN")}</h3><div id="tapeBox"></div></div>
@@ -399,6 +405,9 @@ async function renderArtist(key) {
     location.hash = "#/compare";
   };
 
+  renderOverview(p.overview || {});
+  renderMomentum(p.momentum || {});
+  renderNews(p.news || {});
   renderAttention(p.attention || {});
   renderTape((p.factor_tape || {}), (p.what_changed || []));
   renderSentiment(p.sentiment || {});
@@ -422,6 +431,38 @@ async function renderArtist(key) {
       location.hash = "#/compare";
     };
   });
+}
+
+function renderOverview(overview) {
+  const box = document.getElementById("overviewBox");
+  if (!box) return;
+  const bullets = (overview && overview.bullets) || [];
+  if (!bullets.length) { box.innerHTML = `<div class="empty">${esc(overview.note || "No overview summary.")}</div>`; return; }
+  box.innerHTML = `<ul class="overview">${bullets.map((b) => `<li>${esc(b)}</li>`).join("")}</ul><p class="note">${esc(overview.note || "")}</p>`;
+}
+
+function renderMomentum(momentum) {
+  const box = document.getElementById("momentumBox");
+  if (!box) return;
+  const series = (momentum && momentum.series) || [];
+  if (!series.length) { box.innerHTML = `<div class="empty">No momentum baselines — no series with ≥2 dated points for this artist. Attention is not demand.</div>`; return; }
+  const rows = series.map((s) => {
+    if (s.status !== "OBSERVED") return `<tr><td>${esc(s.label)}</td><td colspan="6" class="muted">INSUFFICIENT_HISTORY (${s.points} points) — insufficient dated observations for a baseline</td></tr>`;
+    const fmt = (x, d) => (x == null ? "—" : Number(x).toLocaleString(undefined, { maximumFractionDigits: d || 1 }));
+    const ch1 = s.change_1d ? `${fmt(s.change_1d.delta, 1)} (${s.change_1d.delta_pct != null ? fmt(s.change_1d.delta_pct, 1) + "%" : "—"})` : "—";
+    const ch7 = s.change_7d ? `${fmt(s.change_7d.delta, 1)} (${s.change_7d.delta_pct != null ? fmt(s.change_7d.delta_pct, 1) + "%" : "—"})` : "—";
+    const ch30 = s.change_30d ? `${fmt(s.change_30d.delta, 1)}` : "—";
+    return `<tr><td>${esc(s.label)}</td><td>${fmt(s.latest_value, 0)}</td><td>${esc(ch1)}</td><td>${esc(ch7)}</td><td>${esc(ch30)}</td><td>${s.z_score != null ? fmt(s.z_score, 2) : "—"}${s.change_point ? " ⚑" : ""}</td><td class="small muted">EMA7 ${s.ema_7 != null ? fmt(s.ema_7, 0) : "—"} · slope ${s.slope != null ? fmt(s.slope, 2) : "—"} · vol ${s.volatility != null ? fmt(s.volatility, 3) : "—"}</td></tr>`;
+  }).join("");
+  box.innerHTML = `<table><thead><tr><th>Series</th><th>Latest</th><th>1D</th><th>7D</th><th>30D</th><th>z / flag</th><th>EMA / slope / vol</th></tr></thead><tbody>${rows}</tbody></table><div class="small muted">PIT: every figure uses only observations ≤ latest observation_time. Change-point = |last step| > 2σ of step changes.</div>`;
+}
+
+function renderNews(news) {
+  const box = document.getElementById("newsBox");
+  if (!box) return;
+  const cats = (news && news.catalysts) || [];
+  if (!cats.length) { box.innerHTML = `<div class="empty">No news/catalyst evidence in this serving generation. GDELT metadata-only discovery (headline, domain, publication time) is implemented but not yet materialized into serving — run the data-fabric OA (<code>python -m festival_bloomberg.oa.data_fabric</code>) to acquire it.</div>`; return; }
+  box.innerHTML = `<table><thead><tr><th>Published</th><th>Headline</th><th>Domain</th><th>URL</th></tr></thead><tbody>${cats.slice(0, 20).map((c) => `<tr><td class="small">${esc(fmtDate(c.published_at))}</td><td>${esc(c.title || "—")}</td><td class="small">${esc(c.domain || "—")}</td><td class="small">${c.url ? `<a href="${esc(c.url)}" target="_blank" rel="noopener">link</a>` : "—"}</td></tr>`).join("")}</tbody></table>`;
 }
 
 function renderAttention(attention) {
