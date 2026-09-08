@@ -430,7 +430,7 @@
                   '<span class="dec-reason">' + esc(p.why_related || "") + '</span>' +
                   '<button class="mini" data-compare-with="' + esc(pk || "") + '">COMPARE</button></div>';
               }).join("")
-            : compactEmpty("NO PEER EVIDENCE", "No ListenBrainz pilot edges for this artist.")) + '</div>' +
+            : compactEmpty("NO PEER EVIDENCE", "No ListenBrainz consumption-affinity edges for this artist.")) + '</div>' +
         '<div class="dec-cell"><h4>FESTIVAL EXPOSURE</h4>' +
           '<div class="dec-row"><span class="dec-k">Appearances</span><span class="dec-v">' + securityCell(facts.festival_appearances) + '</span></div>' +
           (topSeriesNames.length
@@ -440,8 +440,8 @@
 
       html += '<div class="security-grid" id="sec-attention"><section><h2>ATTENTION / MOMENTUM</h2><p class="sub">Source-separated attention evidence. Attention is not demand or ticket intent.</p><div class="panel attention-windows"><label>Window <select id="attention-window"><option value="">MAX</option><option value="365">1Y</option><option value="90">90D</option><option value="30">30D</option></select></label></div>' +
         '<div id="attention-panels">' + attentionPanel("Wikimedia", attention.wikimedia, { chart: true }) + attentionPanel("ListenBrainz", attention.listenbrainz, { chart: true }) + attentionPanel("YouTube", attention.youtube, { chart: true }) + '</div></section>';
-      html += '<section id="sec-peers"><h2>AUDIENCE PEERS</h2><div class="security-card"><div class="security-card-head"><h3>' + esc(peers.label || "PILOT AUDIENCE DATA") + '</h3><span class="pill ' + (securityStatus(peers) === "OBSERVED" ? "ok" : "off") + '">' + esc(securityStatus(peers)) + '</span></div>';
-      html += '<p class="muted">Shared listeners and Jaccard are descriptive affinity evidence. Pilot coverage remains labeled until a full-corpus replacement is published.</p>';
+      html += '<section id="sec-peers"><h2>AUDIENCE PEERS</h2><div class="security-card"><div class="security-card-head"><h3>' + esc(peers.label || "LISTENBRAINZ CONSUMPTION AFFINITY") + '</h3><span class="pill ' + (securityStatus(peers) === "OBSERVED" ? "ok" : "off") + '">' + esc(securityStatus(peers)) + '</span></div>';
+      html += '<p class="muted">Shared listeners and Jaccard are descriptive full-corpus consumption-affinity evidence. Missing edges stay missing — they are never shown as zero affinity.</p>';
       var peerItems = peerItemsAll;
       if (!peerItems.length) html += compactEmpty("NO PEER EDGES", "No audience-affinity edges in this serving generation.", peers && peers.note);
       else html += '<table><thead><tr><th>Artist</th><th>Shared listeners</th><th>Jaccard</th><th>Why related</th><th>Differences</th><th></th></tr></thead><tbody>' + peerItems.slice(0, 25).map(function (p) {
@@ -621,7 +621,7 @@
           (rOnly.length ? '<div class="dec-row"><span class="dec-k">Only ' + esc(nameR) + '</span><span class="dec-reason">' + esc(rOnly.slice(0, 6).join(" · ")) + '</span></div>' : "");
       }
       var sections = [
-        { id: "cmp-audience", title: "AUDIENCE", rows: [dimCell("Audience peers"), '<div class="dec-row"><span class="dec-k">Shared-audience evidence</span><span class="dec-reason">ListenBrainz 1% pilot peer edges; shared listeners, not ticket intent.</span></div>'] },
+        { id: "cmp-audience", title: "AUDIENCE", rows: [dimCell("Audience peers"), '<div class="dec-row"><span class="dec-k">Shared-audience evidence</span><span class="dec-reason">ListenBrainz full-corpus consumption-affinity peer edges; shared listeners, not ticket intent.</span></div>'] },
         { id: "cmp-attention", title: "ATTENTION", rows: [dimCell("Attention sources"), dimCell("Identity"), dimCell("Evidence coverage")] },
         { id: "cmp-live", title: "LIVE", rows: [dimCell("Live history")] },
         { id: "cmp-markets", title: "MARKETS", rows: [marketOverlapSection(), dimCell("Strongest observed markets")] },

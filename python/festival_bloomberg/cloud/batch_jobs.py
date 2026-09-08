@@ -1480,7 +1480,7 @@ def _materialize_r2_parquet_terminal(
             rows_honest.get("future_events", 0) or 0,
             "VERIFIED_COMPACT_BUILD",
             json.dumps({"materializer": "_materialize_r2_parquet_terminal", "sources": sorted(str(p) for p in parquets.values())}),
-            "Read-only buyer evidence; pilot audience affinity is descriptive; no score, demand forecast, booking advice, attendance or gross prediction.",
+            "Read-only buyer evidence; ListenBrainz consumption affinity is descriptive full-corpus evidence; no score, demand forecast, booking advice, attendance or gross prediction.",
         ],
     )
     conn.execute("CHECKPOINT")
@@ -1493,8 +1493,9 @@ def run_terminal_serving_build(spec: dict, scratch_dir: Path) -> dict:
     Reads (existing compact R2 assets, never raw corpora):
         - governed 25K estate (BACKUPS control/artist_security_25000/)
         - silver event graph (events + edges + series), attention and provider
-          event exports, pilot Gold audience affinity, and the latest Wikidata
-          artist external-id generation — the canonical warehouse DB is NOT in
+          event exports, ListenBrainz audience-affinity Gold (full-corpus
+          CURRENT, pilot fallback), and the latest Wikidata
+          artist external-id generation — the canonical warehouse DB is not in
           R2 (licensed, never uploaded), so this job never depends on it.
 
     Materializes the existing ``artist_security_terminal_v1`` schema,

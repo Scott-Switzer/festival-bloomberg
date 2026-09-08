@@ -604,7 +604,7 @@ def build_risk_flags(
         flags.append({
             "flag": "thin_audience_evidence",
             "label": "Thin audience evidence",
-            "detail": "No audience-peer evidence exists for this artist in the pilot sample.",
+            "detail": "No audience-peer evidence exists for this artist in the ListenBrainz full corpus.",
         })
     lb = attention.get("listenbrainz") or {}
     latest = lb.get("latest_observation")
@@ -683,7 +683,7 @@ COMPARABLE_ORDERING_V1 = {
 def build_comparables(conn, artist_key: str, market_key: str | None, limit: int = 8) -> list[dict[str, Any]]:
     """Comparable candidates with explicit WHY components:
 
-      audience  — shared-listener edges (∈ pilot sample)
+      audience  — shared-listener edges (ListenBrainz full corpus)
       markets   — shared market footprint
       festivals — shared festival bills
       footprint — comparable live density (observed-show band)

@@ -487,7 +487,7 @@ def _alternatives(peers: list[dict[str, Any]]) -> list[dict[str, Any]]:
     alternatives: list[dict[str, Any]] = []
     for peer in peers[:10]:
         reasons = [
-            f"{peer.get('shared_listeners')} shared listeners in the 1% ListenBrainz pilot",
+            f"{peer.get('shared_listeners')} shared listeners (ListenBrainz full corpus)",
             f"Jaccard {peer.get('jaccard')}",
         ]
         if peer.get("shared_festival_bills"):
@@ -499,11 +499,11 @@ def _alternatives(peers: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "artist_name": peer.get("resolved_peer_name") or peer.get("peer_name"),
             "reasons": reasons,
             "differences": [
-                "Audience affinity is descriptive pilot evidence, not interchangeability or availability.",
+                "Audience affinity is descriptive full-corpus consumption evidence, not interchangeability or availability.",
                 "Compare market, festival, forward, and ticket evidence before underwriting.",
             ],
             "source_system": peer.get("source_system") or "listenbrainz",
-            "source_scope": peer.get("source_scope") or "PILOT_1_PERCENT",
+            "source_scope": peer.get("source_scope") or "LISTENBRAINZ_FULL_CORPUS",
             "knowledge_time": peer.get("knowledge_time"),
         })
     return alternatives
@@ -1128,7 +1128,7 @@ def _shared_audience_edge(conn, left_key: str, right_key: str) -> dict[str, Any]
         LIMIT 1
     """, [left_key, right_key, right_key, left_key])
     if row is None:
-        return {"has_edge": False, "summary": "No observed audience edge in the 1% ListenBrainz pilot."}
+        return {"has_edge": False, "summary": "No observed audience edge in the ListenBrainz full corpus."}
     parts: list[str] = []
     if row.get("shared_listeners") is not None:
         parts.append(f"{row['shared_listeners']} shared listeners")

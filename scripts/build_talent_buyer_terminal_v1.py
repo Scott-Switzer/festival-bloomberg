@@ -749,16 +749,16 @@ def _materialize_peers(
         """
         INSERT INTO artist_peers
         SELECT
-            sha256(subject_key || '|' || peer_key || '|pilot'), subject_key, peer_key,
+            sha256(subject_key || '|' || peer_key || '|lb_full_corpus'), subject_key, peer_key,
             p.name,
             ROW_NUMBER() OVER (
                 PARTITION BY subject_key
                 ORDER BY shared_listeners DESC NULLS LAST, jaccard DESC NULLS LAST, peer_key
             )::INTEGER,
             shared_listeners, jaccard, cosine,
-            'listenbrainz', 'PILOT_AUDIENCE_DATA', knowledge_time,
-            'DESCRIPTIVE_PILOT',
-            'Shared listeners and Jaccard from the 1% pilot; this is audience affinity, not local demand or ticket intent.'
+            'listenbrainz', 'LISTENBRAINZ_CONSUMPTION_AFFINITY', knowledge_time,
+            'LISTENBRAINZ_CONSUMPTION_AFFINITY',
+            'LISTENBRAINZ CONSUMPTION AFFINITY — shared listening across the full ListenBrainz dump; audience affinity, not local demand or ticket intent.'
         FROM (
             SELECT subject_key, peer_key, shared_listeners, jaccard, cosine, knowledge_time,
                    ROW_NUMBER() OVER (
