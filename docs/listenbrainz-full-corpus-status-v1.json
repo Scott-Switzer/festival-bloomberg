@@ -1,98 +1,132 @@
 {
   "milestone": "LISTENBRAINZ_FULL_CORPUS_ACTIVATION_V1",
-  "status": "FULL_MAP_RUNNING",
-  "as_of": "2026-09-06T20:50:00Z",
-  "parent_pr72": {
-    "merge_sha": "0594a9fc4abb8b2fc1844614df079e901c17cb8a",
-    "verdict": "BULK_CORPUS_ACTIVATION_V1=PASS",
-    "caveat": "LISTENBRAINZ_FULL_CORPUS=NOT_YET_COMPLETE"
-  },
-  "bounded_cloud_proof": {
-    "job_id": "lb_tar_proof_76_v6",
-    "job_type": "listenbrainz_tar_map",
-    "code_commit": "82916afd2e528a0d65e17a1bed9e115c67e3a6ec",
-    "status": "PUBLISHED",
-    "map_target_shards": 76,
-    "completed_batches": 19,
-    "listens_scanned": 119349189,
-    "matched_listens": 81359500,
-    "runtime_seconds": 3704.37,
-    "run_namespace": "v3-2593-20260712-000004-b4-p256-n76-i865ec1b744f4-uf87e5d1d073e",
-    "checkpoint_authority": "CLOUD_JOB_R2",
-    "label": "LISTENBRAINZ CONSUMPTION AFFINITY"
-  },
-  "projections_from_proof": {
-    "full_shards": 1526,
-    "projected_full_map_hours": 20.7,
-    "projected_full_listens": 2396406084,
-    "projected_full_matched": 1633613118,
-    "method": "linear scale of wall-clock and row counts from 76/1526 shards"
-  },
-  "corpus_index": {
-    "hash": "3f3a109e03bb0911badc9dfefd315592b75bacaaa19e65c35831de12a3f31d92",
-    "etag": "b487ef886520ea2efcc149c47165b5a6-3056",
-    "total_bytes": 205073162240,
+  "status": "CLOSURE_VERIFICATION_COMPLETE",
+  "as_of": "2026-09-08T21:35:00Z",
+  "verification_method": "State reconstructed from live R2 control pointers, job checkpoints, manifests, serving CURRENT, and running product behavior. PR body was stale and NOT used as evidence.",
+  "full_corpus": {
+    "dump_version": "2593-20260712-000004",
+    "source_key": "bulk/listenbrainz/dump=2593-20260712-000004/listenbrainz-spark-dump-2593-20260712-000004-full.tar",
+    "source_bucket": "festival-intelligence-raw",
+    "source_bytes": 205073162240,
+    "source_etag": "b487ef886520ea2efcc149c47165b5a6-3056",
+    "corpus_index_hash": "3f3a109e03bb0911badc9dfefd315592b75bacaaa19e65c35831de12a3f31d92",
     "member_count": 3058,
-    "data_shard_count": 1526
-  },
-  "gates": {
-    "CORPUS_INDEX": "VERIFIED",
-    "R2_ACCESS": "PASS",
-    "CHECKPOINT_RESUME": "PASS",
-    "MAP_RESOURCE_GATE": "PASS (cloud standard-4; local Mac remains blocked)",
-    "REDUCER_RESOURCE_GATE": "PASS (bounded 76-shard proof)",
-    "OUTPUT_VERSIONING": "PASS"
-  },
-  "fixes_landed_for_cloud": [
-    "Skip host ps contention check under CLOUD_JOB_R2",
-    "Accept FI_R2_* credentials in r2_client (after rclone for local)",
-    "Allow FI_LB_SCAN_ROOT scratch cleanup under CLOUD_JOB_R2",
-    "Report completed_batches/rows on tar map status; reconstruct from lake manifests"
-  ],
-  "map_proof": "PASS",
-  "reducer_proof": "PENDING_EXECUTION_ON_PROOF_NAMESPACE",
-  "full_processing_status": "FULL_MAP_RUNNING",
-  "coverage": {
-    "pilot_affinity_artists": 10429,
-    "pilot_affinity_edges": 508894,
-    "bounded_proof_shards": 76,
-    "full_corpus": "NOT_YET_COMPLETE"
-  },
-  "next": [
-    "Trigger full 1526-shard listenbrainz_tar_map on Cloudflare standard-4",
-    "Run reduce-artist-day / reduce-affinity / reduce-pairs on proof or full map namespace",
-    "Publish new Gold affinity generation + serving rebuild + hosted acceptance"
-  ],
-  "full_map": {
-    "job_id": "lb_full_map_1526",
-    "job_type": "listenbrainz_tar_map",
-    "max_shards": 1526,
-    "partitions": 256,
-    "started_at": "2026-09-06T20:48:15.509Z",
-    "projected_hours": 20.7,
-    "status_api": "https://fi-acquisition-runtime.scswitzer.workers.dev/batch/status?job_id=lb_full_map_1526",
-    "checkpoint_key": "control/jobs/listenbrainz_tar_map/lb_full_map_1526/checkpoint.json"
-  },
-  "updated_at": "2026-09-08T19:50:00Z",
-  "affinity": {
+    "data_shard_count": 1526,
     "map_job_id": "lb_full_map_1526",
-    "partitions": 256,
+    "map_status": "COMPLETE (checkpoint complete=true, map_completion_scope=FULL_SOURCE)",
+    "map_completed_shards": 1526,
+    "map_failed_shards": 0,
+    "listens_scanned": 2490100408,
+    "matched_listens": 1448946426,
+    "listener_hash_partitions": 256,
+    "completed_affinity_partitions": 256,
+    "reduce_policy": {
+      "top_k_artists_per_listener": 25,
+      "min_shared_listeners": 3,
+      "metric_universe": "LISTENER_TOP_25",
+      "artist_universe": "ARTIST_SECURITY_25000"
+    },
     "affinity_edges": 1081761,
-    "gold_generation": "lb_full_20260908T193559Z",
-    "label": "LISTENBRAINZ CONSUMPTION AFFINITY",
-    "status": "PUBLISHED"
+    "listener_level_access": "QUARANTINED_NOT_SERVING (listener-level partials stay in festival-intelligence-private; only product-safe aggregates leave it)",
+    "artist_day_projection": {
+      "status": "PARTIAL_NON_BLOCKING_SIDE_OUTPUT",
+      "detail": "silver/listenbrainz/artist_day month partitions published through 2005-11 (38 of ~288 months) at closure time; affinity + serving path does not depend on it."
+    }
+  },
+  "gold": {
+    "generation": "lb_full_20260908T193559Z",
+    "object_key": "gold/artist_audience_affinity/generations/lb_full_20260908T193559Z/artist_audience_affinity.parquet",
+    "bytes": 20322258,
+    "sha256": "b188f48e8bc38db7e7f9d3e4f7bf219334a9a41725bd4c714f1f1261737bc136",
+    "sha_verified_against_sealed_silver": true,
+    "current_pointer": "gold/artist_audience_affinity/CURRENT.json -> lb_full_20260908T193559Z",
+    "pilot_generation_isolated": "bulk_activation_20260905T225703Z remains a separate non-current object",
+    "published_at": "2026-09-08T19:36:02Z"
   },
   "serving": {
     "generation": "terminal_v1_20260908T194538Z",
-    "job_id": "terminal_serving_lb_full_20260908T194425Z",
-    "affinity_source_key": "gold/artist_audience_affinity/generations/lb_full_20260908T193559Z/artist_audience_affinity.parquet",
-    "peer_edges_in_serving": 126898,
-    "status": "PUBLISHED",
-    "local_smoke": "http://127.0.0.1:8931 Alice Cooper peers OBSERVED with LISTENBRAINZ_CONSUMPTION_AFFINITY"
+    "parent_inputs": {
+      "affinity_source_key": "gold/artist_audience_affinity/generations/lb_full_20260908T193559Z/artist_audience_affinity.parquet",
+      "code_commit_at_build": "274ba9f25ad01af5608814c8bb377bdb6b60fbed"
+    },
+    "bytes": 154415104,
+    "sha256": "d6b38393ad30ca38a6c299aa42126c7af4e56520a296fef2dc9afc1aeafae4d3",
+    "current_pointer": "serving/artist_security_terminal_v1/CURRENT.json",
+    "peer_rows": 126898,
+    "peer_scope_distribution": "100% LISTENBRAINZ_CONSUMPTION_AFFINITY (0 pilot-scope rows)",
+    "artists_with_peers": 13220,
+    "distinct_peer_artists": 7329,
+    "sandbox_fixture_rows": 0,
+    "table_counts": {
+      "artists": 25000,
+      "artist_peers": 126898,
+      "artist_markets": 27322,
+      "event_history": 134449,
+      "festival_appearances": 14758,
+      "future_events": 6459,
+      "ticket_market_observations": 771,
+      "artist_factor_observations": 89388,
+      "attention_observations": 50886
+    }
   },
-  "artist_day": {
-    "job_id": "lb_tar_reduce_full_v6",
-    "status": "RUNNING_OR_UNKNOWN"
+  "semantic_audit": {
+    "label": "LISTENBRAINZ CONSUMPTION AFFINITY",
+    "pilot_sample_wording_removed_from": [
+      "peer reasons and source-scope fallback (artist_security.py)",
+      "thin-audience decision flag (decision_system.py)",
+      "SPA peer panel copy (apps/terminal/static/app.js)",
+      "legacy build-script row labels (build_talent_buyer_terminal_v1.py)",
+      "serving-build manifest line (batch_jobs.py)"
+    ],
+    "retained_intentionally": [
+      "PILOT_25K_ESTATE_SUMMARY = accurate market-estate lineage tag (which estate generation built the 25K universe), not ListenBrainz semantics",
+      "Negation disclaimers ('Not ticket demand, local demand, fan crossover probability, or a booking recommendation') required by the product rule",
+      "Historical docs/pilot reports describing the earlier bounded pilot remain as history"
+    ]
   },
-  "caveat": "Artist-day reduce may still be in progress; affinity+serving path is complete."
+  "deploy_infra_fix": {
+    "problem": "terminal deploys rebuilt the container image but the Durable Object kept serving the old long-lived container instance (stale pre-full-corpus wording observed on hosted staging after first deploy)",
+    "fix": "--containers-rollout=immediate added to terminal-deploy.yml and terminal-production.yml (commit 86740d7), mirroring build-container.yml",
+    "verified": "post-fix staging deploy rolled the container; hosted wording verified current"
+  },
+  "local_acceptance": {
+    "atomic_browser_uat": "PASS (sha-verified generation, no console errors, screenshots in artifacts/lb_closure_uat)",
+    "alice_cooper": "PASS — 12 peers incl. AC/DC/Metallica/Iron Maiden, label + note correct, no pilot wording",
+    "second_artist_metallica": "PASS — 12 peers, independent data path",
+    "sparse_artists": "PASS — honest UNKNOWN with 0 edges (e.g. The Sonic Boom Foundation, Gnarwolves); unknown artist key -> 404",
+    "regressions": "PASS — /api/markets (PUBLIC TICKET MARKET), /api/status, /api/demo all load unchanged"
+  },
+  "hosted_staging_acceptance": {
+    "url": "https://festival-bloomberg-terminal-staging.scswitzer.workers.dev",
+    "deploy_run": "https://github.com/Scott-Switzer/festival-bloomberg/actions/runs/34276868834",
+    "deployed_commit": "86740d76cb7409b217a4c8b06dda91459baf6e11",
+    "serving_generation": "terminal_v1_20260908T194538Z",
+    "browser_uat": "PASS (uat_hosted_terminal.py, zero console/page errors, screenshots in artifacts/hosted_staging_uat_closure_v2)",
+    "hosted_checks": [
+      "home loads", "search works", "Alice Cooper loads with correct label + full-corpus peers",
+      "serving generation == terminal_v1_20260908T194538Z (sha match)", "PUBLIC TICKET MARKET 200",
+      "sparse artist honest UNKNOWN", "private APIs 404 on public demo (shortlist/underwrite/pace/backtest/decisions)",
+      "hash deep-route renders with zero page errors", "static JS/CSS 200", "bootstrap restricted to serving artifact only"
+    ]
+  },
+  "gates": {
+    "FULL_CORPUS_INPUT": "VERIFIED",
+    "MAP_COMPLETENESS": "PASS",
+    "REDUCE_COMPLETENESS": "PASS",
+    "GOLD_PUBLICATION": "VERIFIED",
+    "SERVING_FOLD": "VERIFIED",
+    "LOCAL_TERMINAL_ACCEPTANCE": "PASS",
+    "HOSTED_STAGING_ACCEPTANCE": "PASS",
+    "SEMANTIC_AUDIT": "PASS",
+    "SANDBOX_FIXTURE_ROWS": 0,
+    "CI_EXACT_HEAD": "GREEN (86740d76)",
+    "BROWSER_UAT_EXACT_HEAD": "GREEN",
+    "WORKING_TREE_SOURCE_STATE": "CLEAN (serving/, artifacts/, .venv/ ignored generated outputs)",
+    "PR_BODY": "CURRENT"
+  },
+  "verdict": "LISTENBRAINZ_FULL_CORPUS_ACTIVATION_V1 = PASS",
+  "caveats": [
+    "Artist-day month-partition publication remains a partial side output (through 2005-11); not consumed by any product surface.",
+    "24/7-up hosted container is reclaimed when idle; first request after idle incurs a cold start (~1-2 min) which re-verifies the same generation."
+  ]
 }
