@@ -1191,16 +1191,16 @@ def _materialize_r2_parquet_terminal(
                 f"""
                 INSERT INTO artist_peers
                 SELECT
-                    sha256(subject_key || '|' || peer_key || '|pilot'),
+                    sha256(subject_key || '|' || peer_key || '|listenbrainz_affinity'),
                     subject_key, peer_key, a.name AS peer_name,
                     ROW_NUMBER() OVER (
                         PARTITION BY subject_key
                         ORDER BY shared_listeners DESC NULLS LAST, jaccard DESC NULLS LAST, peer_key
                     )::INTEGER AS rank,
                     d.shared_listeners, d.jaccard, d.cosine,
-                    'listenbrainz', 'PILOT_AUDIENCE_DATA', d.knowledge_time,
-                    'DESCRIPTIVE_PILOT',
-                    'Pilot audience affinity only; not demand, ticket intent, or interchangeability.'
+                    'listenbrainz', 'LISTENBRAINZ_CONSUMPTION_AFFINITY', d.knowledge_time,
+                    'DESCRIPTIVE_CONSUMPTION',
+                    'ListenBrainz consumption affinity only; not demand, ticket intent, or interchangeability.'
                 FROM (
                     SELECT subject_key, peer_key, shared_listeners, jaccard, cosine,
                            knowledge_time,
@@ -1538,7 +1538,7 @@ def run_terminal_serving_build(spec: dict, scratch_dir: Path) -> dict:
         #   - silver/events, silver/venues, silver/series (MB event graph)
         #   - metrics/artist_attention_observations export
         #   - events/provider_event_snapshots export
-        #   - gold/listenbrainz_pilot affinity
+        #   - gold/artist_audience_affinity CURRENT (full corpus; pilot fallback)
         #   - silver/wikidata/generations/<run_id>/artist_external_ids.parquet
         fixed_parquet_keys = {
             "events": "silver/events/events.parquet",
@@ -1549,7 +1549,6 @@ def run_terminal_serving_build(spec: dict, scratch_dir: Path) -> dict:
             "series": "silver/series/series.parquet",
             "attention": "metrics/artist_attention_observations/artist_attention_observations.parquet",
             "provider_snapshots": "events/provider_event_snapshots/provider_event_snapshots.parquet",
-            "affinity": "gold/listenbrainz_pilot/artist_audience_affinity.parquet",
         }
         parquets: dict[str, Path] = {}
         for name, key in fixed_parquet_keys.items():
@@ -1562,6 +1561,13 @@ def run_terminal_serving_build(spec: dict, scratch_dir: Path) -> dict:
             parquets[name] = dest
             manifest.source_paths.append(f"r2://{lake.config.lake_bucket}/{key}")
             manifest.r2_read_bytes += size
+
+        # Prefer gold/artist_audience_affinity CURRENT (full-corpus); fall back to pilot.
+        aff_path, aff_key, aff_size = _resolve_affinity(lake, work)
+        parquets["affinity"] = aff_path
+        manifest.source_paths.append(f"r2://{lake.config.lake_bucket}/{aff_key}")
+        manifest.r2_read_bytes += aff_size
+        manifest.params["affinity_source_key"] = aff_key
 
         # Wikidata generation: follow the CURRENT pointer, never guess run_id.
         wd_current = lake.read_checkpoint(
