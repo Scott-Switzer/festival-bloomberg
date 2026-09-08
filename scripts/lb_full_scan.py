@@ -836,8 +836,15 @@ def artifact_manifest_sha256(artifacts: list[dict]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def committed_map_artifacts(s3, ckpt: dict, family: str) -> list[dict]:
-    """Return only exact, verified artifacts from committed map batches."""
+def committed_map_artifacts(
+    s3, ckpt: dict, family: str, *, verify: bool = True
+) -> list[dict]:
+    """Return only exact artifacts from committed map batches.
+
+    verify=True (default) HEADs every object. Affinity must pass verify=False:
+    ~98k listener_artist objects × N workers is pathological; per-partition
+    download still SHA-checks bytes before DuckDB reads them.
+    """
     ensure_map_complete(ckpt)
     target = int(ckpt["map_target_shards"])
     expected_ranges = [
@@ -859,7 +866,8 @@ def committed_map_artifacts(s3, ckpt: dict, family: str) -> list[dict]:
         artifacts = manifests[str(start)]
         if not artifacts:
             raise RuntimeError(f"committed batch {start} has no artifacts")
-        verify_artifact_manifest(s3, artifacts)
+        if verify:
+            verify_artifact_manifest(s3, artifacts)
         family_artifacts = [a for a in artifacts if a["key"].startswith(prefix)]
         if family == "artist_day" and len(family_artifacts) != 1:
             raise RuntimeError(
@@ -874,7 +882,9 @@ def committed_map_artifacts(s3, ckpt: dict, family: str) -> list[dict]:
 
 def committed_listener_artifacts(s3, ckpt: dict) -> list[dict]:
     """Verify explicit present/empty coverage for every batch and partition."""
-    artifacts = committed_map_artifacts(s3, ckpt, "listener_artist")
+    # Do not HEAD-verify ~98k listener objects here — coverage markers +
+    # per-download digests are the reduce-time integrity checks.
+    artifacts = committed_map_artifacts(s3, ckpt, "listener_artist", verify=False)
     target = int(ckpt["map_target_shards"])
     partitions = int(ckpt.get("listener_hash_partitions") or 0)
     if partitions <= 0:
