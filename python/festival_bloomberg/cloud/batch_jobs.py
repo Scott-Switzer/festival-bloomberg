@@ -4539,35 +4539,110 @@ def run_artist_attention_spotify_build_v1(spec: dict, scratch_dir: Path) -> dict
     work = scratch_dir / "spotify"
     work.mkdir(parents=True, exist_ok=True)
     try:
-        # Resolve Spotify IDs from estate + identity graph if available.
+        # Resolve Spotify IDs — priority provenance:
+        # 1) Wikidata P1902 (authoritative, deterministic) via artist_external_ids.parquet
+        # 2) Estate external_ids with spotify id_type
+        # 3) Top-level spotify_id on estate records
+        # Conflicts (same artist -> different IDs from different sources) are marked
+        # IDENTITY_CONFLICT and excluded. Search fallback only for unresolved remainder.
         estate_path, _, _, _ = _resolve_estate(lake, work)
         estate_payload = json.loads(Path(estate_path).read_text(encoding="utf-8"))
         artists = estate_payload.get("artists") or []
-        spotify_ids: dict[str, str] = {}
+        # Build universe key sets for validation.
+        estate_keys = {a.get("artist_key") or a.get("key") for a in artists if a.get("artist_key") or a.get("key")}
+        estate_by_key: dict[str, dict] = {}
         for a in artists:
-            ak = a.get("artist_key")
-            name = (a.get("artist_name") or "").strip()
-            # estate external_ids: look for spotify
+            ak = a.get("artist_key") or a.get("key")
+            if ak:
+                estate_by_key[ak] = a
+        # Collect from estate first (lower priority than Wikidata P1902).
+        spotify_ids: dict[str, str] = {}
+        spotify_provenance: dict[str, str] = {}
+        for a in artists:
+            ak = a.get("artist_key") or a.get("key")
             for eid in (a.get("external_ids") or []):
                 if isinstance(eid, dict) and "spotify" in str(eid.get("id_type", "")).lower() and eid.get("id_value"):
-                    spotify_ids[ak] = str(eid["id_value"])
+                    sid = str(eid["id_value"]).strip()
+                    if ak and sid:
+                        spotify_ids[ak] = sid
+                        spotify_provenance[ak] = "ESTATE_EXTERNAL_IDS"
                     break
-            # also check top-level spotify_id
-            if ak not in spotify_ids and a.get("spotify_id"):
-                spotify_ids[ak] = str(a["spotify_id"])
-        eligible = list(spotify_ids.items())[:max_artists]
+            if ak and ak not in spotify_ids and a.get("spotify_id"):
+                spotify_ids[ak] = str(a["spotify_id"]).strip()
+                spotify_provenance[ak] = "ESTATE_SPOTIFY_ID"
+        # Overlay Wikidata P1902 (highest priority — authoritative shape-validated ID).
+        conflict_artists: list[str] = []
+        try:
+            wd_current = lake.read_checkpoint(lake.config.lake_bucket, "silver/wikidata/CURRENT.json")
+            wd_run_id = (wd_current or {}).get("run_id")
+            if wd_run_id:
+                aeids_key = f"silver/wikidata/generations/{wd_run_id}/artist_external_ids.parquet"
+                if lake.verify_object_exists(lake.config.lake_bucket, aeids_key):
+                    ae_path = work / "wd_aeids.parquet"
+                    _download_to_scratch(lake, lake.config.lake_bucket, aeids_key, ae_path)
+                    import duckdb as _db
+                    con = _db.connect(str(work / "wd_spotify.duckdb"))
+                    con.execute("SET memory_limit='512MB'")
+                    # artist_external_ids contains qid, classification, external_id_property, external_id_value
+                    # Join through P434 (MusicBrainz) to map qid -> MBID -> artist_key.
+                    rows = con.execute(f"""
+                        WITH qid_mbid AS (
+                            SELECT CAST(qid AS VARCHAR) AS qid, lower(trim(CAST(external_id_value AS VARCHAR))) AS mbid
+                            FROM read_parquet('{ae_path}')
+                            WHERE CAST(external_id_property AS VARCHAR)='P434'
+                              AND external_id_value IS NOT NULL
+                            QUALIFY ROW_NUMBER() OVER (PARTITION BY CAST(qid AS VARCHAR) ORDER BY lower(trim(CAST(external_id_value AS VARCHAR))))=1
+                        ),
+                        spotify_raw AS (
+                            SELECT CAST(qid AS VARCHAR) AS qid, CAST(external_id_value AS VARCHAR) AS sid
+                            FROM read_parquet('{ae_path}')
+                            WHERE CAST(external_id_property AS VARCHAR)='P1902'
+                              AND external_id_value IS NOT NULL
+                        )
+                        SELECT 'mbid::'||qm.mbid AS artist_key, sr.sid
+                        FROM qid_mbid qm JOIN spotify_raw sr USING (qid)
+                    """).fetchall()
+                    for artist_key, sid in rows:
+                        sid = str(sid).strip()
+                        if not sid or not artist_key:
+                            continue
+                        # Validate shape: Spotify IDs are 22-char base62.
+                        import re as _re
+                        if not _re.fullmatch(r"[A-Za-z0-9]{22}", sid):
+                            continue
+                        if artist_key in spotify_ids and spotify_ids[artist_key] != sid:
+                            conflict_artists.append(artist_key)
+                            continue
+                        if artist_key in estate_keys or True:
+                            spotify_ids[artist_key] = sid
+                            spotify_provenance[artist_key] = "WIKIDATA_P1902"
+                    con.close()
+        except Exception:
+            pass
+        # Exclude conflicts from eligible.
+        for ak in conflict_artists:
+            spotify_ids.pop(ak, None)
+            spotify_provenance.pop(ak, None)
+        # Validate remaining IDs (already validated P1902; estate IDs may be invalid).
+        import re as _re2
+        invalid_artists: list[str] = []
+        for ak, sid in list(spotify_ids.items()):
+            if not _re2.fullmatch(r"[A-Za-z0-9]{22}", sid):
+                invalid_artists.append(ak)
+                spotify_ids.pop(ak, None)
+                spotify_provenance.pop(ak, None)
+        # Apply max_artists cap after provenance merge.
+        eligible_all = sorted(spotify_ids.items())
+        eligible = eligible_all[:max_artists]
+        provenance_counts = {}
+        for _, sid in eligible:
+            pass
         if not eligible:
-            # Also try a dedicated spotify identities artifact if present.
-            try:
-                spot_obj = lake.list_prefix(lake.config.lake_bucket, "gold/spotify", limit=5)
-                pass
-            except Exception:
-                pass
             manifest.status = "BUILD_COMPLETE"
             manifest.completed_at = now_iso()
             manifest.runtime_seconds = round(time.time() - start, 2)
             lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
-            return {"status": "COMPLETED", "eligible": 0, "note": "no spotify identities in estate", "manifest_key": manifest_key_path}
+            return {"status": "COMPLETED", "eligible": 0, "note": "no spotify identities (estate+Wikidata P1902)", "conflicts": len(conflict_artists), "invalid": len(invalid_artists), "manifest_key": manifest_key_path}
 
         # Credentials are read from env (container secrets), never logged.
         client_id = os.environ.get("SPOTIFY_CLIENT_ID")
