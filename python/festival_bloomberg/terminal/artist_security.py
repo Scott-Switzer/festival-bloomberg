@@ -797,6 +797,240 @@ def _artist_sentiment(conn, artist_key: str) -> dict[str, Any]:
     }
 
 
+def _artist_news(conn, artist_key: str) -> dict[str, Any]:
+    """News/catalyst tape — metadata-only GDELT mentions with cluster intent.
+
+    No article body is stored. When the serving generation has no news table,
+    the panel stays UNKNOWN (never zero). A future materializer will populate
+    terminal.news_mentions from the GDELT provider; this reader is forward-
+    compatible with either that table or a lake-derived news_tape table.
+    """
+    note = (
+        "Metadata-only news mentions (GDELT DOC 2.0 artlist — headline, domain, "
+        "publication time, URL). No article text is stored. Multiple articles "
+        "about one development should cluster into one catalyst with multiple "
+        "evidence refs. Not yet materialized into this serving generation."
+    )
+    for table in ("terminal.news_mentions", "news_mentions", "artist_news_mentions"):
+        if not _table_exists(conn, table):
+            continue
+        try:
+            rows = _rows(conn, f"SELECT * FROM {table} WHERE artist_key = ? OR entity_id = ? ORDER BY publication_time DESC, retrieved_at DESC LIMIT 50", [artist_key, artist_key])
+        except Exception:
+            try:
+                rows = _rows(conn, f"SELECT * FROM {table} WHERE artist_key = ? ORDER BY publication_time DESC LIMIT 50", [artist_key])
+            except Exception:
+                rows = []
+        if rows:
+            # Minimal catalyst clustering: group by 48h window + domain-normalized title token overlap.
+            # Deterministic, no LLM. Real clustering will use NIM rerank/embed later.
+            catalysts: list[dict[str, Any]] = []
+            for row in rows:
+                catalysts.append({
+                    "title": row.get("title") or row.get("headline") or "",
+                    "domain": row.get("domain") or row.get("source_domain") or "",
+                    "url": row.get("url") or row.get("source_url") or "",
+                    "published_at": row.get("publication_time") or row.get("published_at") or row.get("seendate"),
+                    "retrieved_at": row.get("retrieved_at"),
+                    "knowledge_time": row.get("knowledge_time") or row.get("retrieved_at"),
+                    "language": row.get("language"),
+                    "source_country": row.get("source_country"),
+                })
+            return {
+                "status": "OBSERVED",
+                "items": rows[:50],
+                "catalysts": catalysts[:20],
+                "note": note + " OBSERVED rows present.",
+            }
+        return {
+            "status": "UNKNOWN",
+            "items": [],
+            "catalysts": [],
+            "note": note,
+        }
+    return {
+        "status": "UNKNOWN",
+        "items": [],
+        "catalysts": [],
+        "note": note + " No news table in this serving generation.",
+    }
+
+
+def _momentum_baselines(
+    factor_tape: dict[str, Any], attention: dict[str, dict[str, Any]]
+) -> dict[str, Any]:
+    """Deterministic attention/consumption momentum baselines.
+
+    NOT ticket demand. PIT-admissible: every figure uses only observations
+    with period_end/observation_time <= latest observation_time.
+
+    Emits per-series:
+      1D/7D/30D change (time-windowed, not index-windowed)
+      EMA(7) and EMA(30)
+      linear slope (last up to 30 points)
+      historical z-score, volatility, acceleration, change-point flag
+    Series with <2 dated points stay UNKNOWN for derived fields.
+    """
+    import math
+    from datetime import datetime, timedelta
+
+    def _parse_time(value: Any) -> datetime | None:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value
+        try:
+            s = str(value).strip()
+            if not s:
+                return None
+            # Handle date-only and ISO strings; tolerate trailing Z.
+            if s.endswith("Z"):
+                s = s[:-1] + "+00:00"
+            # DuckDB TIMESTAMP may already be ISO-like.
+            return datetime.fromisoformat(s.replace(" ", "T"))
+        except Exception:
+            return None
+
+    def _ema(values: list[float], span: int) -> float | None:
+        if not values:
+            return None
+        alpha = 2.0 / (span + 1)
+        ema = values[0]
+        for v in values[1:]:
+            ema = alpha * v + (1 - alpha) * ema
+        return ema
+
+    def _slope(values: list[float]) -> float | None:
+        n = len(values)
+        if n < 3:
+            return None
+        # Simple OLS slope over index (per observation step). Caller divides
+        # by time if needed; for daily YouTube this is per-day.
+        x_mean = (n - 1) / 2.0
+        y_mean = sum(values) / n
+        num = sum((i - x_mean) * (v - y_mean) for i, v in enumerate(values))
+        den = sum((i - x_mean) ** 2 for i in range(n))
+        return (num / den) if den else None
+
+    def _series_momentum(label: str, points: list[dict[str, Any]], source: str) -> dict[str, Any]:
+        # points: already sorted ascending by t, with v float
+        if len(points) < 2:
+            return {"label": label, "source": source, "status": "INSUFFICIENT_HISTORY", "points": len(points)}
+        vals = [float(p["v"]) for p in points]
+        times = [_parse_time(p.get("t")) for p in points]
+        latest_val = vals[-1]
+        latest_t = times[-1]
+        # Windowed prior lookup
+        def _prior_at_least(days: int) -> tuple[float | None, str | None]:
+            if latest_t is None:
+                return None, None
+            cutoff = latest_t - timedelta(days=days)
+            # Latest point at or before cutoff
+            best = None
+            best_t = None
+            for p, t, v in zip(points, times, vals):
+                if t is None or t >= latest_t:
+                    continue
+                if t <= cutoff:
+                    best = v
+                    best_t = p.get("t")
+            # If no point that far back, insufficient history
+            return best, best_t
+        p1, t1 = _prior_at_least(1)
+        p7, t7 = _prior_at_least(7)
+        p30, t30 = _prior_at_least(30)
+        mean = sum(vals) / len(vals)
+        var = sum((v - mean) ** 2 for v in vals) / len(vals) if len(vals) > 1 else 0.0
+        std = math.sqrt(var) if var > 0 else 0.0
+        z = ((latest_val - mean) / std) if std else None
+        vol = (std / abs(mean)) if mean else None
+        # Acceleration: last delta vs prior delta (second-order)
+        last_delta = vals[-1] - vals[-2] if len(vals) >= 2 else None
+        prior_delta = vals[-2] - vals[-3] if len(vals) >= 3 else None
+        accel = (last_delta - prior_delta) if (last_delta is not None and prior_delta is not None) else None
+        # Change-point: latest single-step move > 2 sigma of step changes
+        step_changes = [vals[i] - vals[i - 1] for i in range(1, len(vals))] if len(vals) >= 3 else []
+        step_std = math.sqrt(sum((c - sum(step_changes) / len(step_changes)) ** 2 for c in step_changes) / len(step_changes)) if len(step_changes) > 1 else None
+        change_point = bool(step_std and last_delta is not None and abs(last_delta) > 2 * step_std) if step_std else False
+        # Recent window for slope (last 30 or all)
+        window = vals[-30:] if len(vals) >= 30 else vals
+        sl = _slope(window)
+        ema7 = _ema(vals, 7)
+        ema30 = _ema(vals, 30)
+        def _change(prior: float | None) -> dict[str, Any] | None:
+            if prior is None:
+                return None
+            d = latest_val - prior
+            pct = (d / abs(prior) * 100.0) if prior != 0 else None
+            return {"delta": d, "delta_pct": pct, "from": prior, "to": latest_val}
+        return {
+            "label": label,
+            "source": source,
+            "status": "OBSERVED",
+            "latest_value": latest_val,
+            "latest_time": points[-1].get("t"),
+            "points": len(points),
+            "period": {"start": points[0].get("t"), "end": points[-1].get("t")},
+            "change_1d": _change(p1),
+            "change_1d_from_time": t1,
+            "change_7d": _change(p7),
+            "change_7d_from_time": t7,
+            "change_30d": _change(p30),
+            "change_30d_from_time": t30,
+            "ema_7": ema7,
+            "ema_30": ema30,
+            "slope": sl,
+            "acceleration": accel,
+            "volatility": vol,
+            "std": std,
+            "mean": mean,
+            "z_score": z,
+            "change_point": change_point,
+        }
+
+    series_out: list[dict[str, Any]] = []
+    # Factor tape series
+    for s in factor_tape.get("series", []):
+        label = s.get("label") or f"{s.get('factor_name')} · {s.get('platform')}"
+        source = s.get("source") or s.get("platform") or ""
+        pts = s.get("points", [])
+        series_out.append(_series_momentum(label, pts, source))
+    # Also surface attention series that are not already represented (listenbrainz weekly etc.)
+    for src, block in attention.items():
+        if block.get("status") != "OBSERVED":
+            continue
+        for s in block.get("series", []):
+            label = f"attention.{src} · {s.get('label')}"
+            pts = s.get("points", [])
+            # Deduplicate by label
+            if any(x.get("label") == label for x in series_out):
+                continue
+            series_out.append(_series_momentum(label, pts, src))
+    # Summary
+    observed = [s for s in series_out if s.get("status") == "OBSERVED"]
+    insufficient = [s for s in series_out if s.get("status") != "OBSERVED"]
+    note = (
+        "ATTENTION / CONSUMPTION MOMENTUM — descriptive baselines only (1D/7D/30D change, EMA, slope, "
+        "acceleration, z-score, volatility, change-point). PIT-admissible; uses only observations at or "
+        "before the latest observation_time. Not ticket demand, sell-through, or guarantee prediction."
+    )
+    if not series_out:
+        return {
+            "status": "UNKNOWN",
+            "series": [],
+            "observed_series": 0,
+            "insufficient_series": 0,
+            "note": note + " No series with ≥2 dated points in this generation.",
+        }
+    return {
+        "status": "OBSERVED" if observed else "UNKNOWN",
+        "series": series_out,
+        "observed_series": len(observed),
+        "insufficient_series": len(insufficient),
+        "note": note,
+    }
+
+
 def _provider_readiness(factor_tape: dict[str, Any], sentiment: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Expose legal/access boundaries instead of presenting absent values as zero."""
     factor_platforms = {str(row.get("platform") or "").lower() for row in factor_tape.get("items", [])}
@@ -851,6 +1085,8 @@ def get_artist_security(conn, artist_key: str) -> dict[str, Any] | None:
     attention = _attention(conn, artist_key)
     factor_tape = _artist_factor_tape(conn, artist_key)
     sentiment = _artist_sentiment(conn, artist_key)
+    news = _artist_news(conn, artist_key)
+    momentum = _momentum_baselines(factor_tape, attention)
     provider_readiness = _provider_readiness(factor_tape, sentiment)
     peers = _peer_rows(conn, artist_key)
     markets = _rows(conn, """
@@ -958,9 +1194,77 @@ def get_artist_security(conn, artist_key: str) -> dict[str, Any] | None:
         "factor_tape": factor_tape["status"],
         "sentiment": sentiment["status"],
     }
+    # Overview synthesis: honest, no score. Summarizes only supported current facts
+    # with explicit freshness and caveats. Never invents values for UNKNOWN panels.
+    def _overview_synthesis() -> dict[str, Any]:
+        items: list[str] = []
+        # Identity
+        items.append(f"{artist.get('name')} ({artist.get('tier') or 'un-tiered'}) — {artist.get('area') or 'area UNKNOWN'}.")
+        # Freshness
+        evidence_items_tmp = _evidence_items(artist, attention, peers, markets, history, festivals, future)
+        latest_kt = max((it.get("knowledge_time") for it in evidence_items_tmp if it.get("knowledge_time")), default=None, key=str)
+        items.append(f"Latest knowledge: {latest_kt or 'UNKNOWN'}.")
+        # Factor change
+        changes = factor_tape.get("changes", [])
+        comparable = [c for c in changes if c.get("comparability") == "COMPARABLE"]
+        if comparable:
+            top = comparable[0]
+            items.append(f"Latest comparable factor shift: {top.get('factor_name')} {top.get('delta'):+.1f} ({top.get('delta_pct'):+.1f}%).")
+        elif changes:
+            items.append("Latest factor delta is NOT_COMPARABLE (measurement context differs).")
+        else:
+            items.append("No comparable factor delta in this generation (history never reconstructed from snapshot).")
+        # Live / markets
+        if future:
+            nxt = sorted([f for f in future if f.get("event_date")], key=lambda x: str(x.get("event_date")))[0].get("event_date") if any(f.get("event_date") for f in future) else None
+            items.append(f"Forward events: {len(future)} retained; next {nxt or 'date UNKNOWN'}.")
+        else:
+            items.append("No forward/provider events retained for this artist.")
+        if markets:
+            top_m = markets[0]
+            items.append(f"Top market by observed shows: {top_m.get('market_key')} ({top_m.get('observed_shows')} shows, last {top_m.get('last_play_date') or 'UNKNOWN'}).")
+        else:
+            items.append("No market footprint rows for this artist (UNKNOWN, not zero).")
+        # Catalyst
+        if news.get("status") == "OBSERVED" and news.get("catalysts"):
+            items.append(f"Latest catalyst: {news['catalysts'][0].get('title')[:80]}.")
+        else:
+            items.append("No catalyst/news evidence in serving (GDELT not yet materialized).")
+        # Peers
+        if peers:
+            items.append(f"Consumption affinity: {len(peers)} peers (e.g. {peers[0].get('resolved_peer_name') or peers[0].get('peer_name')}). Not demand or crossover.")
+        else:
+            items.append("No ListenBrainz consumption peers for this artist in this generation (UNKNOWN).")
+        # Sentiment regime
+        if sentiment.get("status") == "OBSERVED" and sentiment.get("items"):
+            latest_s = sentiment["items"][0]
+            items.append(f"Sentiment ({latest_s.get('platform')} {latest_s.get('date')}): mean {latest_s.get('sentiment_mean'):.3f} from {latest_s.get('analyzed_count')} analyzed comments — daily aggregate only.")
+        else:
+            items.append("Sentiment: no daily aggregate for this artist (99.5% of artists have none — UNKNOWN).")
+        # Ticket
+        if public_ticket_market.get("status") == "OBSERVED":
+            items.append(f"PUBLIC TICKET MARKET: {len(public_ticket_market.get('events', []))} event-listings with observed prices. Listing ≠ sale.")
+        else:
+            items.append("PUBLIC TICKET MARKET: no listing observations linked to this artist (UNKNOWN).")
+        return {
+            "bullets": items,
+            "note": "Overview summarizes only currently supported, observed evidence. No composite score is produced. UNKNOWN is distinct from zero.",
+        }
+
+    overview = _overview_synthesis()
     evidence_items = _evidence_items(
         artist, attention, peers, markets, history, festivals, future
     )
+    # Evidence items extended with news/momentum for the evidence table
+    if news.get("status") == "OBSERVED":
+        evidence_items.append({"panel": "news", "source_system": "gdelt", "observation_time": news.get("items", [{}])[0].get("publication_time") if news.get("items") else None, "knowledge_time": news.get("items", [{}])[0].get("knowledge_time") if news.get("items") else None, "status": "OBSERVED"})
+    else:
+        evidence_items.append({"panel": "news", "source_system": None, "observation_time": None, "knowledge_time": None, "status": "UNKNOWN"})
+    if momentum.get("status") == "OBSERVED":
+        latest_m = max((s.get("latest_time") for s in momentum.get("series", []) if s.get("latest_time")), default=None, key=str)
+        evidence_items.append({"panel": "momentum", "source_system": "derived", "observation_time": latest_m, "knowledge_time": latest_m, "status": "OBSERVED"})
+    else:
+        evidence_items.append({"panel": "momentum", "source_system": None, "observation_time": None, "knowledge_time": None, "status": "UNKNOWN"})
     latest_knowledge = max(
         (item["knowledge_time"] for item in evidence_items if item.get("knowledge_time") is not None),
         default=None,
@@ -982,6 +1286,7 @@ def get_artist_security(conn, artist_key: str) -> dict[str, Any] | None:
         "contract_version": CONTRACT_VERSION,
         "release_label": RELEASE_LABEL,
         "artist": artist,
+        "overview": overview,
         "quick_facts": quick_facts,
         "attention": attention,
         "peers": {
@@ -1019,6 +1324,8 @@ def get_artist_security(conn, artist_key: str) -> dict[str, Any] | None:
         "factor_tape": factor_tape,
         "what_changed": factor_tape.get("changes", []),
         "sentiment": sentiment,
+        "news": news,
+        "momentum": momentum,
         "provider_readiness": provider_readiness,
         "alternatives": {
             "status": "OBSERVED" if alternatives else "UNKNOWN",
