@@ -2551,23 +2551,37 @@ def run_artist_attention_wikimedia_build_v1(spec: dict, scratch_dir: Path) -> di
                 artists = estate_payload.get("artists") or []
             except Exception:
                 artists = []
-            # Build eligible: artists that have an enwiki title via wd_titles
-            for a in artists:
-                ak = a.get("artist_key")
-                if not ak or ak not in wd_titles:
-                    continue
-                title = wd_titles[ak]
-                if not title or not title.strip():
-                    continue
-                eligible.append({"artist_key": ak, "title": title.strip()})
-                if len(eligible) >= max_artists:
-                    break
-            # If wd_titles yielded nothing (e.g. no sitelinks), fall back to estate name as title probe
-            # (still PIT-correct; 404 will be persisted as missing, never zero).
+            # Build eligible: artists that have an enwiki title via wd_titles.
+            # Estate shape uses `key`/`name`, not `artist_key`/`artist_name` —
+            # normalize both, and also fall back to estate name when no
+            # sitelinks artifact exists (the current wikidata generation has
+            # no entity_sitelinks.parquet, so wd_titles is expected empty).
+            def _estate_key(a: dict) -> str | None:
+                v = a.get("artist_key") or a.get("key")
+                return str(v).strip() if v else None
+            def _estate_name(a: dict) -> str:
+                return str(a.get("artist_name") or a.get("name") or "").strip()
+            # Prefer wd_titles when available (authoritative sitelink).
+            if wd_titles:
+                for a in artists:
+                    ak = _estate_key(a)
+                    if not ak or ak not in wd_titles:
+                        continue
+                    title = wd_titles[ak]
+                    if not title or not title.strip():
+                        continue
+                    eligible.append({"artist_key": ak, "title": title.strip()})
+                    if len(eligible) >= max_artists:
+                        break
+            # No sitelinks artifact in this generation or no overlap: probe
+            # the estate display name as the enwiki title. The pageviews
+            # fetch itself distinguishes ok/missing (404) — missing is never
+            # coerced to zero, so probing is PIT-correct. This unblocks the
+            # moat while sitelinks are re-derived in a future wikidata build.
             if not eligible and artists:
                 for a in artists[:max_artists]:
-                    ak = a.get("artist_key")
-                    name = (a.get("artist_name") or "").strip()
+                    ak = _estate_key(a)
+                    name = _estate_name(a)
                     if not ak or not name:
                         continue
                     eligible.append({"artist_key": ak, "title": name})

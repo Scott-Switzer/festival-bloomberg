@@ -48,6 +48,12 @@ TASK_LANE_PRIORITY: dict[str, list[Lane]] = {
     "PROMOTER_EVENT_PAGE": [Lane.OWNED_HTTP, Lane.MONID, Lane.OWNED_BROWSER],
     "REDDIT_SEARCH": [Lane.MONID, Lane.APIFY, Lane.OWNED_HTTP],
     "SOUNDCLOUD_TRACKS": [Lane.OWNED_HTTP, Lane.MONID, Lane.APIFY],
+    # Compute lanes — EXECUTION_MARKETPLACE_V1 extension (P29). The router now
+    # also chooses a compute lane, not just a data provider. Heavy batch
+    # workloads stream from R2 and run on Hetzner; light jobs stay on Cloudflare.
+    "HEAVY_BATCH": [Lane.HETZNER_PLAYWRIGHT, Lane.OWNED_HTTP],
+    "WARC_PARSE": [Lane.HETZNER_PLAYWRIGHT, Lane.OWNED_HTTP],
+    "EMBED_BULK": [Lane.HETZNER_PLAYWRIGHT, Lane.OFFICIAL_API],
 }
 
 
@@ -107,12 +113,29 @@ def _ledger_cost_per_1k_unique(task_type: str, lane: Lane) -> float | None:
     return None
 
 
+# ── Compute-lane extension ────────────────────────────────────────────
+# The marketplace chooses both a DATA lane and a COMPUTE lane (P29/P30).
+# Cost is compared as cost_per_1k_unique (procurement ledger) when available;
+# otherwise provider list-price or self-hosted estimate.
+COMPUTE_LANE_PRIORITY: dict[str, list[str]] = {
+    # task -> ordered compute candidates (cheapest first when quality is equal)
+    "SCRAPE": ["CLOUDFLARE_WORKER", "HETZNER_CLOUD_CPU", "CLOUDFLARE_BROWSER"],
+    "BROWSER_SCRAPE": ["HETZNER_CLOUD_CPU", "CLOUDFLARE_BROWSER"],
+    "HEAVY_BATCH": ["HETZNER_CLOUD_CPU", "CLOUDFLARE_WORKER"],
+    "WARC_PARSE": ["HETZNER_CLOUD_CPU"],
+    "EMBED_BULK": ["HETZNER_CLOUD_CPU", "NIM_FREE"],
+    "CLASSIFY_BULK": ["HETZNER_CLOUD_CPU", "NIM_FREE"],
+}
+
+
 class MarketplaceRouter:
     """Cost/quality router — picks the cheapest lane that meets SLA.
 
     Provider health/config is checked live (env present, no values logged).
     When a procurement ledger exists, it drives primary selection; otherwise
     list-price + health drives it. Every decision is recorded for audit.
+
+    P29 extension: also routes to a COMPUTE lane via :meth:`decide_compute`.
     """
 
     def __init__(self, providers: dict[str, Any] | None = None):
@@ -221,3 +244,32 @@ class MarketplaceRouter:
 
     def cost_per_1k_unique(self, task_type: str, lane: Lane) -> float | None:
         return _ledger_cost_per_1k_unique(task_type, lane)
+
+    # ── Execution marketplace (P29/P30) ───────────────────────────────
+    def decide_compute(self, *, task: str, hetzner_available: bool = False) -> dict[str, Any]:
+        """Choose a compute lane for a task (no network, pure logic).
+
+        Hetzner GPU is not yet provisioned — see GEX45 economics research.
+        """
+        t = (task or "SCRAPE").upper()
+        candidates = COMPUTE_LANE_PRIORITY.get(t, ["CLOUDFLARE_WORKER", "HETZNER_CLOUD_CPU"])
+        # Filter by availability
+        available = []
+        for c in candidates:
+            if c == "HETZNER_CLOUD_CPU" and not hetzner_available:
+                continue
+            if c == "HETZNER_GPU_FUTURE":
+                continue  # BLOCKED_BY_ROBOT_CREDENTIAL — never choose in pilot
+            available.append(c)
+        # Fallback: at least one worker type exists on Cloudflare
+        if not available:
+            available = ["CLOUDFLARE_WORKER"]
+        primary = available[0]
+        fallback = available[1] if len(available) > 1 else None
+        return {
+            "task": t,
+            "compute_primary": primary,
+            "compute_fallback": fallback,
+            "candidates": candidates,
+            "hetzner_available": hetzner_available,
+        }
