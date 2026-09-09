@@ -234,6 +234,26 @@ class WikimediaProvider(ProviderScaffold):
     quota_note = "pageviews/edits attention series"
 
 
+class BlueskyProvider(ProviderScaffold):
+    name = "bluesky"
+    auth_required = False
+    implemented = True  # canonical acquisition.providers.bluesky.BlueskyProvider
+    rights_status = "OPEN_COMMERCIAL_OK"
+    commercial_use_status = "OPEN_COMMERCIAL_OK"
+    license = None
+    quota_note = "public AppView searchPosts (no auth); 1 req/sec; fan-generated discourse"
+
+
+class XProvider(ProviderScaffold):
+    name = "x"
+    env_keys = ("X_BEARER_TOKEN", "TWITTER_BEARER_TOKEN", "BEARER_TOKEN")
+    auth_required = True
+    implemented = True  # canonical acquisition.providers.x_twitter.XProvider
+    rights_status = "TERMS_REVIEW_REQUIRED"
+    commercial_use_status = "TERMS_REVIEW_REQUIRED"
+    quota_note = "X API v2 recent search (paid); 429→RATE_LIMITED; official only, never scraping"
+
+
 class CommonCrawlProvider(ProviderScaffold):
     name = "commoncrawl"
     auth_required = False
@@ -311,6 +331,8 @@ ALL_PROVIDERS: list[type[ProviderScaffold]] = [
     MonidProvider,
     MusicBrainzProvider,
     WikimediaProvider,
+    BlueskyProvider,
+    XProvider,
     CommonCrawlProvider,
     SoundchartsProvider,
     ChartmetricProvider,
