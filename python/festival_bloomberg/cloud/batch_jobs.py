@@ -2517,8 +2517,8 @@ def run_artist_attention_wikimedia_build_v1(spec: dict, scratch_dir: Path) -> di
                     if has_sitelinks and has_aeids:
                         sl_path = work / "sitelinks.parquet"
                         ae_path = work / "aeids.parquet"
-                        _download_to_scratch(lake, lake.config.lake_bucket, sitelinks_key, sl_path, 512 * 1024 * 1024)
-                        _download_to_scratch(lake, lake.config.lake_bucket, aeids_key, ae_path, 512 * 1024 * 1024)
+                        _download_to_scratch(lake, lake.config.lake_bucket, sitelinks_key, sl_path)
+                        _download_to_scratch(lake, lake.config.lake_bucket, aeids_key, ae_path)
                         con = duckdb.connect(str(work / "wd_titles.duckdb"))
                         con.execute("SET memory_limit='512MB'")
                         rows = con.execute(f"""
@@ -2601,7 +2601,7 @@ def run_artist_attention_wikimedia_build_v1(spec: dict, scratch_dir: Path) -> di
         if parent_payload and parent_payload.get("object_key"):
             try:
                 p_path = work / "parent.parquet"
-                _download_to_scratch(lake, lake.config.lake_bucket, parent_payload["object_key"], p_path, 512 * 1024 * 1024)
+                _download_to_scratch(lake, lake.config.lake_bucket, parent_payload["object_key"], p_path)
                 con = duckdb.connect(str(work / "parent_meta.duckdb"))
                 rows = con.execute(f"SELECT artist_key, MAX(CAST(period_end AS VARCHAR)) FROM read_parquet('{p_path}') GROUP BY artist_key").fetchall()
                 for ak, mx in rows:
@@ -2617,7 +2617,7 @@ def run_artist_attention_wikimedia_build_v1(spec: dict, scratch_dir: Path) -> di
             lake_key = f"{WIKIMEDIA_LAKE_PREFIX}/artist_attention_observations.parquet"
             if lake.verify_object_exists(lake.config.lake_bucket, lake_key):
                 lk_path = work / "lake_attn.parquet"
-                _download_to_scratch(lake, lake.config.lake_bucket, lake_key, lk_path, 512 * 1024 * 1024)
+                _download_to_scratch(lake, lake.config.lake_bucket, lake_key, lk_path)
                 con = duckdb.connect(str(work / "lake_meta.duckdb"))
                 rows = con.execute(f"""
                     SELECT artist_key, MAX(CAST(period_end AS VARCHAR))
@@ -3967,7 +3967,7 @@ def run_social_observations_build_v1(spec: dict, scratch_dir: Path) -> dict:
         if parent_payload and parent_payload.get("object_key"):
             try:
                 p_path = work / "parent_social.parquet"
-                _download_to_scratch(lake, lake.config.lake_bucket, parent_payload["object_key"], p_path, 512 * 1024 * 1024)
+                _download_to_scratch(lake, lake.config.lake_bucket, parent_payload["object_key"], p_path)
                 import pyarrow.parquet as pq  # noqa: F401
                 import duckdb  # noqa: F401
                 con0 = duckdb.connect(str(work / "parent_social_meta.duckdb"))
@@ -4225,7 +4225,7 @@ def run_moat_scoreboard_build_v1(spec: dict, scratch_dir: Path) -> dict:
                 return {"gold_current": None, "rows": None, "distinct_artists": None, "fresh_24h": None, "fresh_7d": None, "fresh_30d": None, "oldest": None, "latest": None, "depth": None, "state": "NO_GOLD"}
             try:
                 p = work / f"sb_{prefix.replace('/', '_')}.parquet"
-                _download_to_scratch(lake, lake.config.lake_bucket, cur["object_key"], p, 512 * 1024 * 1024)
+                _download_to_scratch(lake, lake.config.lake_bucket, cur["object_key"], p)
                 con = duckdb.connect(str(work / f"sb_{prefix.replace('/', '_')}.duckdb"))
                 cols = {r[0] for r in con.execute(f"DESCRIBE SELECT * FROM read_parquet('{p}')").fetchall()}
                 # distinct artists
@@ -4484,7 +4484,7 @@ def run_artist_attention_spotify_build_v1(spec: dict, scratch_dir: Path) -> dict
         if parent_payload and parent_payload.get("object_key"):
             try:
                 p_path = work / "parent_spotify.parquet"
-                _download_to_scratch(lake, lake.config.lake_bucket, parent_payload["object_key"], p_path, 512 * 1024 * 1024)
+                _download_to_scratch(lake, lake.config.lake_bucket, parent_payload["object_key"], p_path)
                 import duckdb
                 con0 = duckdb.connect(str(work / "parent_spotify_meta.duckdb"))
                 parent_rows = int(con0.execute(f"SELECT COUNT(*) FROM read_parquet('{p_path}')").fetchone()[0])
