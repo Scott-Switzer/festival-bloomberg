@@ -409,6 +409,7 @@ export class BatchContainer extends DurableObject<BatchEnv> {
       const lakeJobTypes = new Set([
         "artist_factor_tape_build_v1",
         "artist_sentiment_build_v1",
+        "artist_attention_wikimedia_build_v1",
         "terminal_serving_build_v1",
         "listenbrainz_tar_map",
         "listenbrainz_tar_reduce",

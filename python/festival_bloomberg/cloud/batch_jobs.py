@@ -2415,6 +2415,475 @@ def run_artist_sentiment_build(spec: dict, scratch_dir: Path) -> dict:
 
 
 # ════════════════════════════════════════════════════════════════
+# ARTIST ATTENTION — WIKIMEDIA CONTINUOUS TAPE (P1)
+# ════════════════════════════════════════════════════════════════
+
+WIKIMEDIA_GOLD_PREFIX = "gold/artist_attention_wikimedia"
+WIKIMEDIA_GOLD_CURRENT = f"{WIKIMEDIA_GOLD_PREFIX}/CURRENT.json"
+WIKIMEDIA_LAKE_PREFIX = "metrics/artist_attention_observations"
+
+
+def run_artist_attention_wikimedia_build_v1(spec: dict, scratch_dir: Path) -> dict:
+    """Incremental Wikimedia daily-pageviews catchup — production-capable.
+
+    Uses the existing ``wikimedia_historical`` daily collector and the
+    ``WIKIMEDIA_AVAILABILITY_POLICY_V1`` (available_at = observation_day + 1).
+    One request covers a bounded date RANGE (chunk_days, default 400) — not one
+    request per day. Checkpoint / resume, bounded concurrency, PIT-correct
+    observation_time / knowledge_time / retrieved_at.
+
+    Contract:
+      eligible = artists with resolvable enwiki title (Wikidata sitelinks \
+                 preferred, estate fallback).
+      For each eligible: last_observation = MAX(period_end) where
+        source_system='wikimedia' (from lake parquet or Gold parent).
+      missing = (last + 1) .. latest_admissible (yesterday).
+      Fetch missing ranges via Wikimedia REST, persist one row per day
+        with observation_key = hash(artist_key, day), period_start=end=day,
+        knowledge_time = available_at, retrieved_at = fetch time.
+      Merge parent + new rows (deduped), verify, publish CURRENT.
+    """
+    lake = _get_lake()
+    job_id = spec.get("job_id", "artist_attention_wikimedia_build_v1")
+    params = spec.get("params", {}) or {}
+    max_artists = int(params.get("max_artists") or 10000)
+    chunk_days = int(params.get("chunk_days") or 400)
+    min_interval = float(params.get("min_interval_seconds") or 0.30)
+    batch_size = int(params.get("batch_size") or 64)
+    if max_artists < 1 or max_artists > 25000:
+        raise ValueError("max_artists must be in [1, 25000]")
+    if chunk_days < 1 or chunk_days > 400:
+        raise ValueError("chunk_days must be in [1, 400]")
+
+    manifest = new_manifest(
+        job_type="artist_attention_wikimedia_build_v1",
+        job_id=job_id,
+        code_commit=_git_commit(),
+        container_image="festival-bloomberg-batch:latest",
+        params=params,
+    )
+    manifest_key_path = manifest_key("artist_attention_wikimedia_build_v1", job_id)
+    start = time.time()
+    work = scratch_dir / "wikimedia"
+    work.mkdir(parents=True, exist_ok=True)
+    try:
+        from datetime import date, timedelta
+        from festival_bloomberg.attention.wikimedia_pageviews import (
+            WIKIMEDIA_SERIES_START,
+            wikimedia_available_at,
+        )
+        from festival_bloomberg.attention.wikimedia_historical import (
+            batch_persist_daily_rows,
+            daily_observation_key,
+        )
+        import duckdb
+        import pyarrow.parquet as pq
+
+        # ── checkpoint / plan ──
+        control = f"control/jobs/artist_attention_wikimedia_build_v1/{job_id}"
+        plan_key = f"{control}/plan.json"
+        ckpt_key = f"{control}/checkpoint.json"
+        plan, _ = lake.read_versioned_json(lake.config.lake_bucket, plan_key)
+        ckpt = lake.read_checkpoint(lake.config.lake_bucket, ckpt_key) or {
+            "completed": [],
+            "per_artist": {},
+            "new_rows": 0,
+        }
+        completed_set = set(ckpt.get("completed") or [])
+
+        # ── latest admissible day (PIT) ──
+        today = date.today()
+        latest_admissible = today - timedelta(days=1)
+        # available_at for latest_admissible is today, so it IS admissible today.
+        # No retrieved_at gate.
+        if latest_admissible < WIKIMEDIA_SERIES_START:
+            raise RuntimeError("WIKIMEDIA_NO_ADMISSIBLE_DAY")
+
+        # ── resolve eligible enwiki titles ──
+        # Prefer Wikidata sitelinks generation (authoritative), fallback to estate.
+        eligible: list[dict] = []  # {artist_key, title}
+        if plan is None:
+            # 1) Try Wikidata CURRENT generation
+            wd_current = lake.read_checkpoint(lake.config.lake_bucket, "silver/wikidata/CURRENT.json")
+            wd_run_id = (wd_current or {}).get("run_id")
+            wd_titles: dict[str, str] = {}  # mbid -> title
+            if wd_run_id:
+                # sitelinks parquet holds (qid, site, title); join via artist_external_ids P434
+                try:
+                    sitelinks_key = f"silver/wikidata/generations/{wd_run_id}/entity_sitelinks.parquet"
+                    aeids_key = f"silver/wikidata/generations/{wd_run_id}/artist_external_ids.parquet"
+                    has_sitelinks = lake.verify_object_exists(lake.config.lake_bucket, sitelinks_key)
+                    has_aeids = lake.verify_object_exists(lake.config.lake_bucket, aeids_key)
+                    if has_sitelinks and has_aeids:
+                        sl_path = work / "sitelinks.parquet"
+                        ae_path = work / "aeids.parquet"
+                        _download_to_scratch(lake, lake.config.lake_bucket, sitelinks_key, sl_path, 512 * 1024 * 1024)
+                        _download_to_scratch(lake, lake.config.lake_bucket, aeids_key, ae_path, 512 * 1024 * 1024)
+                        con = duckdb.connect(str(work / "wd_titles.duckdb"))
+                        con.execute("SET memory_limit='512MB'")
+                        rows = con.execute(f"""
+                            WITH qid_mbid AS (
+                                SELECT CAST(qid AS VARCHAR) AS qid, lower(trim(CAST(external_id_value AS VARCHAR))) AS mbid
+                                FROM read_parquet('{ae_path}')
+                                WHERE CAST(external_id_property AS VARCHAR)='P434'
+                                  AND external_id_value IS NOT NULL
+                                QUALIFY ROW_NUMBER() OVER (PARTITION BY CAST(qid AS VARCHAR) ORDER BY lower(trim(CAST(external_id_value AS VARCHAR))))=1
+                            ),
+                            enwiki AS (
+                                SELECT CAST(qid AS VARCHAR) AS qid, CAST(title AS VARCHAR) AS title
+                                FROM read_parquet('{sl_path}')
+                                WHERE site='enwiki' AND title IS NOT NULL AND trim(CAST(title AS VARCHAR))<>''
+                            )
+                            SELECT 'mbid::'||qm.mbid AS artist_key, en.title
+                            FROM qid_mbid qm JOIN enwiki en USING (qid)
+                        """).fetchall()
+                        for k, t in rows:
+                            wd_titles[k] = t
+                        con.close()
+                except Exception:
+                    wd_titles = {}
+            # 2) Estate fallback: also scan lake for any prior wikimedia rows to learn titles
+            # For now, wd_titles is the primary source; estate provides universe filter.
+            estate_path = None
+            try:
+                estate_path, _, _, _ = _resolve_estate(lake, work)
+                estate_payload = json.loads(Path(estate_path).read_text(encoding="utf-8"))
+                artists = estate_payload.get("artists") or []
+            except Exception:
+                artists = []
+            # Build eligible: artists that have an enwiki title via wd_titles
+            for a in artists:
+                ak = a.get("artist_key")
+                if not ak or ak not in wd_titles:
+                    continue
+                title = wd_titles[ak]
+                if not title or not title.strip():
+                    continue
+                eligible.append({"artist_key": ak, "title": title.strip()})
+                if len(eligible) >= max_artists:
+                    break
+            # If wd_titles yielded nothing (e.g. no sitelinks), fall back to estate name as title probe
+            # (still PIT-correct; 404 will be persisted as missing, never zero).
+            if not eligible and artists:
+                for a in artists[:max_artists]:
+                    ak = a.get("artist_key")
+                    name = (a.get("artist_name") or "").strip()
+                    if not ak or not name:
+                        continue
+                    eligible.append({"artist_key": ak, "title": name})
+            plan = {
+                "version": "wikimedia_v1",
+                "params": params,
+                "latest_admissible": latest_admissible.isoformat(),
+                "wd_run_id": wd_run_id,
+                "eligible_count": len(eligible),
+                "selected": eligible[:max_artists],
+                "created_at": now_iso(),
+                "code_commit": _git_commit(),
+            }
+            lake.put_json_if_version(lake.config.lake_bucket, plan_key, plan, None)
+            manifest.source_paths.append(f"r2://{lake.config.lake_bucket}/{plan_key}")
+        else:
+            eligible = plan.get("selected") or []
+            # latest_admissible may have advanced since plan was written
+            plan_latest = plan.get("latest_admissible")
+            if plan_latest != latest_admissible.isoformat():
+                plan["latest_admissible"] = latest_admissible.isoformat()
+                lake.put_bytes(lake.config.lake_bucket, plan_key, json.dumps(plan, indent=2).encode(), content_type="application/json")
+
+        manifest.total_batches = (len(eligible) + batch_size - 1) // batch_size if eligible else 0
+
+        # ── load parent Gold + lake watermark to determine per-artist last observation ──
+        parent_payload, parent_etag = lake.read_versioned_json(lake.config.lake_bucket, WIKIMEDIA_GOLD_CURRENT)
+        parent_rows = 0
+        last_by_artist: dict[str, str] = {}  # artist_key -> max period_end iso
+        # Prefer Gold parent if exists
+        if parent_payload and parent_payload.get("object_key"):
+            try:
+                p_path = work / "parent.parquet"
+                _download_to_scratch(lake, lake.config.lake_bucket, parent_payload["object_key"], p_path, 512 * 1024 * 1024)
+                con = duckdb.connect(str(work / "parent_meta.duckdb"))
+                rows = con.execute(f"SELECT artist_key, MAX(CAST(period_end AS VARCHAR)) FROM read_parquet('{p_path}') GROUP BY artist_key").fetchall()
+                for ak, mx in rows:
+                    if ak and mx:
+                        last_by_artist[ak] = mx
+                parent_rows = int(con.execute(f"SELECT COUNT(*) FROM read_parquet('{p_path}')").fetchone()[0])
+                con.close()
+                manifest.source_paths.append(f"r2://{lake.config.lake_bucket}/{parent_payload['object_key']}")
+            except Exception:
+                pass
+        # Also scan lake metrics parquet for any newer rows not yet in Gold (merge watermark)
+        try:
+            lake_key = f"{WIKIMEDIA_LAKE_PREFIX}/artist_attention_observations.parquet"
+            if lake.verify_object_exists(lake.config.lake_bucket, lake_key):
+                lk_path = work / "lake_attn.parquet"
+                _download_to_scratch(lake, lake.config.lake_bucket, lake_key, lk_path, 512 * 1024 * 1024)
+                con = duckdb.connect(str(work / "lake_meta.duckdb"))
+                rows = con.execute(f"""
+                    SELECT artist_key, MAX(CAST(period_end AS VARCHAR))
+                    FROM read_parquet('{lk_path}')
+                    WHERE source_system='wikimedia' AND status='ok'
+                    GROUP BY artist_key
+                """).fetchall()
+                for ak, mx in rows:
+                    if ak and mx and (ak not in last_by_artist or mx > last_by_artist[ak]):
+                        last_by_artist[ak] = mx
+                con.close()
+                manifest.r2_read_bytes += lk_path.stat().st_size
+        except Exception:
+            pass
+
+        old_max = max(last_by_artist.values()) if last_by_artist else None
+
+        # ── incremental fetch ──
+        from festival_bloomberg.acquisition.transport import UrllibTransport
+        from festival_bloomberg.attention.wikimedia_pageviews import (
+            build_pageviews_observation,
+            fetch_pageviews,
+        )
+        transport = UrllibTransport()
+        new_observations: list[dict] = []
+        stats = {"attempted": 0, "successful": 0, "advanced": 0, "identity_invalid": 0, "rate_limited": 0, "provider_failed": 0}
+        # For resume, skip already-completed
+        pending = [e for e in eligible if e["artist_key"] not in completed_set]
+        for idx, entry in enumerate(pending):
+            ak = entry["artist_key"]
+            title = entry["title"]
+            if not title or not title.strip():
+                stats["identity_invalid"] += 1
+                ckpt.setdefault("per_artist", {})[ak] = {"status": "identity_invalid"}
+                completed_set.add(ak)
+                continue
+            last = last_by_artist.get(ak)
+            try:
+                last_d = date.fromisoformat(last) if last else None
+            except Exception:
+                last_d = None
+            start_d = (last_d + timedelta(days=1)) if last_d else WIKIMEDIA_SERIES_START
+            if start_d > latest_admissible:
+                # already fresh
+                ckpt.setdefault("per_artist", {})[ak] = {"status": "fresh", "last": last}
+                completed_set.add(ak)
+                continue
+            # Use range request: one call per chunk window
+            stats["attempted"] += 1
+            # Throttle
+            if idx and min_interval > 0:
+                time.sleep(min_interval)
+            # Split into chunk windows (reuse split_windows)
+            from festival_bloomberg.attention.wikimedia_historical import split_windows
+            windows = split_windows(start_d, latest_admissible, chunk_days=chunk_days)
+            artist_new = 0
+            artist_status = "ok"
+            for lo, hi in windows:
+                result = fetch_pageviews(
+                    transport, title=title,
+                    start=lo.strftime("%Y%m%d"), end=hi.strftime("%Y%m%d"),
+                    project="en.wikipedia", access="all-access", agent="user",
+                )
+                if result["status"] == "missing":
+                    artist_status = "missing"
+                    continue
+                if result["status"] != "ok":
+                    code = result.get("error_code") or ""
+                    if "429" in code or "rate" in code.lower():
+                        stats["rate_limited"] += 1
+                    else:
+                        stats["provider_failed"] += 1
+                    artist_status = "error"
+                    break
+                for item in result.get("items") or []:
+                    ts = str(item.get("timestamp") or "")
+                    digits = "".join(ch for ch in ts if ch.isdigit())[:8]
+                    if len(digits) != 8:
+                        continue
+                    try:
+                        day = date(int(digits[:4]), int(digits[4:6]), int(digits[6:8]))
+                    except ValueError:
+                        continue
+                    if day < WIKIMEDIA_SERIES_START or day > latest_admissible:
+                        continue
+                    day_iso = day.isoformat()
+                    # PIT: available_at is day+1, never retrieved_at
+                    row = build_pageviews_observation(
+                        artist_name=title, title=title,
+                        project=result["project"], access=result["access"], agent=result["agent"],
+                        granularity="daily",
+                        start=day_iso.replace("-", ""), end=day_iso.replace("-", ""),
+                        items=[item], status="ok", error_code=None, error_message=None,
+                        source_url=result["source_url"], retrieved_at=result["retrieved_at"],
+                        raw_response=item,
+                    )
+                    row["artist_key"] = ak
+                    row["observation_key"] = daily_observation_key(artist_key=ak, day=day_iso)
+                    row["period_start"] = day_iso
+                    row["period_end"] = day_iso
+                    prov = json.loads(row.get("provenance_json") or "{}")
+                    prov["available_at"] = wikimedia_available_at(day).isoformat()
+                    prov["observation_day"] = day_iso
+                    prov["granularity"] = "daily"
+                    row["provenance_json"] = json.dumps(prov, default=str)
+                    new_observations.append(row)
+                    artist_new += 1
+            if artist_new:
+                stats["successful"] += 1
+                stats["advanced"] += 1
+                last_by_artist[ak] = latest_admissible.isoformat()
+            elif artist_status == "ok":
+                stats["successful"] += 1
+            ckpt.setdefault("per_artist", {})[ak] = {"status": artist_status, "new_rows": artist_new, "last": last_by_artist.get(ak)}
+            completed_set.add(ak)
+            ckpt["completed"] = sorted(completed_set)
+            ckpt["new_rows"] = len(new_observations)
+            ckpt["stats"] = stats
+            # periodic checkpoint every batch_size
+            if (idx + 1) % batch_size == 0:
+                lake.write_checkpoint(lake.config.lake_bucket, ckpt_key, ckpt)
+                manifest.completed_batches = (idx + 1 + batch_size - 1) // batch_size
+                lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
+        # final checkpoint
+        lake.write_checkpoint(lake.config.lake_bucket, ckpt_key, ckpt)
+
+        # ── merge parent + new into new Gold parquet ──
+        import pyarrow as pa
+        new_max = max(last_by_artist.values()) if last_by_artist else old_max
+        # Deduplicate new observations by observation_key (idempotent)
+        dedup: dict[str, dict] = {}
+        for r in new_observations:
+            dedup[r["observation_key"]] = r
+        fresh_rows = list(dedup.values())
+        # Build output table: if no new rows, still publish honest checkpoint (no new generation if nothing new)
+        if not fresh_rows:
+            manifest.status = "BUILD_COMPLETE"
+            manifest.completed_at = now_iso()
+            manifest.runtime_seconds = round(time.time() - start, 2)
+            manifest.rows_written = 0
+            manifest.rows_read = parent_rows
+            lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
+            return {
+                "status": "COMPLETED",
+                "job_id": job_id,
+                "eligible": len(eligible),
+                "attempted": stats["attempted"],
+                "successful": stats["successful"],
+                "advanced": stats["advanced"],
+                "identity_invalid": stats["identity_invalid"],
+                "rate_limited": stats["rate_limited"],
+                "provider_failed": stats["provider_failed"],
+                "new_observations": 0,
+                "old_max_period_end": old_max,
+                "new_max_period_end": new_max,
+                "note": "no new wikimedia rows; already at latest_admissible",
+                "manifest_key": manifest_key_path,
+            }
+
+        # Merge: read parent parquet into DuckDB, union with fresh, dedupe
+        out_path = work / "wikimedia_gold.parquet"
+        if parent_payload and parent_payload.get("object_key") and (work / "parent.parquet").exists():
+            con = duckdb.connect(str(work / "merge.duckdb"))
+            con.execute("SET memory_limit='512MB'")
+            parent_path = work / "parent.parquet"
+            # Write fresh to temp parquet for DuckDB union
+            import pyarrow.parquet as pq
+            fresh_table = pa.Table.from_pylist(fresh_rows)
+            fresh_path = work / "fresh.parquet"
+            pq.write_table(fresh_table, fresh_path, compression="zstd")
+            con.execute(f"""
+                COPY (
+                    SELECT * FROM read_parquet('{parent_path}')
+                    UNION BY NAME
+                    SELECT * FROM read_parquet('{fresh_path}')
+                ) TO '{out_path}' (FORMAT PARQUET, COMPRESSION ZSTD)
+            """)
+            # Deduplicate by observation_key, keep latest
+            con2 = duckdb.connect(str(work / "dedup.duckdb"))
+            con2.execute(f"""
+                COPY (
+                    SELECT * FROM read_parquet('{out_path}')
+                    QUALIFY ROW_NUMBER() OVER (PARTITION BY observation_key ORDER BY retrieved_at DESC NULLS LAST)=1
+                ) TO '{out_path}.tmp' (FORMAT PARQUET, COMPRESSION ZSTD)
+            """)
+            Path(f"{out_path}.tmp").replace(out_path)
+            con.close()
+            con2.close()
+        else:
+            table = pa.Table.from_pylist(fresh_rows)
+            pq.write_table(table, out_path, compression="zstd")
+
+        total_rows = int(pq.read_metadata(out_path).num_rows)
+        out_sha = _streaming_sha256(out_path)
+        generation = "wikimedia_" + datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "_" + out_sha[:8]
+        out_key = f"{WIKIMEDIA_GOLD_PREFIX}/{generation}/artist_attention_wikimedia.parquet"
+        lake._s3.upload_file(str(out_path), lake.config.lake_bucket, out_key, ExtraArgs={"ContentType": "application/octet-stream", "Metadata": {"job_id": job_id, "generation": generation}})
+        manifest.output_paths.append(f"r2://{lake.config.lake_bucket}/{out_key}")
+        manifest.output_hashes[out_key] = out_sha
+        manifest.r2_write_bytes += out_path.stat().st_size
+        manifest.rows_written = total_rows
+        manifest.rows_read = parent_rows + len(fresh_rows)
+
+        verify_outputs(lake, bucket=lake.config.lake_bucket, output_hashes={out_key: out_sha}, manifest=manifest, manifest_key_path=manifest_key_path)
+        current_payload = {
+            "artifact": WIKIMEDIA_GOLD_PREFIX,
+            "contract_version": "artist_attention_wikimedia_v1",
+            "generation": generation,
+            "object_key": out_key,
+            "sha256": out_sha,
+            "bytes": out_path.stat().st_size,
+            "rows": total_rows,
+            "new_rows": len(fresh_rows),
+            "eligible": len(eligible),
+            "attempted": stats["attempted"],
+            "successful": stats["successful"],
+            "advanced": stats["advanced"],
+            "rate_limited": stats["rate_limited"],
+            "provider_failed": stats["provider_failed"],
+            "old_max_period_end": old_max,
+            "new_max_period_end": new_max,
+            "latest_admissible": latest_admissible.isoformat(),
+            "created_at": now_iso(),
+            "parent_generation": (parent_payload or {}).get("generation"),
+        }
+        lake.put_bytes(lake.config.lake_bucket, WIKIMEDIA_GOLD_CURRENT, json.dumps(current_payload, indent=2).encode(), content_type="application/json")
+        manifest.status = "PUBLISHED"
+        manifest.publication_state = "PUBLISHED"
+        manifest.completed_at = now_iso()
+        manifest.runtime_seconds = round(time.time() - start, 2)
+        lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
+        return {
+            "status": "COMPLETED",
+            "generation": generation,
+            "object_key": out_key,
+            "rows": total_rows,
+            "new_observations": len(fresh_rows),
+            "eligible": len(eligible),
+            "attempted": stats["attempted"],
+            "successful": stats["successful"],
+            "advanced": stats["advanced"],
+            "identity_invalid": stats["identity_invalid"],
+            "rate_limited": stats["rate_limited"],
+            "provider_failed": stats["provider_failed"],
+            "old_max_period_end": old_max,
+            "new_max_period_end": new_max,
+            "manifest_key": manifest_key_path,
+        }
+    except Exception as e:
+        if manifest.error_code is None:
+            manifest.error_code = ERR_JOB_EXEC_FAILED
+        manifest.status = STATUS_FAILED
+        manifest.error = str(e)[:500]
+        manifest.error_detail = traceback.format_exc()
+        manifest.completed_at = now_iso()
+        manifest.runtime_seconds = round(time.time() - start, 2)
+        try:
+            lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
+        except Exception:
+            pass
+        raise
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+# ════════════════════════════════════════════════════════════════
 # LISTENBRAINZ MAP STAGE
 # ════════════════════════════════════════════════════════════════
 
