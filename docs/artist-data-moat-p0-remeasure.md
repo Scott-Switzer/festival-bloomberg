@@ -22,3 +22,11 @@ Reuse `evidence_rails/contract.py:ObservationRecord` (content-addressable `obser
 
 Physical tables already implement the logical ledger: `acquisition.external_event_observations`, `metrics.artist_attention_observations`, `gold/artist_factor_tape`, `serving/artist_factor_observations`, `serving/artist_security_terminal_v1` — the requirement is the canonical logical contract, not one giant SQL table.
 
+## Moat refresh (2026-09-09T01:26Z) — REAL NEW DATA
+
+- **Factor Gold** `artist_factor_tape_v1_7529c671bf4f591e5b89bbff`: **133,941 rows** (+44,553), 748 artists (was 725), window 2026-08-27→**2026-09-09T01:02:30Z** — batch `artist_factor_tape_build_v1_moat_20260908_181543` 59/59 in 618s, PUBLISHED.
+- **Serving** `terminal_v1_20260909T012817Z` 164,376,576 bytes sha `33ab16b3…5c1cdd1` — batch `terminal_serving_build_v1_moat_20260908_182633` 105s PUBLISHED, now on staging `34299349204` verified via `/health` + `/api/status` (133,941 factor rows).
+- **YouTube** staging `staging/youtube/date=2026-09-09/hour=00` proven (state `UCq6UY...` observed_at 2026-09-09T01:00:10Z) — governor windowing correct, not quota_blocked.
+- **NIM** live catalog 81 but `FAST_EXTRACT UNAVAILABLE`, `EMBED nvidia/embed-qa-4` 404 account entitlement — honest UNAVAILABLE, fail-closed.
+- **Wikimedia/LB-temporal/news** remain frozen (see PR body honest verdicts) — two-source P24 gate not yet met.
+
