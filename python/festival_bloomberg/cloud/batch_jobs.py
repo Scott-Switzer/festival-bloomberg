@@ -2448,12 +2448,18 @@ def run_artist_attention_wikimedia_build_v1(spec: dict, scratch_dir: Path) -> di
     params = spec.get("params", {}) or {}
     max_artists = int(params.get("max_artists") or 10000)
     chunk_days = int(params.get("chunk_days") or 400)
-    min_interval = float(params.get("min_interval_seconds") or 0.30)
-    batch_size = int(params.get("batch_size") or 64)
+    min_interval = float(params.get("min_interval_seconds") or 1.2)
+    batch_size = int(params.get("batch_size") or 20)
+    fresh_mode = str(params.get("mode") or "fresh").lower().strip()  # fresh | deep
+    recent_window_days = int(params.get("recent_window_days") or 30)  # used for fresh when no prior history
     if max_artists < 1 or max_artists > 25000:
         raise ValueError("max_artists must be in [1, 25000]")
     if chunk_days < 1 or chunk_days > 400:
         raise ValueError("chunk_days must be in [1, 400]")
+    if fresh_mode not in ("fresh", "deep"):
+        raise ValueError("mode must be fresh or deep")
+    # P4 adaptive rate: global provider-level throttle state
+    wikimedia_rate_state_key = "control/jobs/artist_attention_wikimedia_build_v1/rate_state.json"
 
     manifest = new_manifest(
         job_type="artist_attention_wikimedia_build_v1",
@@ -2657,7 +2663,24 @@ def run_artist_attention_wikimedia_build_v1(spec: dict, scratch_dir: Path) -> di
         )
         transport = UrllibTransport()
         new_observations: list[dict] = []
-        stats = {"attempted": 0, "successful": 0, "advanced": 0, "identity_invalid": 0, "rate_limited": 0, "provider_failed": 0}
+        stats = {"attempted": 0, "successful": 0, "advanced": 0, "identity_invalid": 0, "rate_limited": 0, "provider_failed": 0, "already_fresh": 0}
+        adaptive_interval = float(min_interval)
+        consecutive_429 = 0
+        # Load provider-level rate state (persisted globally, not per-job)
+        _rate_state = lake.read_checkpoint(lake.config.lake_bucket, wikimedia_rate_state_key) or {}
+        last_request_at = _rate_state.get("last_request_at")
+        cooldown_until = _rate_state.get("cooldown_until")
+        if _rate_state.get("current_interval"):
+            try:
+                adaptive_interval = max(adaptive_interval, float(_rate_state["current_interval"]))
+            except Exception:
+                pass
+        header_ua = "FestivalBloomberg/0.1 (+https://github.com/Scott-Switzer/festival-bloomberg; moat-catchup)"
+        # Resume-aware adaptive interval restore
+        _loaded_adaptive: float | None = ckpt.get("_adaptive_interval")  # type: ignore[assignment]
+        if isinstance(_loaded_adaptive, (int, float)) and _loaded_adaptive > 0:
+            adaptive_interval = max(adaptive_interval, float(_loaded_adaptive))
+            consecutive_429 = int(ckpt.get("_consecutive_429") or 0)
         # For resume, skip already-completed
         pending = [e for e in eligible if e["artist_key"] not in completed_set]
         for idx, entry in enumerate(pending):
@@ -2673,25 +2696,46 @@ def run_artist_attention_wikimedia_build_v1(spec: dict, scratch_dir: Path) -> di
                 last_d = date.fromisoformat(last) if last else None
             except Exception:
                 last_d = None
-            start_d = (last_d + timedelta(days=1)) if last_d else WIKIMEDIA_SERIES_START
+            if fresh_mode == "fresh" and last_d is None:
+                start_d = max(WIKIMEDIA_SERIES_START, latest_admissible - timedelta(days=recent_window_days - 1))
+            elif last_d is not None:
+                start_d = last_d + timedelta(days=1)
+            else:
+                start_d = WIKIMEDIA_SERIES_START
             if start_d > latest_admissible:
-                # already fresh
+                stats["already_fresh"] += 1
                 ckpt.setdefault("per_artist", {})[ak] = {"status": "fresh", "last": last}
                 completed_set.add(ak)
                 continue
-            # Use range request: one call per chunk window
             stats["attempted"] += 1
-            # Throttle
-            if idx and min_interval > 0:
-                time.sleep(min_interval)
-            # Split into chunk windows (reuse split_windows)
+            # Global adaptive throttle + cooldown honouring
+            # If cooldown_until is in the future, sleep until it expires
+            if cooldown_until:
+                try:
+                    cd = datetime.fromisoformat(cooldown_until.replace("Z", "+00:00"))
+                    now_utc = datetime.now(UTC)
+                    if cd.tzinfo is None:
+                        cd = cd.replace(tzinfo=UTC)
+                    wait_s = (cd - now_utc).total_seconds()
+                    if wait_s > 0:
+                        time.sleep(min(wait_s, 60.0))
+                except Exception:
+                    pass
+            if idx and adaptive_interval > 0:
+                time.sleep(adaptive_interval)
             from festival_bloomberg.attention.wikimedia_historical import split_windows
             windows = split_windows(start_d, latest_admissible, chunk_days=chunk_days)
             artist_new = 0
             artist_status = "ok"
+            from festival_bloomberg.acquisition.transport import UrllibTransport as _UT2
+            _wik_transport = UrllibTransport() if "UrllibTransport" in dir() else _UT2(user_agent=header_ua)  # type: ignore
+            try:
+                _wik_transport = _UT2(user_agent=header_ua)  # type: ignore[call-arg]
+            except TypeError:
+                _wik_transport = UrllibTransport()  # type: ignore
             for lo, hi in windows:
                 result = fetch_pageviews(
-                    transport, title=title,
+                    _wik_transport, title=title,
                     start=lo.strftime("%Y%m%d"), end=hi.strftime("%Y%m%d"),
                     project="en.wikipedia", access="all-access", agent="user",
                 )
@@ -2700,12 +2744,48 @@ def run_artist_attention_wikimedia_build_v1(spec: dict, scratch_dir: Path) -> di
                     continue
                 if result["status"] != "ok":
                     code = result.get("error_code") or ""
-                    if "429" in code or "rate" in code.lower():
+                    is_429 = ("429" in code or "rate" in code.lower())
+                    if is_429:
                         stats["rate_limited"] += 1
+                        consecutive_429 += 1
+                        # Exponential backoff with jitter, honour Retry-After if present
+                        retry_after = None
+                        try:
+                            raw_retry = (result.get("raw_response") or "").strip() if isinstance(result.get("raw_response"), str) else ""
+                            # Transport does not surface headers here; check body for Retry-After hint
+                            if "retry" in raw_retry.lower():
+                                retry_after = 5
+                        except Exception:
+                            pass
+                        backoff = retry_after if retry_after else min(60.0, adaptive_interval * (2 ** min(consecutive_429, 5)))
+                        import random as _rnd
+                        backoff = backoff * (0.8 + _rnd.random() * 0.4)
+                        adaptive_interval = min(8.0, max(adaptive_interval * 1.6, backoff * 0.6))
+                        cooldown_until = (datetime.now(UTC) + timedelta(seconds=backoff)).isoformat().replace("+00:00", "Z")
+                        lake.write_checkpoint(lake.config.lake_bucket, wikimedia_rate_state_key, {
+                            "current_interval": adaptive_interval, "consecutive_429": consecutive_429,
+                            "cooldown_until": cooldown_until, "last_request_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                            "updated_at": now_iso(),
+                        })
                     else:
                         stats["provider_failed"] += 1
+                        consecutive_429 = max(0, consecutive_429 - 1)
                     artist_status = "error"
                     break
+                else:
+                    # success: slowly decay interval
+                    if consecutive_429 > 0:
+                        consecutive_429 = max(0, consecutive_429 - 1)
+                    if consecutive_429 == 0 and adaptive_interval > min_interval:
+                        adaptive_interval = max(min_interval, adaptive_interval * 0.97)
+                    lake.write_checkpoint(lake.config.lake_bucket, wikimedia_rate_state_key, {
+                        "current_interval": adaptive_interval, "consecutive_429": consecutive_429,
+                        "cooldown_until": None, "last_request_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                        "updated_at": now_iso(),
+                    })
+                    # circuit-breaker: if many consecutive 429s, pause artist loop briefly
+                    if consecutive_429 >= 5:
+                        time.sleep(min(30.0, adaptive_interval * 4))
                 for item in result.get("items") or []:
                     ts = str(item.get("timestamp") or "")
                     digits = "".join(ch for ch in ts if ch.isdigit())[:8]
@@ -2750,12 +2830,14 @@ def run_artist_attention_wikimedia_build_v1(spec: dict, scratch_dir: Path) -> di
             ckpt["completed"] = sorted(completed_set)
             ckpt["new_rows"] = len(new_observations)
             ckpt["stats"] = stats
-            # periodic checkpoint every batch_size
+            ckpt["_adaptive_interval"] = adaptive_interval
+            ckpt["_consecutive_429"] = consecutive_429
             if (idx + 1) % batch_size == 0:
                 lake.write_checkpoint(lake.config.lake_bucket, ckpt_key, ckpt)
                 manifest.completed_batches = (idx + 1 + batch_size - 1) // batch_size
                 lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
-        # final checkpoint
+        ckpt["_adaptive_interval"] = adaptive_interval
+        ckpt["_consecutive_429"] = consecutive_429
         lake.write_checkpoint(lake.config.lake_bucket, ckpt_key, ckpt)
 
         # ── merge parent + new into new Gold parquet ──
@@ -4368,10 +4450,19 @@ def run_moat_scoreboard_build_v1(spec: dict, scratch_dir: Path) -> dict:
                 },
             },
             "serving_current": serving_cur,
+            # P1: honest automation — manual_intervention_required is false ONLY when the
+            # normal recurring stages can run unattended (no manual POST/repair).
+            # Until Gold→Serving watermark chain + freshness cron are proven, report true.
             "automation": {
-                "manual_intervention_required": False,  # cron + on-complete chain; no manual POST needed after this milestone
-                "gold_triggers": "WATERMARK_CHAIN + NIGHTLY_REFRESH",
-                "serving_triggers": "GOLD_PUBLISH + NIGHTLY_GATED",
+                "manual_intervention_required": True,
+                "acquisition_automatic": False,
+                "normalization_automatic": False,
+                "gold_automatic": False,
+                "serving_automatic": False,
+                "hosted_fresh": False,
+                "note": "Set each to true only after the corresponding stage is proven to advance without a manual trigger",
+                "gold_triggers": "WATERMARK_CHAIN + NIGHTLY_REFRESH (not yet proven)",
+                "serving_triggers": "GOLD_PUBLISH + NIGHTLY_GATED (not yet proven)",
             },
             "temporal_depth_note": "Depth buckets are distinct observation days per artist; computed from each Gold parquet's date column. Fresh windows are distinct artists observed in last 24h/7d/30d windows.",
         }
