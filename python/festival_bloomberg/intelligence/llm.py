@@ -29,11 +29,15 @@ DEFAULT_BASE_URL = "https://integrate.api.nvidia.com/v1"
 
 #: Task -> default model id (overridable, resolved against the catalog).
 #: These are FALLBACKS, not a binding contract; validate via list_models().
+#: Updated 2026-09: the account catalog has 81 models but llama-3.3-70b and
+#: nv-embedqa-e5-v5 are absent; the working account models are
+#: nemotron-3.5-lightning-30b-a3b (chat/extract) and nemotron-3-embed-1b
+#: (embed). Keep the old ids as fallbacks only when they appear in catalog.
 DEFAULT_TASKS: dict[str, str] = {
-    "FAST_EXTRACT": "meta/llama-3.3-70b-instruct",
-    "DEEP_REASON": "deepseek-ai/deepseek-r1",
+    "FAST_EXTRACT": "nvidia/nemotron-3.5-lightning-30b-a3b",
+    "DEEP_REASON": "deepseek-ai/deepseek-v4-flash-0731",
     "CODE_REASON": "qwen/qwen2.5-coder-32b-instruct",
-    "EMBED": "nvidia/nv-embedqa-e5-v5",
+    "EMBED": "nvidia/nemotron-3-embed-1b",
     "RERANK": "nvidia/llama-3.2-nv-rerankqa-1b-v2",
 }
 
@@ -43,10 +47,10 @@ DEFAULT_TASKS: dict[str, str] = {
 #: (e.g. ``nvidia/llama-3.2-nv-embedqa-1b-v1``) never shadows a working one
 #: (``nvidia/nv-embedqa-e5-v5``).
 TASK_HINTS: dict[str, tuple[str, ...]] = {
-    "FAST_EXTRACT": ("llama-3.3-70b", "llama-3.1-70b"),
+    "FAST_EXTRACT": ("nemotron-3.5-lightning", "nemotron-3", "llama-3.2-11b-vision", "llama-3.3-70b", "llama-3.1-70b"),
     "DEEP_REASON": ("deepseek-v4", "deepseek-r1", "qwq"),
     "CODE_REASON": ("deepseek-coder", "qwen2.5-coder"),
-    "EMBED": ("nv-embedqa-e5-v5", "nv-embed-v1", "embed"),
+    "EMBED": ("nemotron-3-embed-1b", "nv-embedqa-e5-v5", "nv-embed-v1", "embed"),
     "RERANK": ("rerankqa", "rerank"),
 }
 
