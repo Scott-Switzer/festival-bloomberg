@@ -4723,6 +4723,37 @@ def run_artist_attention_spotify_build_v1(spec: dict, scratch_dir: Path) -> dict
         token_present = bool(token and token.strip())
         manifest.params["spotify_token_present"] = token_present
         if not token_present:
+            # Extra diagnostic: capture token-exchange HTTP status without logging secrets.
+            diag_status = None
+            diag_snippet = ""
+            try:
+                import base64 as _b64
+                from urllib.parse import urlencode as _ue
+                _cid = os.environ.get("SPOTIFY_CLIENT_ID", "") or ""
+                _csec = os.environ.get("SPOTIFY_CLIENT_SECRET", "") or ""
+                if _cid and _csec:
+                    _basic = _b64.b64encode(f"{_cid}:{_csec}".encode()).decode()
+                    _resp = transport.request(
+                        "POST", "https://accounts.spotify.com/api/token",
+                        headers={"Authorization": f"Basic {_basic}", "Content-Type": "application/x-www-form-urlencoded"},
+                        body=_ue({"grant_type": "client_credentials"}).encode(),
+                        timeout_seconds=15.0,
+                    )
+                    diag_status = _resp.status
+                    # Redact: only keep error field, never raw token.
+                    try:
+                        _j = json.loads(_resp.body.decode(errors="ignore"))
+                        diag_snippet = json.dumps({k: _j[k] for k in ("error", "error_description") if k in _j})[:300]
+                    except Exception:
+                        diag_snippet = _resp.body[:300].decode(errors="ignore")[:300]
+                else:
+                    diag_snippet = "credentials_empty_in_diag"
+            except Exception as _e:
+                diag_snippet = str(_e)[:300]
+                # Never include Authorization header or secret values
+                diag_snippet = diag_snippet.replace(os.environ.get("SPOTIFY_CLIENT_ID", "") or "", "***").replace(os.environ.get("SPOTIFY_CLIENT_SECRET", "") or "", "***")
+            manifest.params["spotify_token_exchange_status"] = diag_status
+            manifest.params["spotify_token_exchange_error"] = diag_snippet[:300]
             manifest.status = "BUILD_COMPLETE"
             manifest.completed_at = now_iso()
             manifest.runtime_seconds = round(time.time() - start, 2)
@@ -4730,7 +4761,7 @@ def run_artist_attention_spotify_build_v1(spec: dict, scratch_dir: Path) -> dict
             manifest.params["blocked_reason"] = "SPOTIFY_TOKEN_UNAVAILABLE"
             manifest.error_code = "SPOTIFY_TOKEN_UNAVAILABLE"
             lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
-            return {"status": "COMPLETED", "eligible": len(eligible), "not_configured": True, "spotify_client_id_present": spotify_id_present, "spotify_client_secret_present": spotify_secret_present, "spotify_token_present": False, "blocked_reason": "SPOTIFY_TOKEN_UNAVAILABLE", "note": "SPOTIFY_TOKEN_UNAVAILABLE", "manifest_key": manifest_key_path}
+            return {"status": "COMPLETED", "eligible": len(eligible), "not_configured": True, "spotify_client_id_present": spotify_id_present, "spotify_client_secret_present": spotify_secret_present, "spotify_token_present": False, "spotify_token_exchange_status": diag_status, "spotify_token_exchange_error": diag_snippet[:200], "blocked_reason": "SPOTIFY_TOKEN_UNAVAILABLE", "note": "SPOTIFY_TOKEN_UNAVAILABLE", "manifest_key": manifest_key_path}
         for idx, (ak, sid) in enumerate(eligible):
             if idx > 0 and min_interval > 0:
                 time.sleep(min_interval)
