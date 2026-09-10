@@ -4617,8 +4617,10 @@ def run_artist_attention_spotify_build_v1(spec: dict, scratch_dir: Path) -> dict
                             spotify_ids[artist_key] = sid
                             spotify_provenance[artist_key] = "WIKIDATA_P1902"
                     con.close()
-        except Exception:
-            pass
+                    # Record P1902 join stats in manifest for observability.
+                    manifest.params["wikidata_p1902_rows"] = len(rows)
+        except Exception as e:
+            manifest.params["wikidata_p1902_error"] = str(e)[:200]
         # Exclude conflicts from eligible.
         for ak in conflict_artists:
             spotify_ids.pop(ak, None)
