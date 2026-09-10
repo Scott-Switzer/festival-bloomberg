@@ -33,6 +33,7 @@ import { runMappingFactory } from "./mapping-factory-v2";
 import { planForwardFamilies, loadV2Universe } from "./forward-planner";
 import { handleYouTubeBatch } from "./youtube-consumer";
 import { handleStructuredBatch } from "./structured-consumer";
+import { decideServingTrigger, fingerprintGolds, servingGoldFingerprint } from "./watermark-controller";
 import { handleDlqBatch } from "./dlq-consumer";
 import { readPlatformQueueMetrics, readQueueMetrics, writeQueueEnqueueMetric } from "./queue-metrics";
 
@@ -1026,37 +1027,130 @@ export default {
         writeQueueEnqueueMetric(env, "fi-monid", webQueued, runId),
       ]).catch((metricError) => console.error(JSON.stringify({ event: "QUEUE_METRIC_WRITE_ERROR", run_id: runId, error: metricError instanceof Error ? metricError.message : String(metricError) })));
 
-      // ── Serving freshness: nightly compact terminal rebuild ──
-      // One gated trigger per 24h. The materializer moves CURRENT only after
-      // validation + SHA verification, so a failed refresh leaves the previous
-      // generation active. Failures are logged but never break the cron.
+      // ── Serving freshness: watermark-driven terminal rebuild + nightly safety ──
+      // Gold→Serving watermark: if any spotlight Gold (wikimedia/spotify) has
+      // advanced beyond what Serving CURRENT's source_generations carry, trigger
+      // exactly one serving build. Dedupe via BACKUP control/watermarks/ state
+      // + fingerprint compare (no wall-clock masquerading as freshness).
+      // CAS is enforced by terminal_serving_build_v1's read_versioned_json +
+      // put_json_if_version on LAKE serving/artist_security_terminal_v1/CURRENT.json.
+      // A nightly 24h rebuild remains as safety if staleness exceeds 24h even
+      // when fingerprints happen to match (e.g. estate promotion without Gold).
       try {
         const refreshKey = "control/serving/terminal/LAST_REFRESH.json";
-        const lastObj = await env.BACKUP_BUCKET.get(refreshKey);
+        const watermarkStateKey = "control/watermarks/serving_trigger.json";
+
+        // Read live Gold CURRENTs and Serving provenance (all LAKE).
+        type GoldPtr = { generation?: string; sha256?: string } | null;
+        let liveWikimedia: GoldPtr = null;
+        let liveSpotify: GoldPtr = null;
+        let servingPtr: any = null;
+        let lastTrigger: any = null;
+        try {
+          const [w, s, srv, wk] = await Promise.all([
+            env.LAKE_BUCKET.get("gold/artist_attention_wikimedia/CURRENT.json"),
+            env.LAKE_BUCKET.get("gold/artist_attention_spotify/CURRENT.json"),
+            env.LAKE_BUCKET.get("serving/artist_security_terminal_v1/CURRENT.json"),
+            env.BACKUP_BUCKET.get(watermarkStateKey),
+          ]);
+          if (w) try { liveWikimedia = (await w.json()) as GoldPtr; } catch {}
+          if (s) try { liveSpotify = (await s.json()) as GoldPtr; } catch {}
+          if (srv) try { servingPtr = await srv.json(); } catch {}
+          if (wk) try { lastTrigger = await wk.json(); } catch {}
+        } catch {}
+
+        const liveGolds = {
+          wikimedia: liveWikimedia?.generation ?? null,
+          spotify: liveSpotify?.generation ?? null,
+          factor_tape: servingPtr?.source_generations?.factor_gold?.generation ?? null,
+          sentiment: null,
+          ticket_market: servingPtr?.source_generations?.ticket_market_gold?.generation ?? null,
+        };
+        const servingGenerations = servingPtr ? {
+          generation: servingPtr.generation ?? null,
+          source_generations: servingPtr.source_generations ?? null,
+          wikimedia_generation: servingPtr.source_generations?.wikimedia?.generation ?? null,
+          spotify_generation: servingPtr.source_generations?.spotify?.generation ?? null,
+          factor_generation: servingPtr.source_generations?.factor_gold?.generation ?? null,
+        } : null;
+
+        const watermarkDecision = decideServingTrigger(
+          liveGolds,
+          servingGenerations as any,
+          lastTrigger as any,
+          new Date().toISOString(),
+        );
+
+        // Nightly 24h safety gate (same key as before) — only triggers if
+        // watermark says already caught up but serving is still older than 24h.
+        let nightlyDue = false;
         let lastRunMs: number | null = null;
+        const lastObj = await env.BACKUP_BUCKET.get(refreshKey);
         if (lastObj) {
           try {
             const lastData = (await lastObj.json()) as { ran_at?: string };
             if (lastData.ran_at) lastRunMs = new Date(lastData.ran_at).getTime();
-          } catch { /* ignore malformed */ }
+          } catch {}
         }
         const nowMs = Date.now();
         if (lastRunMs === null || nowMs - lastRunMs > 24 * 3600 * 1000) {
-          const stamp = new Date(nowMs).toISOString().replace(/[-:.TZ]/g, "").slice(0, 8);
-          const jobId = `terminal_serving_build_v1_nightly_${stamp}`;
-          const doId = env.BATCH_CONTAINER.idFromName(jobId);
+          nightlyDue = true;
+        }
+
+        let triggerJobId: string | null = null;
+        let triggerReason: string | null = null;
+        if (watermarkDecision.shouldTrigger) {
+          triggerJobId = watermarkDecision.servingJobId;
+          triggerReason = watermarkDecision.reason;
+        } else if (nightlyDue && watermarkDecision.reason === "SERVING_CAUGHT_UP" && servingPtr) {
+          // Estate/external inputs changed without Gold bump; 24h refresh catches it.
+          const stamp = new Date(nowMs).toISOString().replace(/[-:.TZ]/g, "").slice(0, 14);
+          triggerJobId = `terminal_serving_build_v1_nightly_${stamp}`;
+          triggerReason = "NIGHTLY_24H_REFRESH";
+        }
+
+        if (triggerJobId) {
+          const doId = env.BATCH_CONTAINER.idFromName(triggerJobId);
           const batchDo = env.BATCH_CONTAINER.get(doId) as any;
-          // Pick up the CURRENT deployed image (long-lived idle containers
-          // keep their original image across deploys).
-          await batchDo.restartContainer("nightly-refresh");
-          const spec = { job_id: jobId, job_type: "terminal_serving_build_v1", params: {} };
+          await batchDo.restartContainer(triggerReason === "NIGHTLY_24H_REFRESH" ? "nightly-refresh" : "watermark-refresh");
+          const spec = { job_id: triggerJobId, job_type: "terminal_serving_build_v1", params: {} };
           const started = await batchDo.startJob(spec);
-          await env.BACKUP_BUCKET.put(
-            refreshKey,
-            JSON.stringify({ ran_at: new Date().toISOString(), job_id: started.job_id, status: "TRIGGERED" }),
-            { httpMetadata: { contentType: "application/json" } },
-          );
-          console.log(JSON.stringify({ event: "TERMINAL_REFRESH_TRIGGERED", job_id: started.job_id }));
+          const ranAt = new Date().toISOString();
+          await Promise.all([
+            env.BACKUP_BUCKET.put(
+              refreshKey,
+              JSON.stringify({ ran_at: ranAt, job_id: started.job_id, status: "TRIGGERED", reason: triggerReason }),
+              { httpMetadata: { contentType: "application/json" } },
+            ),
+            // Watermark trigger ledger — dedupe key + reason for O(1) idempotence.
+            // Failure to write this does not block the serving build; next cron
+            // will dedupe differently (both paths log on failure).
+            env.BACKUP_BUCKET.put(
+              watermarkStateKey,
+              JSON.stringify({
+                last_trigger_job_id: started.job_id,
+                last_trigger_at: ranAt,
+                last_seen_gold: liveGolds,
+                last_serving_generation: servingPtr?.generation ?? null,
+                last_trigger_reason: triggerReason,
+                // Fingerprints stored for human audit (best-effort).
+                last_live_fingerprint: fingerprintGolds(liveGolds as any),
+                last_serving_fingerprint: servingPtr ? servingGoldFingerprint(servingPtr as any) : null,
+              }),
+              { httpMetadata: { contentType: "application/json" } },
+            ).catch((e: unknown) => console.error(JSON.stringify({ event: "WATERMARK_STATE_WRITE_ERROR", error: String(e).slice(0, 500) }))),
+          ]);
+          console.log(JSON.stringify({
+            event: triggerReason === "NIGHTLY_24H_REFRESH" ? "TERMINAL_REFRESH_TRIGGERED" : "WATERMARK_SERVING_TRIGGERED",
+            job_id: started.job_id,
+            reason: triggerReason,
+            live_golds: liveGolds,
+            serving_generation: servingPtr?.generation ?? null,
+          }));
+        } else if (watermarkDecision.deduped) {
+          console.log(JSON.stringify({ event: "WATERMARK_SERVING_DEDUPED", reason: watermarkDecision.reason, live_golds: liveGolds }));
+        } else {
+          console.log(JSON.stringify({ event: "WATERMARK_SERVING_CAUGHT_UP", reason: watermarkDecision.reason, live_golds: liveGolds, serving_generation: servingPtr?.generation ?? null }));
         }
       } catch (refreshError) {
         console.error(JSON.stringify({

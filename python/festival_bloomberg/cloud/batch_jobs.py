@@ -1679,6 +1679,40 @@ def run_terminal_serving_build(spec: dict, scratch_dir: Path) -> dict:
             manifest_key_path=manifest_key_path,
         )
 
+        # ── 7b. Collect spotlight Gold lineage (wikimedia/spotify) for watermark controller ──
+        # These are spotlight data families; their CURRENT lineage is surfaced
+        # into serving CURRENT so the controller can prove Gold→Serving catch-up.
+        # Missing Golds are UNKNOWN (null), never 0.
+        wikimedia_lineage = None
+        spotify_lineage = None
+        try:
+            wm = lake.read_checkpoint(lake.config.lake_bucket, f"{WIKIMEDIA_GOLD_PREFIX}/CURRENT.json")
+            if wm and wm.get("generation") and wm.get("sha256"):
+                wikimedia_lineage = {
+                    "generation": wm["generation"],
+                    "sha256": wm["sha256"],
+                    "object_key": wm.get("object_key"),
+                    "rows": wm.get("rows"),
+                }
+        except Exception:
+            pass
+        try:
+            sp = lake.read_checkpoint(lake.config.lake_bucket, f"{SPOTIFY_GOLD_PREFIX}/CURRENT.json")
+            if sp and sp.get("generation") and sp.get("sha256"):
+                spotify_lineage = {
+                    "generation": sp["generation"],
+                    "sha256": sp["sha256"],
+                    "object_key": sp.get("object_key"),
+                    "rows": sp.get("rows"),
+                }
+        except Exception:
+            pass
+        # Persist lineage to work for debugging
+        try:
+            (work / "spotlight_gold_lineage.json").write_text(json.dumps({"wikimedia": wikimedia_lineage, "spotify": spotify_lineage}, sort_keys=True))
+        except Exception:
+            pass
+
         # ── 8. Publish CURRENT.json ONLY after VERIFIED ──
         current_payload = {
             "artifact": TERMINAL_ARTIFACT,
@@ -1695,6 +1729,8 @@ def run_terminal_serving_build(spec: dict, scratch_dir: Path) -> dict:
                 "wikidata_artist_external_ids": wd_key,
                 "factor_gold": json.loads((work / "factor_gold_lineage.json").read_text()) if (work / "factor_gold_lineage.json").exists() else None,
                 "ticket_market_gold": json.loads((work / "ticket_market_gold_lineage.json").read_text()) if (work / "ticket_market_gold_lineage.json").exists() else None,
+                "wikimedia": wikimedia_lineage,
+                "spotify": spotify_lineage,
                 "code_commit": _git_commit(),
             },
             "row_counts": counts,
