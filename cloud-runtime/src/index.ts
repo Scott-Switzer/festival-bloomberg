@@ -60,6 +60,13 @@ interface Env {
   YOUTUBE_API_KEY: string;
   YOUTUBE_DAILY_QUOTA: string;
   TICKETS_DEV_API_KEY: string;
+  SPOTIFY_CLIENT_ID: string;
+  SPOTIFY_CLIENT_SECRET: string;
+  SPOTIFY_API_KEY: string;
+  APIFY_TOKEN: string;
+  NVIDIA_API_KEY: string;
+  ANTHROPIC_API_KEY: string;
+  OPENAI_API_KEY: string;
   FI_R2_ACCESS_KEY_ID: string;
   FI_R2_SECRET_ACCESS_KEY: string;
   FI_R2_ENDPOINT: string;

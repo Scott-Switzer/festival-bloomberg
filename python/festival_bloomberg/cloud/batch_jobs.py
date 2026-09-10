@@ -4674,14 +4674,25 @@ def run_artist_attention_spotify_build_v1(spec: dict, scratch_dir: Path) -> dict
             return {"status": "COMPLETED", "eligible": 0, "note": "no spotify identities (estate+Wikidata P1902)", "conflicts": len(conflict_artists), "invalid": len(invalid_artists), "manifest_key": manifest_key_path}
 
         # Credentials are read from env (container secrets), never logged.
+        # Phase 1 instrumentation: report BOOLEAN/PRESENCE ONLY (no lengths/prefixes/values).
         client_id = os.environ.get("SPOTIFY_CLIENT_ID")
         client_secret = os.environ.get("SPOTIFY_CLIENT_SECRET")
-        if not client_id or not client_secret:
+        spotify_id_present = bool(client_id and client_id.strip())
+        spotify_secret_present = bool(client_secret and client_secret.strip())
+        spotify_credentials_complete = spotify_id_present and spotify_secret_present
+        # Persist presence booleans into manifest params for boundary observability.
+        manifest.params["spotify_client_id_present"] = spotify_id_present
+        manifest.params["spotify_client_secret_present"] = spotify_secret_present
+        manifest.params["spotify_credentials_complete"] = spotify_credentials_complete
+        # Explicit BLOCKED_BY_CREDENTIAL telemetry — never silent BUILD_COMPLETE.
+        if not spotify_credentials_complete:
             manifest.status = "BUILD_COMPLETE"
             manifest.completed_at = now_iso()
             manifest.runtime_seconds = round(time.time() - start, 2)
+            manifest.params["blocked_reason"] = "BLOCKED_BY_CREDENTIAL"
+            manifest.error_code = "BLOCKED_BY_CREDENTIAL"
             lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
-            return {"status": "COMPLETED", "eligible": len(eligible), "not_configured": True, "note": "SPOTIFY_CLIENT_ID/SECRET not set — BLOCKED_BY_CREDENTIAL", "manifest_key": manifest_key_path}
+            return {"status": "COMPLETED", "eligible": len(eligible), "not_configured": True, "blocked_reason": "BLOCKED_BY_CREDENTIAL", "spotify_client_id_present": spotify_id_present, "spotify_client_secret_present": spotify_secret_present, "spotify_credentials_complete": False, "note": "SPOTIFY_CLIENT_ID/SECRET not set — BLOCKED_BY_CREDENTIAL", "manifest_key": manifest_key_path}
 
         from festival_bloomberg.acquisition.transport import UrllibTransport
         from festival_bloomberg.acquisition.providers.spotify import SpotifyProvider
@@ -4709,13 +4720,17 @@ def run_artist_attention_spotify_build_v1(spec: dict, scratch_dir: Path) -> dict
         # GET /v1/artists/{id} returns 200. Use per-artist GET with
         # bounded interval. Cost: 1 call per artist (50 calls for 50).
         token = provider._get_token()  # type: ignore[attr-defined]
-        if token is None:
+        token_present = bool(token and token.strip())
+        manifest.params["spotify_token_present"] = token_present
+        if not token_present:
             manifest.status = "BUILD_COMPLETE"
             manifest.completed_at = now_iso()
             manifest.runtime_seconds = round(time.time() - start, 2)
             manifest.rows_written = 0
+            manifest.params["blocked_reason"] = "SPOTIFY_TOKEN_UNAVAILABLE"
+            manifest.error_code = "SPOTIFY_TOKEN_UNAVAILABLE"
             lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
-            return {"status": "COMPLETED", "eligible": len(eligible), "not_configured": True, "note": "SPOTIFY_TOKEN_UNAVAILABLE", "manifest_key": manifest_key_path}
+            return {"status": "COMPLETED", "eligible": len(eligible), "not_configured": True, "spotify_client_id_present": spotify_id_present, "spotify_client_secret_present": spotify_secret_present, "spotify_token_present": False, "blocked_reason": "SPOTIFY_TOKEN_UNAVAILABLE", "note": "SPOTIFY_TOKEN_UNAVAILABLE", "manifest_key": manifest_key_path}
         for idx, (ak, sid) in enumerate(eligible):
             if idx > 0 and min_interval > 0:
                 time.sleep(min_interval)
