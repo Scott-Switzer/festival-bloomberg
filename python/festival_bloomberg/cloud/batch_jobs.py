@@ -4602,23 +4602,50 @@ def run_artist_attention_spotify_build_v1(spec: dict, scratch_dir: Path) -> dict
                         SELECT 'mbid::'||qm.mbid AS artist_key, sr.sid
                         FROM qid_mbid qm JOIN spotify_raw sr USING (qid)
                     """).fetchall()
+                    p1902_inserted = 0
+                    p1902_rejected_shape = 0
+                    p1902_rejected_conflict = 0
                     for artist_key, sid in rows:
-                        sid = str(sid).strip()
-                        if not sid or not artist_key:
+                        raw_sid = str(sid).strip() if sid is not None else ""
+                        if not raw_sid or not artist_key:
+                            p1902_rejected_shape += 1
                             continue
-                        # Validate shape: Spotify IDs are 22-char base62.
+                        # Lenient extraction: handle URL-shaped values like
+                        # https://open.spotify.com/artist/{id} or bare ID with whitespace.
                         import re as _re
-                        if not _re.fullmatch(r"[A-Za-z0-9]{22}", sid):
+                        sid_clean = raw_sid.strip()
+                        # If the value contains a Spotify URL, extract the 22-char ID segment.
+                        if "spotify.com" in sid_clean.lower():
+                            m = _re.search(r"([A-Za-z0-9]{22})", sid_clean)
+                            sid_clean = m.group(1) if m else sid_clean
+                        # Bare ID validation — also try substring extraction for any surrounding junk.
+                        if not _re.fullmatch(r"[A-Za-z0-9]{22}", sid_clean):
+                            m2 = _re.search(r"([A-Za-z0-9]{22})", sid_clean)
+                            if m2:
+                                sid_clean = m2.group(1)
+                            else:
+                                p1902_rejected_shape += 1
+                                continue
+                        if not _re.fullmatch(r"[A-Za-z0-9]{22}", sid_clean):
+                            p1902_rejected_shape += 1
                             continue
+                        sid = sid_clean
                         if artist_key in spotify_ids and spotify_ids[artist_key] != sid:
+                            p1902_rejected_conflict += 1
                             conflict_artists.append(artist_key)
                             continue
                         if artist_key in estate_keys or True:
                             spotify_ids[artist_key] = sid
                             spotify_provenance[artist_key] = "WIKIDATA_P1902"
+                            p1902_inserted += 1
                     con.close()
                     # Record P1902 join stats in manifest for observability.
                     manifest.params["wikidata_p1902_rows"] = len(rows)
+                    manifest.params["wikidata_p1902_inserted"] = p1902_inserted
+                    manifest.params["wikidata_p1902_rejected_shape"] = p1902_rejected_shape
+                    manifest.params["wikidata_p1902_rejected_conflict"] = p1902_rejected_conflict
+                    manifest.params["wikidata_p1902_estate_keys"] = len(estate_keys)
+                    manifest.params["spotify_ids_after_p1902"] = len(spotify_ids)
         except Exception as e:
             manifest.params["wikidata_p1902_error"] = str(e)[:200]
         # Exclude conflicts from eligible.
@@ -4677,48 +4704,137 @@ def run_artist_attention_spotify_build_v1(spec: dict, scratch_dir: Path) -> dict
         new_observations: list[dict] = []
         stats = {"attempted": 0, "successful": 0, "not_configured": 0, "rate_limited": 0, "provider_error": 0, "no_results": 0}
         day = datetime.now(UTC).date().isoformat()
-        for idx, (ak, sid) in enumerate(eligible):
-            if idx and min_interval > 0:
+        # Deterministic batch lookup via /v1/artists?ids= (up to 50 per call).
+        # This is the correct endpoint for known Spotify IDs — search?q=<id> would
+        # never match and wastes quota. We reuse the provider's token cache.
+        token = provider._get_token()  # type: ignore[attr-defined]
+        if token is None:
+            manifest.status = "BUILD_COMPLETE"
+            manifest.completed_at = now_iso()
+            manifest.runtime_seconds = round(time.time() - start, 2)
+            manifest.rows_written = 0
+            lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
+            return {"status": "COMPLETED", "eligible": len(eligible), "not_configured": True, "note": "SPOTIFY_TOKEN_UNAVAILABLE", "manifest_key": manifest_key_path}
+        # Build sid -> artist_key map for batch response correlation.
+        sid_to_ak: dict[str, str] = {sid: ak for ak, sid in eligible}
+        unique_sids = list(sid_to_ak.keys())
+        # Spotify allows up to 50 IDs per request.
+        spotify_batch = 50
+        for batch_idx in range(0, len(unique_sids), spotify_batch):
+            batch_sids = unique_sids[batch_idx: batch_idx + spotify_batch]
+            if batch_idx > 0 and min_interval > 0:
                 time.sleep(min_interval)
-            stats["attempted"] += 1
-            from festival_bloomberg.acquisition.contracts import AcquisitionRequest
-            req = AcquisitionRequest.new(entity_id=ak, entity_type="artist", platform="spotify", query=sid, max_records=10, commercial_context="research")
-            # Use the provider's get_token + artists lookup via acquire(query=sid)
-            # SpotifyProvider.acquire expects a search query; for deterministic IDs we call artists/{id} directly via spotify_catalog style.
-            # Simpler: use the provider's search with the ID as query; it will resolve if the ID is correct.
-            result = provider.acquire(req)
-            s = result.status.value
-            if s == "SUCCESS":
+            ids_param = ",".join(batch_sids)
+            url = f"https://api.spotify.com/v1/artists?ids={ids_param}"
+            # Mark attempted for each artist in the batch before the call
+            # so stats reflect per-artist granularity even on batch failure.
+            try:
+                resp = provider.transport.request(  # type: ignore[union-attr]
+                    "GET", url,
+                    headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                    timeout_seconds=30.0,
+                )
+            except Exception as exc:
+                for _sid in batch_sids:
+                    stats["attempted"] += 1
+                    stats["provider_error"] += 1
+                    manifest.params.setdefault("spotify_transport_errors", [])
+                continue
+            if resp.status == 429:
+                for _sid in batch_sids:
+                    stats["attempted"] += 1
+                    stats["rate_limited"] += 1
+                # Respect Retry-After if present by sleeping once
+                try:
+                    retry_after = int(resp.headers.get("Retry-After", "") or resp.headers.get("retry-after", "") or "0")
+                    if retry_after and retry_after < 60:
+                        time.sleep(retry_after)
+                except Exception:
+                    pass
+                # Refresh token in case of stale auth after rate limit
+                token = provider._get_token() or token  # type: ignore[attr-defined]
+                continue
+            if resp.status == 401:
+                # Refresh token once and retry this batch
+                provider._access_token = None  # type: ignore[attr-defined]
+                provider._token_expiry = 0.0  # type: ignore[attr-defined]
+                token = provider._get_token() or token  # type: ignore[attr-defined]
+                try:
+                    resp = provider.transport.request(  # type: ignore[union-attr]
+                        "GET", url,
+                        headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                        timeout_seconds=30.0,
+                    )
+                except Exception:
+                    for _sid in batch_sids:
+                        stats["attempted"] += 1
+                        stats["provider_error"] += 1
+                    continue
+                if resp.status != 200:
+                    for _sid in batch_sids:
+                        stats["attempted"] += 1
+                        stats["provider_error"] += 1
+                    continue
+            if resp.status != 200:
+                for _sid in batch_sids:
+                    stats["attempted"] += 1
+                    stats["provider_error"] += 1
+                continue
+            try:
+                payload = json.loads(resp.body.decode("utf-8"))
+                artists_payload = payload.get("artists") or []
+            except Exception:
+                for _sid in batch_sids:
+                    stats["attempted"] += 1
+                    stats["provider_error"] += 1
+                continue
+            # Correlate response (order matches request; null entries mean not found)
+            for sid, item in zip(batch_sids, artists_payload):
+                ak = sid_to_ak.get(sid, "")
+                stats["attempted"] += 1
+                if item is None or not isinstance(item, dict) or not item.get("id"):
+                    stats["no_results"] += 1
+                    continue
+                # Normalize using the same catalog fields as the provider
+                from festival_bloomberg.acquisition.providers.spotify import CATALOG_FIELDS  # type: ignore
+                from festival_bloomberg.acquisition.contracts import content_hash_of  # type: ignore
+                present = {k for k in CATALOG_FIELDS if k in item}
+                rec = {
+                    "platform": "spotify",
+                    "provider": "spotify-devmode-v1",
+                    "object_type": "artist_identity",
+                    "platform_object_id": item.get("id"),
+                    "spotify_id": item.get("id"),
+                    "name": item.get("name"),
+                    "fields_present": sorted(present),
+                    "retrieved_at": now_iso(),
+                    "knowledge_time": now_iso(),
+                    "content_role": "catalog_identity",
+                    "content_hash": content_hash_of(item),
+                }
+                for field in ("external_urls", "images", "type", "uri"):
+                    if field in present:
+                        rec[field] = item[field]
                 stats["successful"] += 1
-                for rec in result.records:
-                    obs_key = hashlib.sha256(f"{ak}|spotify|catalog_identity|{sid}|{day}".encode()).hexdigest()[:40]
-                    new_observations.append({
-                        "observation_key": obs_key,
-                        "artist_key": ak,
-                        "source_system": "spotify",
-                        "metric_kind": "SPOTIFY_CATALOG_IDENTITY",
-                        "period_start": day,
-                        "period_end": day,
-                        "value": None,
-                        "value_sum": None,
-                        "value_unit": None,
-                        "status": "ok",
-                        "source_url": (rec.get("external_urls") or {}).get("spotify") or f"https://open.spotify.com/artist/{rec.get('spotify_id') or sid}",
-                        "retrieved_at": rec.get("retrieved_at") or now_iso(),
-                        "knowledge_time": rec.get("knowledge_time") or now_iso(),
-                        "provenance_json": json.dumps({"fields_present": rec.get("fields_present", []), "spotify_id": rec.get("spotify_id") or sid, "api_mode": "dev_mode"}, default=str),
-                    })
-            elif s == "RATE_LIMITED":
-                stats["rate_limited"] += 1
-            elif s == "NOT_CONFIGURED":
-                stats["not_configured"] += 1
-            elif s == "NO_RESULTS":
-                stats["no_results"] += 1
-            else:
-                stats["provider_error"] += 1
-            if (idx + 1) % batch_size == 0:
-                manifest.completed_batches = idx + 1
-                lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
+                obs_key = hashlib.sha256(f"{ak}|spotify|catalog_identity|{sid}|{day}".encode()).hexdigest()[:40]
+                new_observations.append({
+                    "observation_key": obs_key,
+                    "artist_key": ak,
+                    "source_system": "spotify",
+                    "metric_kind": "SPOTIFY_CATALOG_IDENTITY",
+                    "period_start": day,
+                    "period_end": day,
+                    "value": None,
+                    "value_sum": None,
+                    "value_unit": None,
+                    "status": "ok",
+                    "source_url": (rec.get("external_urls") or {}).get("spotify") or f"https://open.spotify.com/artist/{rec.get('spotify_id') or sid}",
+                    "retrieved_at": rec.get("retrieved_at") or now_iso(),
+                    "knowledge_time": rec.get("knowledge_time") or now_iso(),
+                    "provenance_json": json.dumps({"fields_present": rec.get("fields_present", []), "spotify_id": rec.get("spotify_id") or sid, "api_mode": "dev_mode", "batch_lookup": True}, default=str),
+                })
+            manifest.completed_batches = (batch_idx // spotify_batch) + 1
+            lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
 
         if not new_observations:
             manifest.status = "BUILD_COMPLETE"
