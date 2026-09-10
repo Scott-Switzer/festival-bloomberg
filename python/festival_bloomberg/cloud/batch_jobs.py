@@ -4704,9 +4704,10 @@ def run_artist_attention_spotify_build_v1(spec: dict, scratch_dir: Path) -> dict
         new_observations: list[dict] = []
         stats = {"attempted": 0, "successful": 0, "not_configured": 0, "rate_limited": 0, "provider_error": 0, "no_results": 0}
         day = datetime.now(UTC).date().isoformat()
-        # Deterministic batch lookup via /v1/artists?ids= (up to 50 per call).
-        # This is the correct endpoint for known Spotify IDs — search?q=<id> would
-        # never match and wastes quota. We reuse the provider's token cache.
+        # Dev-mode note: /v1/artists?ids= returns 403 for this token
+        # (get_app_token vs user token / extended quota). Single
+        # GET /v1/artists/{id} returns 200. Use per-artist GET with
+        # bounded interval. Cost: 1 call per artist (50 calls for 50).
         token = provider._get_token()  # type: ignore[attr-defined]
         if token is None:
             manifest.status = "BUILD_COMPLETE"
@@ -4715,47 +4716,31 @@ def run_artist_attention_spotify_build_v1(spec: dict, scratch_dir: Path) -> dict
             manifest.rows_written = 0
             lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
             return {"status": "COMPLETED", "eligible": len(eligible), "not_configured": True, "note": "SPOTIFY_TOKEN_UNAVAILABLE", "manifest_key": manifest_key_path}
-        # Build sid -> artist_key map for batch response correlation.
-        sid_to_ak: dict[str, str] = {sid: ak for ak, sid in eligible}
-        unique_sids = list(sid_to_ak.keys())
-        # Spotify allows up to 50 IDs per request.
-        spotify_batch = 50
-        for batch_idx in range(0, len(unique_sids), spotify_batch):
-            batch_sids = unique_sids[batch_idx: batch_idx + spotify_batch]
-            if batch_idx > 0 and min_interval > 0:
+        for idx, (ak, sid) in enumerate(eligible):
+            if idx > 0 and min_interval > 0:
                 time.sleep(min_interval)
-            ids_param = ",".join(batch_sids)
-            url = f"https://api.spotify.com/v1/artists?ids={ids_param}"
-            # Mark attempted for each artist in the batch before the call
-            # so stats reflect per-artist granularity even on batch failure.
+            stats["attempted"] += 1
+            url = f"https://api.spotify.com/v1/artists/{sid}"
             try:
                 resp = provider.transport.request(  # type: ignore[union-attr]
                     "GET", url,
                     headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
                     timeout_seconds=30.0,
                 )
-            except Exception as exc:
-                for _sid in batch_sids:
-                    stats["attempted"] += 1
-                    stats["provider_error"] += 1
-                    manifest.params.setdefault("spotify_transport_errors", [])
+            except Exception:
+                stats["provider_error"] += 1
                 continue
             if resp.status == 429:
-                for _sid in batch_sids:
-                    stats["attempted"] += 1
-                    stats["rate_limited"] += 1
-                # Respect Retry-After if present by sleeping once
+                stats["rate_limited"] += 1
                 try:
                     retry_after = int(resp.headers.get("Retry-After", "") or resp.headers.get("retry-after", "") or "0")
                     if retry_after and retry_after < 60:
                         time.sleep(retry_after)
                 except Exception:
                     pass
-                # Refresh token in case of stale auth after rate limit
                 token = provider._get_token() or token  # type: ignore[attr-defined]
                 continue
             if resp.status == 401:
-                # Refresh token once and retry this batch
                 provider._access_token = None  # type: ignore[attr-defined]
                 provider._token_expiry = 0.0  # type: ignore[attr-defined]
                 token = provider._get_token() or token  # type: ignore[attr-defined]
@@ -4766,75 +4751,68 @@ def run_artist_attention_spotify_build_v1(spec: dict, scratch_dir: Path) -> dict
                         timeout_seconds=30.0,
                     )
                 except Exception:
-                    for _sid in batch_sids:
-                        stats["attempted"] += 1
-                        stats["provider_error"] += 1
+                    stats["provider_error"] += 1
                     continue
                 if resp.status != 200:
-                    for _sid in batch_sids:
-                        stats["attempted"] += 1
+                    if resp.status == 404:
+                        stats["no_results"] += 1
+                    else:
                         stats["provider_error"] += 1
                     continue
+            if resp.status == 404:
+                stats["no_results"] += 1
+                continue
             if resp.status != 200:
-                for _sid in batch_sids:
-                    stats["attempted"] += 1
-                    stats["provider_error"] += 1
+                stats["provider_error"] += 1
                 continue
             try:
-                payload = json.loads(resp.body.decode("utf-8"))
-                artists_payload = payload.get("artists") or []
-            except Exception:
-                for _sid in batch_sids:
-                    stats["attempted"] += 1
-                    stats["provider_error"] += 1
-                continue
-            # Correlate response (order matches request; null entries mean not found)
-            for sid, item in zip(batch_sids, artists_payload):
-                ak = sid_to_ak.get(sid, "")
-                stats["attempted"] += 1
-                if item is None or not isinstance(item, dict) or not item.get("id"):
+                item = json.loads(resp.body.decode("utf-8"))
+                if not isinstance(item, dict) or not item.get("id"):
                     stats["no_results"] += 1
                     continue
-                # Normalize using the same catalog fields as the provider
-                from festival_bloomberg.acquisition.providers.spotify import CATALOG_FIELDS  # type: ignore
-                from festival_bloomberg.acquisition.contracts import content_hash_of  # type: ignore
-                present = {k for k in CATALOG_FIELDS if k in item}
-                rec = {
-                    "platform": "spotify",
-                    "provider": "spotify-devmode-v1",
-                    "object_type": "artist_identity",
-                    "platform_object_id": item.get("id"),
-                    "spotify_id": item.get("id"),
-                    "name": item.get("name"),
-                    "fields_present": sorted(present),
-                    "retrieved_at": now_iso(),
-                    "knowledge_time": now_iso(),
-                    "content_role": "catalog_identity",
-                    "content_hash": content_hash_of(item),
-                }
-                for field in ("external_urls", "images", "type", "uri"):
-                    if field in present:
-                        rec[field] = item[field]
-                stats["successful"] += 1
-                obs_key = hashlib.sha256(f"{ak}|spotify|catalog_identity|{sid}|{day}".encode()).hexdigest()[:40]
-                new_observations.append({
-                    "observation_key": obs_key,
-                    "artist_key": ak,
-                    "source_system": "spotify",
-                    "metric_kind": "SPOTIFY_CATALOG_IDENTITY",
-                    "period_start": day,
-                    "period_end": day,
-                    "value": None,
-                    "value_sum": None,
-                    "value_unit": None,
-                    "status": "ok",
-                    "source_url": (rec.get("external_urls") or {}).get("spotify") or f"https://open.spotify.com/artist/{rec.get('spotify_id') or sid}",
-                    "retrieved_at": rec.get("retrieved_at") or now_iso(),
-                    "knowledge_time": rec.get("knowledge_time") or now_iso(),
-                    "provenance_json": json.dumps({"fields_present": rec.get("fields_present", []), "spotify_id": rec.get("spotify_id") or sid, "api_mode": "dev_mode", "batch_lookup": True}, default=str),
-                })
-            manifest.completed_batches = (batch_idx // spotify_batch) + 1
-            lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
+            except Exception:
+                stats["provider_error"] += 1
+                continue
+            from festival_bloomberg.acquisition.providers.spotify import CATALOG_FIELDS  # type: ignore
+            from festival_bloomberg.acquisition.contracts import content_hash_of  # type: ignore
+            present = {k for k in CATALOG_FIELDS if k in item}
+            rec = {
+                "platform": "spotify",
+                "provider": "spotify-devmode-v1",
+                "object_type": "artist_identity",
+                "platform_object_id": item.get("id"),
+                "spotify_id": item.get("id"),
+                "name": item.get("name"),
+                "fields_present": sorted(present),
+                "retrieved_at": now_iso(),
+                "knowledge_time": now_iso(),
+                "content_role": "catalog_identity",
+                "content_hash": content_hash_of(item),
+            }
+            for field in ("external_urls", "images", "type", "uri"):
+                if field in present:
+                    rec[field] = item[field]
+            stats["successful"] += 1
+            obs_key = hashlib.sha256(f"{ak}|spotify|catalog_identity|{sid}|{day}".encode()).hexdigest()[:40]
+            new_observations.append({
+                "observation_key": obs_key,
+                "artist_key": ak,
+                "source_system": "spotify",
+                "metric_kind": "SPOTIFY_CATALOG_IDENTITY",
+                "period_start": day,
+                "period_end": day,
+                "value": None,
+                "value_sum": None,
+                "value_unit": None,
+                "status": "ok",
+                "source_url": (rec.get("external_urls") or {}).get("spotify") or f"https://open.spotify.com/artist/{rec.get('spotify_id') or sid}",
+                "retrieved_at": rec.get("retrieved_at") or now_iso(),
+                "knowledge_time": rec.get("knowledge_time") or now_iso(),
+                "provenance_json": json.dumps({"fields_present": rec.get("fields_present", []), "spotify_id": rec.get("spotify_id") or sid, "api_mode": "dev_mode", "per_artist_get": True}, default=str),
+            })
+            if (idx + 1) % 10 == 0:
+                manifest.completed_batches = idx + 1
+                lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
 
         if not new_observations:
             manifest.status = "BUILD_COMPLETE"
