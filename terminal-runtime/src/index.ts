@@ -19,6 +19,7 @@ import {
   isPublicDemoPathBlocked,
   PUBLIC_DEMO_PRIVATE_PREFIXES,
 } from "./routing";
+import { HostedPromotionOrchestrator } from "./hosted-promotion";
 
 const CURRENT_KEY = "serving/artist_security_terminal_v1/CURRENT.json";
 const GENERATION_OBJECT_PREFIX = "serving/artist_security_terminal_v1/generations/";
@@ -31,11 +32,18 @@ const PRODUCTION_PRIVATE = "PRODUCTION_PRIVATE";
 export interface TerminalEnv {
   TERMINAL_CONTAINER: DurableObjectNamespace;
   LAKE_BUCKET: R2Bucket;
+  // Control-state bucket for the hosted-promotion state machine (read/write
+  // of a small JSON pointer only; never the serving data itself).
+  BACKUP_BUCKET: R2Bucket;
   ASSETS: Fetcher;
   TERMINAL_MODE?: string;
   // Production-only fallback when Cloudflare Access is not yet attached.
   // This is a deployment secret, never a source-controlled value.
   TERMINAL_ACCESS_PATH?: string;
+  // Public origin of this deployment — used by the hosted-promotion cron to
+  // build the /health verification request whose response carries the
+  // container's actually-served generation.
+  TERMINAL_PUBLIC_ORIGIN?: string;
   [key: string]: unknown;
 }
 
@@ -229,5 +237,40 @@ export default {
       return env.ASSETS.fetch(request);
     }
     return Response.json({ error: "not found" }, { status: 404 });
+  },
+
+  /**
+   * HOSTED PROMOTION — the terminal's own scheduled tick (cron).
+   *
+   * Watches the lake Serving CURRENT; when it advances beyond the hosted
+   * generation last verified, restarts the long-lived container exactly once,
+   * then VERIFIES via the container's /health (which reports the generation it
+   * is actually serving) before claiming HOSTED_FRESH. The state machine and
+   * invariants live in hosted-promotion.ts.
+   *
+   * No provider secrets, no Gold mutation, no batch triggers — this is the
+   * read-only terminal's ONLY mutation: a container lifecycle action + a small
+   * control-state pointer in BACKUP_BUCKET.
+   */
+  async scheduled(_controller: ScheduledController, env: TerminalEnv): Promise<void> {
+    try {
+      const orchestrator = new HostedPromotionOrchestrator(env as any);
+      const result = await orchestrator.runTick();
+      console.log(JSON.stringify({
+        event: "HOSTED_PROMOTION_TICK",
+        action: result.decision.action,
+        reason: result.decision.reason,
+        triggered: result.triggered,
+        hosted_generation: result.verifiedHostedGeneration,
+        serving_generation: result.stateAfter.serving_generation,
+        pages_status: result.stateAfter.pages_status,
+        failure_count: result.stateAfter.failure_count,
+      }));
+    } catch (e: unknown) {
+      console.error(JSON.stringify({
+        event: "HOSTED_PROMOTION_TICK_ERROR",
+        error: e instanceof Error ? e.message : String(e),
+      }));
+    }
   },
 };

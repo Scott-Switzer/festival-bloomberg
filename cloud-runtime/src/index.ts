@@ -34,6 +34,7 @@ import { planForwardFamilies, loadV2Universe } from "./forward-planner";
 import { handleYouTubeBatch } from "./youtube-consumer";
 import { handleStructuredBatch } from "./structured-consumer";
 import { decideServingTrigger, fingerprintGolds, servingGoldFingerprint } from "./watermark-controller";
+import { SourceSchedulerOrchestrator, estimatedFullRefreshDays, SPOTIFY_COHORT_SIZE, SPOTIFY_MIN_INTERVAL_HOURS, SPOTIFY_UNIVERSE_SIZE_FALLBACK } from "./source-scheduler";
 import { handleDlqBatch } from "./dlq-consumer";
 import { readPlatformQueueMetrics, readQueueMetrics, writeQueueEnqueueMetric } from "./queue-metrics";
 
@@ -1026,6 +1027,62 @@ export default {
         writeQueueEnqueueMetric(env, "fi-structured-api", structuredQueued, runId),
         writeQueueEnqueueMetric(env, "fi-monid", webQueued, runId),
       ]).catch((metricError) => console.error(JSON.stringify({ event: "QUEUE_METRIC_WRITE_ERROR", run_id: runId, error: metricError instanceof Error ? metricError.message : String(metricError) })));
+
+      // ── SOURCE ACQUISITION AUTOMATIC ──────────────────────────────────────
+      // The SOURCE_ACQUISITION_AUTOMATIC lane: each cron tick, the source
+      // scheduler decides (from durable control/source-state/*.json + live Gold
+      // CURRENTs + Wikimedia rate state) whether a spotlight family is due, and
+      // — when due — fires exactly ONE batch job through the same BatchContainer
+      // DO path as /batch/trigger. This is what makes the estate compound
+      // WITHOUT a manual POST /batch/trigger.
+      //   WIKIMEDIA: incremental when a new admissible day exists (else 0 requests).
+      //   SPOTIFY:   bounded deterministic rotating cohort (25) on a 6h cadence,
+      //              gated by observed 429/quota backoff (never hot-loops quota).
+      // In-flight jobs are observed (via their durable manifest) on the NEXT
+      // tick to advance the durable state (cursor, backoff, generation). This
+      // block is best-effort: a failure here must NOT break the watermark /
+      // serving-refresh path below.
+      try {
+        const sourceNow = new Date().toISOString();
+        const sourceOrchestrator = new SourceSchedulerOrchestrator(env as any);
+        const sourceResult = await sourceOrchestrator.runTick(sourceNow);
+        const sourceAudit = {
+          run_id: runId,
+          type: "source_acquisition_tick",
+          now: sourceNow,
+          fired_jobs: sourceResult.firedJobs,
+          families: sourceResult.families.map((f) => ({
+            family: f.family,
+            reason: f.decision.reason,
+            should_trigger: f.decision.shouldTrigger,
+            deduped: f.decision.deduped,
+            fired: f.fired,
+            job_id: f.jobId,
+            completed_outcome: f.completedOutcome,
+            cursor: f.stateAfter.cursor,
+            next_due_at: f.stateAfter.next_due_at,
+            quota_backoff_until: f.stateAfter.quota_backoff_until,
+            backoff_until: f.stateAfter.backoff_until,
+          })),
+          spotify: {
+            cohort_size: SPOTIFY_COHORT_SIZE,
+            cadence_hours: SPOTIFY_MIN_INTERVAL_HOURS,
+            universe_size_fallback: SPOTIFY_UNIVERSE_SIZE_FALLBACK,
+            estimated_full_refresh_days: estimatedFullRefreshDays(SPOTIFY_COHORT_SIZE, SPOTIFY_MIN_INTERVAL_HOURS),
+          },
+        };
+        await env.BACKUP_BUCKET.put(
+          `control/source-state/TICK_${sourceNow.replace(/[-:.TZ]/g, "").slice(0, 14)}.json`,
+          JSON.stringify(sourceAudit),
+          { httpMetadata: { contentType: "application/json" } },
+        );
+        console.log(JSON.stringify({ event: "SOURCE_ACQUISITION_TICK", ...sourceAudit }));
+      } catch (sourceError) {
+        console.error(JSON.stringify({
+          event: "SOURCE_ACQUISITION_TICK_ERROR",
+          error: sourceError instanceof Error ? sourceError.message : String(sourceError),
+        }));
+      }
 
       // ── Serving freshness: watermark-driven terminal rebuild + nightly safety ──
       // Gold→Serving watermark: if any spotlight Gold (wikimedia/spotify) has

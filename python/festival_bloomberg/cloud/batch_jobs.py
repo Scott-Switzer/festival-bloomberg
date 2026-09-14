@@ -4696,9 +4696,28 @@ def run_artist_attention_spotify_build_v1(spec: dict, scratch_dir: Path) -> dict
                 invalid_artists.append(ak)
                 spotify_ids.pop(ak, None)
                 spotify_provenance.pop(ak, None)
-        # Apply max_artists cap after provenance merge.
+        # Apply max_artists cap after provenance merge — with deterministic
+        # rotating cursor for automated scheduling. cursor_offset selects the
+        # slice start in the sorted universe; wraps deterministically.
+        # Backwards-compatible: if cursor_offset absent, take first N (legacy).
+        cursor_offset = int(params.get("cursor_offset") or 0)
         eligible_all = sorted(spotify_ids.items())
-        eligible = eligible_all[:max_artists]
+        universe_size = len(eligible_all)
+        manifest.params["spotify_universe_size"] = universe_size
+        manifest.params["spotify_cursor_offset"] = cursor_offset
+        if cursor_offset and universe_size:
+            cursor_offset = cursor_offset % universe_size
+            if cursor_offset + max_artists <= universe_size:
+                eligible = eligible_all[cursor_offset: cursor_offset + max_artists]
+            else:
+                # Wrap around end of universe
+                tail = eligible_all[cursor_offset:]
+                head = eligible_all[: (cursor_offset + max_artists) % universe_size]
+                eligible = tail + head
+        else:
+            eligible = eligible_all[:max_artists]
+        manifest.params["spotify_eligible_slice_start"] = cursor_offset if cursor_offset else 0
+        manifest.params["spotify_eligible_slice_end"] = (cursor_offset + len(eligible)) % universe_size if universe_size else len(eligible)
         provenance_counts = {}
         for _, sid in eligible:
             pass
@@ -4749,7 +4768,7 @@ def run_artist_attention_spotify_build_v1(spec: dict, scratch_dir: Path) -> dict
                 pass
 
         new_observations: list[dict] = []
-        stats = {"attempted": 0, "successful": 0, "not_configured": 0, "rate_limited": 0, "provider_error": 0, "no_results": 0}
+        stats = {"attempted": 0, "successful": 0, "not_configured": 0, "rate_limited": 0, "quota_exceeded": 0, "auth_failed": 0, "provider_error": 0, "no_results": 0}
         day = datetime.now(UTC).date().isoformat()
         # Dev-mode note: /v1/artists?ids= returns 403 for this token
         # (get_app_token vs user token / extended quota). Single
@@ -4782,6 +4801,28 @@ def run_artist_attention_spotify_build_v1(spec: dict, scratch_dir: Path) -> dict
                 stats["provider_error"] += 1
                 continue
             if resp.status == 429:
+                # Distinguish ordinary rate limit from quota exceeded.
+                # Spotify Development Mode may return 429 with a body
+                # containing "quota" or "too many requests" semantics.
+                is_quota = False
+                try:
+                    body_text = resp.body.decode("utf-8", errors="ignore").lower() if resp.body else ""
+                    if "quota" in body_text or "exceed" in body_text:
+                        is_quota = True
+                except Exception:
+                    pass
+                if is_quota:
+                    stats["quota_exceeded"] += 1
+                    # Do NOT hot-loop on quota: Development Mode quota is a hard
+                    # ceiling for this cycle. Stop the cohort immediately (no
+                    # further artist GETs this run) so we neither exhaust the
+                    # quota nor burn CPU. The durable scheduler opens a 24h
+                    # quota backoff from the manifest/Current stats. Any partial
+                    # observations gathered so far are still published (Gold is
+                    # append-only; the cursor only advances if the cohort
+                    # genuinely completed cleanly).
+                    manifest.params["spotify_quota_stopped_cohort"] = True
+                    break
                 stats["rate_limited"] += 1
                 try:
                     retry_after = int(resp.headers.get("Retry-After", "") or resp.headers.get("retry-after", "") or "0")
@@ -4805,6 +4846,13 @@ def run_artist_attention_spotify_build_v1(spec: dict, scratch_dir: Path) -> dict
                     stats["provider_error"] += 1
                     continue
                 if resp.status != 200:
+                    if resp.status == 401:
+                        # Persistent auth failure even after token refresh:
+                        # credentials are broken for the rest of the cohort.
+                        # Classify explicitly and stop (do not keep re-401ing).
+                        stats["auth_failed"] += 1
+                        manifest.params["spotify_auth_broken"] = True
+                        break
                     if resp.status == 404:
                         stats["no_results"] += 1
                     else:
@@ -4870,6 +4918,10 @@ def run_artist_attention_spotify_build_v1(spec: dict, scratch_dir: Path) -> dict
             manifest.completed_at = now_iso()
             manifest.runtime_seconds = round(time.time() - start, 2)
             manifest.rows_written = 0
+            if stats.get("quota_exceeded", 0) > 0:
+                manifest.params["spotify_quota_stopped_cohort"] = True
+            if stats.get("auth_failed", 0) > 0:
+                manifest.params["spotify_auth_broken"] = True
             lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
             return {"status": "COMPLETED", "eligible": len(eligible), "attempted": stats["attempted"], **stats, "new_observations": 0, "manifest_key": manifest_key_path}
 
@@ -4907,7 +4959,7 @@ def run_artist_attention_spotify_build_v1(spec: dict, scratch_dir: Path) -> dict
         manifest.r2_write_bytes += out_path.stat().st_size
         manifest.rows_written = total_rows
         verify_outputs(lake, bucket=lake.config.lake_bucket, output_hashes={out_key: out_sha}, manifest=manifest, manifest_key_path=manifest_key_path)
-        cur_payload = {"artifact": SPOTIFY_GOLD_PREFIX, "contract_version": "artist_attention_spotify_v1", "generation": generation, "object_key": out_key, "sha256": out_sha, "bytes": out_path.stat().st_size, "rows": total_rows, "new_rows": len(fresh_rows), "eligible": len(eligible), **stats, "created_at": now_iso(), "parent_generation": (parent_payload or {}).get("generation")}
+        cur_payload = {"artifact": SPOTIFY_GOLD_PREFIX, "contract_version": "artist_attention_spotify_v1", "generation": generation, "object_key": out_key, "sha256": out_sha, "bytes": out_path.stat().st_size, "rows": total_rows, "new_rows": len(fresh_rows), "eligible": len(eligible), "universe_size": universe_size, "cursor_offset": int(params.get("cursor_offset") or 0), "quota_stopped_cohort": bool(manifest.params.get("spotify_quota_stopped_cohort")), "auth_broken": bool(manifest.params.get("spotify_auth_broken")), **stats, "created_at": now_iso(), "parent_generation": (parent_payload or {}).get("generation")}
         lake.put_bytes(lake.config.lake_bucket, SPOTIFY_GOLD_CURRENT, json.dumps(cur_payload, indent=2).encode(), content_type="application/json")
         manifest.status = "PUBLISHED"; manifest.publication_state = "PUBLISHED"; manifest.completed_at = now_iso(); manifest.runtime_seconds = round(time.time() - start, 2)
         lake.write_manifest(lake.config.lake_bucket, manifest_key_path, manifest.to_dict())
