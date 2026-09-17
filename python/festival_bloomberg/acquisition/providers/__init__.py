@@ -22,15 +22,18 @@ from .scrapling import ScraplingProvider
 from .seatgeek import SeatGeekProvider
 from .setlistfm import SetlistFmProvider
 from .soundcharts import SoundchartsProvider
+from .bluesky import BlueskyProvider
 from .spotify import SpotifyProvider
 from .ticketmaster import TicketmasterProvider
 from .wikidata import WikidataProvider
 from .wikimedia import WikimediaProvider
+from .x_twitter import XProvider
 from .youtube import YouTubeProvider
 
 __all__ = [
     "AcquisitionProvider",
     "ApifyProvider",
+    "BlueskyProvider",
     "CommonCrawlProvider",
     "EventbriteProvider",
     "GoogleTrendsProvider",
@@ -46,6 +49,7 @@ __all__ = [
     "TicketmasterProvider",
     "WikidataProvider",
     "WikimediaProvider",
+    "XProvider",
     "YouTubeProvider",
     "default_providers",
 ]
@@ -61,6 +65,8 @@ def default_providers(**overrides) -> dict[str, AcquisitionProvider]:
         "monid": MonidProvider(**overrides.pop("monid", {})),
         "nws": NwsProvider(**overrides.pop("nws", {})),
         "apify": ApifyProvider(**overrides.pop("apify", {})),
+        "bluesky": BlueskyProvider(**overrides.pop("bluesky", {})),
+        "x": XProvider(**overrides.pop("x", {})),
         "youtube": YouTubeProvider(**overrides.pop("youtube", {})),
         "scrapling": ScraplingProvider(**overrides.pop("scrapling", {})),
         "wikimedia": WikimediaProvider(**overrides.pop("wikimedia", {})),

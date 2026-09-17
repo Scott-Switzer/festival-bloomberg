@@ -22,6 +22,10 @@ export const ALLOWED_BATCH_JOB_TYPES = new Set([
   "terminal_serving_build_v1",
   "artist_factor_tape_build_v1",
   "artist_sentiment_build_v1",
+  "artist_attention_wikimedia_build_v1",
+  "social_observations_build_v1",
+  "moat_scoreboard_build_v1",
+  "artist_attention_spotify_build_v1",
 ]);
 
 /** Fixed safe error codes — never raw exception text. */
@@ -144,6 +148,25 @@ export function buildContainerEnv(env: Record<string, string | undefined>): Reco
     PYTHONUNBUFFERED: "1",
     FI_SCRATCH_DIR: "/tmp/festival-bloomberg",
   };
+  // Provider credentials — forwarded ONLY from the DO's own bindings (P0-3).
+  // The container never receives secrets via job params. Missing bindings
+  // remain empty strings; jobs fail closed with BLOCKED_BY_CREDENTIAL.
+  const passthroughKeys = [
+    "SPOTIFY_CLIENT_ID",
+    "SPOTIFY_CLIENT_SECRET",
+    "SPOTIFY_API_KEY",
+    "YOUTUBE_API_KEY",
+    "MONID_API_KEY",
+    "TICKETMASTER_API_KEY",
+    "TICKETS_DEV_API_KEY",
+    "APIFY_TOKEN",
+    "NVIDIA_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+  ] as const;
+  for (const key of passthroughKeys) {
+    if (env[key]) result[key] = env[key] as string;
+  }
   return result;
 }
 

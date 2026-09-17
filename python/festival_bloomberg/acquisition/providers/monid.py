@@ -61,11 +61,21 @@ SUPPORTED_OPERATIONS = frozenset(
 #: documentation. Never add an endpoint here without a documented schema.
 PINNED_ENDPOINT_INPUTS: dict[str, dict[str, Any]] = {
     "/apidojo/tiktok-profile-scraper": {
-        "schema_source": "apify.com/apidojo/tiktok-profile-scraper Input tab",
-        "input": {"username": "{handle}", "limit": "{max_records}"},
+        "schema_source": "apify.com/apidojo/tiktok-profile-scraper — monid.ai/blog/tiktok-handle-to-dataset-in-one-script (usernames/maxItems, 2026-09-09)",
+        "schema_version": "2026-09-09",
+        "validated_at": "2026-09-09",
+        "provider": "apify",
+        "endpoint": "/apidojo/tiktok-profile-scraper",
+        "documentation_url": "https://monid.ai/blog/tiktok-handle-to-dataset-in-one-script",
+        "input": {"usernames": ["{handle}"], "maxItems": "{max_records}"},
     },
     "/streamers/youtube-comments-scraper": {
         "schema_source": "apify.com/streamers/youtube-comments-scraper Input tab",
+        "schema_version": "2026-09-09",
+        "validated_at": "2026-09-09",
+        "provider": "apify",
+        "endpoint": "/streamers/youtube-comments-scraper",
+        "documentation_url": "https://apify.com/streamers/youtube-comments-scraper",
         "input": {"videoUrls": ["{canonical_url}"], "maxComments": "{max_records}"},
     },
 }

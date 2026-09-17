@@ -86,6 +86,17 @@ interface BatchEnv {
   FI_R2_BACKUP_BUCKET?: string;
   FI_LISTENER_HMAC_SECRET?: string;
   FI_LISTENER_HMAC_SECRET_VERSION?: string;
+  SPOTIFY_CLIENT_ID?: string;
+  SPOTIFY_CLIENT_SECRET?: string;
+  SPOTIFY_API_KEY?: string;
+  YOUTUBE_API_KEY?: string;
+  MONID_API_KEY?: string;
+  TICKETMASTER_API_KEY?: string;
+  TICKETS_DEV_API_KEY?: string;
+  APIFY_TOKEN?: string;
+  NVIDIA_API_KEY?: string;
+  ANTHROPIC_API_KEY?: string;
+  OPENAI_API_KEY?: string;
 }
 
 export class BatchContainer extends DurableObject<BatchEnv> {
@@ -113,6 +124,17 @@ export class BatchContainer extends DurableObject<BatchEnv> {
       FI_R2_BACKUP_BUCKET: this.env.FI_R2_BACKUP_BUCKET,
       FI_LISTENER_HMAC_SECRET: this.env.FI_LISTENER_HMAC_SECRET,
       FI_LISTENER_HMAC_SECRET_VERSION: this.env.FI_LISTENER_HMAC_SECRET_VERSION,
+      SPOTIFY_CLIENT_ID: this.env.SPOTIFY_CLIENT_ID,
+      SPOTIFY_CLIENT_SECRET: this.env.SPOTIFY_CLIENT_SECRET,
+      SPOTIFY_API_KEY: this.env.SPOTIFY_API_KEY,
+      YOUTUBE_API_KEY: this.env.YOUTUBE_API_KEY,
+      MONID_API_KEY: this.env.MONID_API_KEY,
+      TICKETMASTER_API_KEY: this.env.TICKETMASTER_API_KEY,
+      TICKETS_DEV_API_KEY: this.env.TICKETS_DEV_API_KEY,
+      APIFY_TOKEN: this.env.APIFY_TOKEN,
+      NVIDIA_API_KEY: this.env.NVIDIA_API_KEY,
+      ANTHROPIC_API_KEY: this.env.ANTHROPIC_API_KEY,
+      OPENAI_API_KEY: this.env.OPENAI_API_KEY,
     };
   }
 
@@ -409,6 +431,10 @@ export class BatchContainer extends DurableObject<BatchEnv> {
       const lakeJobTypes = new Set([
         "artist_factor_tape_build_v1",
         "artist_sentiment_build_v1",
+        "artist_attention_wikimedia_build_v1",
+        "social_observations_build_v1",
+        "moat_scoreboard_build_v1",
+        "artist_attention_spotify_build_v1",
         "terminal_serving_build_v1",
         "listenbrainz_tar_map",
         "listenbrainz_tar_reduce",

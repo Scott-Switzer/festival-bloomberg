@@ -21,6 +21,11 @@
   "env": {
     "staging": {
       "name": "festival-bloomberg-terminal-staging",
+      // Hosted-promotion tick: watch lake Serving CURRENT and restart the
+      // container when it advances (see src/hosted-promotion.ts).
+      "triggers": {
+        "crons": ["*/5 * * * *"]
+      },
       "durable_objects": {
         "bindings": [
           { "name": "TERMINAL_CONTAINER", "class_name": "TerminalContainer" }
@@ -30,7 +35,8 @@
         { "tag": "v1", "new_sqlite_classes": ["TerminalContainer"] }
       ],
       "r2_buckets": [
-        { "binding": "LAKE_BUCKET", "bucket_name": "festival-intelligence-lake" }
+        { "binding": "LAKE_BUCKET", "bucket_name": "festival-intelligence-lake" },
+        { "binding": "BACKUP_BUCKET", "bucket_name": "festival-intelligence-backups" }
       ],
       "containers": [
         {
@@ -42,6 +48,7 @@
       ],
       "vars": {
         "TERMINAL_MODE": "STAGING_PUBLIC_DEMO",
+        "TERMINAL_PUBLIC_ORIGIN": "https://festival-bloomberg-terminal-staging.scswitzer.workers.dev",
         "POLICY_VERSION": "1.0.0",
         "SOFTWARE_VERSION": "artist-terminal-v1-staging"
       }
@@ -49,6 +56,10 @@
 
     "production": {
       "name": "festival-bloomberg-terminal-production",
+      // Same hosted-promotion tick as staging (see src/hosted-promotion.ts).
+      "triggers": {
+        "crons": ["*/5 * * * *"]
+      },
       "durable_objects": {
         "bindings": [
           { "name": "TERMINAL_CONTAINER", "class_name": "TerminalContainer" }
@@ -58,7 +69,8 @@
         { "tag": "v1", "new_sqlite_classes": ["TerminalContainer"] }
       ],
       "r2_buckets": [
-        { "binding": "LAKE_BUCKET", "bucket_name": "festival-intelligence-lake" }
+        { "binding": "LAKE_BUCKET", "bucket_name": "festival-intelligence-lake" },
+        { "binding": "BACKUP_BUCKET", "bucket_name": "festival-intelligence-backups" }
       ],
       "containers": [
         {
@@ -70,6 +82,7 @@
       ],
       "vars": {
         "TERMINAL_MODE": "PRODUCTION_PRIVATE",
+        "TERMINAL_PUBLIC_ORIGIN": "https://festival-bloomberg-terminal-production.scswitzer.workers.dev",
         "POLICY_VERSION": "1.0.0",
         "SOFTWARE_VERSION": "artist-terminal-v1-production"
       }
