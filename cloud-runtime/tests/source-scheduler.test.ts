@@ -398,6 +398,93 @@ describe("Orchestrator: fires at most one job per due family per tick", () => {
   });
 });
 
+// ── Regression: in-flight crash recovery + cross-family starvation ─────────
+// A stuck manifest (still RUNNING past the in-flight window) must NOT wedge the
+// whole tick: the expired in-flight guard is cleared so a due family re-fires,
+// AND the other family still gets evaluated in the SAME tick.
+describe("Orchestrator: stuck in-flight crash recovery (regression)", () => {
+  function seedStuckWikimedia(buckets: any, requestedAtIso: string, jobId: string) {
+    buckets.backup["control/source-state/wikimedia.json"] = {
+      ...emptySourceState("wikimedia"),
+      in_flight: true,
+      in_flight_job_id: jobId,
+      in_flight_requested_at: requestedAtIso,
+      last_attempt_at: requestedAtIso,
+      next_due_at: null,
+    };
+    // Gold lags the admissible day → the family is DUE once the guard clears.
+    buckets.lake["gold/artist_attention_wikimedia/CURRENT.json"] = {
+      generation: "wikimedia_20260909T210109Z_b8e4a838",
+      latest_admissible: "2026-09-15",
+      new_max_period_end: "2026-09-13",
+    };
+  }
+
+  it("expired in-flight + RUNNING manifest → clear guard, re-fire due family, and Spotify is NOT starved", async () => {
+    const { env, buckets, fired } = makeFakeEnv();
+    const now = "2026-09-16T12:00:00Z";
+    // Requested 30h ago → past BOTH the 6h in-flight window and the 24h
+    // Wikimedia cadence (matches the live stuck job: due + expired guard).
+    const staleAt = new Date(new Date(now).getTime() - (SOURCE_INFLIGHT_TIMEOUT_HOURS + 24) * 3600 * 1000).toISOString();
+    seedStuckWikimedia(buckets, staleAt, "wikimedia_auto_stuck");
+    // Manifest is stuck: still RUNNING, unreadable to the classifier as terminal.
+    buckets.lake["control/jobs/artist_attention_wikimedia_build_v1/wikimedia_auto_stuck/manifest.json"] = {
+      status: "RUNNING",
+      job_id: "wikimedia_auto_stuck",
+    };
+    // Spotify is also due (fresh state) — it must be evaluated in the SAME tick.
+    buckets.lake["gold/artist_attention_spotify/CURRENT.json"] = {
+      generation: "spotify_20260915T075734Z_f4a8b2d6",
+      universe_size: 14866,
+    };
+
+    const orch = new SourceSchedulerOrchestrator(env as any);
+    const res = await orch.runTick(now);
+
+    // BOTH families present in the tick result (no early-return starvation).
+    const fams = res.families.map((f) => f.family).sort();
+    expect(fams).toEqual(["spotify", "wikimedia"]);
+    // Wikimedia: guard cleared from the stuck job, family re-fired (due).
+    const wm = res.families.find((f) => f.family === "wikimedia")!;
+    expect(wm.fired).toBe(true);
+    expect(wm.stateAfter.in_flight).toBe(true); // re-armed on the NEW job
+    expect(wm.stateAfter.in_flight_job_id).not.toBe("wikimedia_auto_stuck");
+    // Spotify: evaluated and fired in the same tick (was starved before the fix).
+    const sp = res.families.find((f) => f.family === "spotify")!;
+    expect(sp.fired).toBe(true);
+    expect(fired.length).toBe(2);
+  });
+
+  it("in-flight within the window + RUNNING manifest → keep guard, no re-fire, Spotify still evaluated", async () => {
+    const { env, buckets, fired } = makeFakeEnv();
+    const now = "2026-09-16T12:00:00Z";
+    // Requested 10 min ago → inside the 6h in-flight window.
+    const recentAt = new Date(new Date(now).getTime() - 10 * 60 * 1000).toISOString();
+    seedStuckWikimedia(buckets, recentAt, "wikimedia_auto_running");
+    buckets.lake["control/jobs/artist_attention_wikimedia_build_v1/wikimedia_auto_running/manifest.json"] = {
+      status: "RUNNING",
+      job_id: "wikimedia_auto_running",
+    };
+    buckets.lake["gold/artist_attention_spotify/CURRENT.json"] = {
+      generation: "spotify_20260915T075734Z_f4a8b2d6",
+      universe_size: 14866,
+    };
+
+    const orch = new SourceSchedulerOrchestrator(env as any);
+    const res = await orch.runTick(now);
+
+    const fams = res.families.map((f) => f.family).sort();
+    expect(fams).toEqual(["spotify", "wikimedia"]); // Spotify not starved
+    const wm = res.families.find((f) => f.family === "wikimedia")!;
+    expect(wm.fired).toBe(false); // still in-flight within window → no duplicate
+    expect(wm.stateAfter.in_flight).toBe(true);
+    expect(wm.stateAfter.in_flight_job_id).toBe("wikimedia_auto_running");
+    // Only the due Spotify job fired.
+    expect(fired.length).toBe(1);
+    expect(fired[0].job_type).toBe("artist_attention_spotify_build_v1");
+  });
+});
+
 describe("deriveLatestAdmissible", () => {
   it("is yesterday (UTC)", () => {
     expect(deriveLatestAdmissible("2026-09-14T04:00:00Z")).toBe("2026-09-13");

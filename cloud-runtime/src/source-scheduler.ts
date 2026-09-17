@@ -608,28 +608,45 @@ export class SourceSchedulerOrchestrator {
       const wmGold = (await this.readJson("gold/artist_attention_wikimedia/CURRENT.json")) as WikimediaGoldInput | null;
       const wmRate = (await this.readJson("control/jobs/artist_attention_wikimedia_build_v1/rate_state.json")) as WikimediaRateState | null;
       const wmState = await this.loadState("wikimedia");
-      const decision = decideWikimediaTrigger(wmState, wmGold, wmRate, nowIso);
 
       let completedOutcome: JobOutcomeClass | null = null;
       let stateAfter = wmState;
-      let fired = false;
-      let jobId: string | null = decision.jobId;
 
-      // Observe any in-flight job first (restart recovery).
+      // Observe any in-flight job first (restart recovery). This MUST NOT exit
+      // the tick: a stuck/stale manifest for one family must never starve the
+      // other. (The previous implementation early-returned here whenever the
+      // manifest read RUNNING, which wedged the WHOLE source scheduler — past
+      // the 6h crash-recovery window — and starved the Spotify family.)
       if (wmState.in_flight && wmState.in_flight_job_id) {
         const m = (await this.readJobManifest("artist_attention_wikimedia_build_v1", wmState.in_flight_job_id)) as JobManifestInput | null;
         const c = classifyJobOutcome(m);
+        const reqMs = parseMs(wmState.in_flight_requested_at);
+        const inFlightExpired =
+          reqMs !== null && new Date(nowIso).getTime() - reqMs >= SOURCE_INFLIGHT_TIMEOUT_HOURS * 3600 * 1000;
         if (c.outcome !== "RUNNING" && c.outcome !== "UNKNOWN") {
+          // Terminal outcome observed: advance the durable state (clears
+          // in-flight and sets the next-due cadence so the family is not
+          // re-fired this tick).
           completedOutcome = c.outcome;
           stateAfter = this.applyOutcome("wikimedia", wmState, c, nowIso, WIKIMEDIA_MIN_INTERVAL_HOURS, 0, wmGold?.generation ?? null);
           await this.saveState("wikimedia", stateAfter);
-        } else {
-          // Still running or manifest not yet readable: keep in-flight (dedupe).
-          stateAfter = wmState;
-          results.push({ family: "wikimedia", decision, fired: false, jobId, completedOutcome, stateAfter });
-          return this.finish(results, firedJobs, nowIso);
+        } else if (inFlightExpired) {
+          // Manifest still RUNNING (or unreadable) but the in-flight window
+          // expired: treat the job as crashed/stale. Clear the in-flight guard
+          // so the fresh decision below can re-fire. Previous Gold stays valid
+          // (no generation/cursor advance).
+          stateAfter = { ...wmState, in_flight: false, in_flight_job_id: null, in_flight_requested_at: null };
+          await this.saveState("wikimedia", stateAfter);
         }
+        // else: still running within the in-flight window → keep in_flight.
       }
+
+      // Re-decide from the (possibly advanced/cleared) state so a just-completed
+      // job is not re-fired, and a recovered (stuck) family can re-fire.
+      const decision = decideWikimediaTrigger(stateAfter, wmGold, wmRate, nowIso);
+
+      let fired = false;
+      let jobId: string | null = decision.jobId;
 
       if (decision.shouldTrigger) {
         // Mark in-flight, fire, persist, then advance on (assumed) success later.
@@ -652,16 +669,19 @@ export class SourceSchedulerOrchestrator {
     {
       const spGold = (await this.readJson("gold/artist_attention_spotify/CURRENT.json")) as (JobManifestInput & { universe_size?: number; universe_generation?: string }) | null;
       const spState = await this.loadState("spotify");
-      const decision = decideSpotifyTrigger(spState, nowIso);
 
       let completedOutcome: JobOutcomeClass | null = null;
       let stateAfter = spState;
-      let fired = false;
-      let jobId: string | null = decision.jobId;
 
+      // Observe any in-flight job first (restart recovery). Same no-early-return
+      // discipline as the Wikimedia block: a stuck/stale Spotify manifest must
+      // not wedge the family past the crash-recovery window.
       if (spState.in_flight && spState.in_flight_job_id) {
         const m = (await this.readJobManifest("artist_attention_spotify_build_v1", spState.in_flight_job_id)) as JobManifestInput | null;
         const c = classifyJobOutcome(m);
+        const reqMs = parseMs(spState.in_flight_requested_at);
+        const inFlightExpired =
+          reqMs !== null && new Date(nowIso).getTime() - reqMs >= SOURCE_INFLIGHT_TIMEOUT_HOURS * 3600 * 1000;
         if (c.outcome !== "RUNNING" && c.outcome !== "UNKNOWN") {
           completedOutcome = c.outcome;
           // Universe size: prefer the job manifest's reported eligible universe,
@@ -674,12 +694,20 @@ export class SourceSchedulerOrchestrator {
             SPOTIFY_UNIVERSE_SIZE_FALLBACK;
           stateAfter = this.applyOutcome("spotify", spState, c, nowIso, SPOTIFY_MIN_INTERVAL_HOURS, uSize, spGold?.generation ?? null);
           await this.saveState("spotify", stateAfter);
-        } else {
-          stateAfter = spState;
-          results.push({ family: "spotify", decision, fired, jobId, completedOutcome, stateAfter });
-          return this.finish(results, firedJobs, nowIso);
+        } else if (inFlightExpired) {
+          // Stuck/stale: clear the in-flight guard so the fresh decision below
+          // can re-fire. Cursor/generation are NOT advanced (previous Gold valid).
+          stateAfter = { ...spState, in_flight: false, in_flight_job_id: null, in_flight_requested_at: null };
+          await this.saveState("spotify", stateAfter);
         }
+        // else: still running within the window → keep in_flight.
       }
+
+      // Re-decide from the (possibly advanced/cleared) state.
+      const decision = decideSpotifyTrigger(stateAfter, nowIso);
+
+      let fired = false;
+      let jobId: string | null = decision.jobId;
 
       if (decision.shouldTrigger) {
         const marked = markInFlight(stateAfter, decision.jobId as string, nowIso);
