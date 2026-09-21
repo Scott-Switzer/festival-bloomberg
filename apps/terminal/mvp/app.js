@@ -284,6 +284,7 @@ function demoCard(d) {
 /* ── search ──────────────────────────────────────────────── */
 async function doSearch(q) {
   if (!q.trim()) return;
+  routeVersion += 1;
   view.innerHTML = `<h1>Search: ${esc(q)}</h1><div class="empty">searching…</div>`;
   try {
     const hits = await api("/api/search?q=" + encodeURIComponent(q) + "&limit=25");
