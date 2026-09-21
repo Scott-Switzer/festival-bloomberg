@@ -43,6 +43,23 @@ describe('home navigation during pending requests', () => {
       await expect(result).resolves.toBeUndefined();
     });
   }
+
+  it('ignores stale home failures after direct search replaces the view', async () => {
+    let settleHome!: (value: unknown) => void;
+    const pendingHome = new Promise((resolve, fail) => { settleHome = fail; });
+    const context = {
+      routeVersion: 1,
+      view: {innerHTML: ''},
+      setNav: () => {},
+      api: (path: string) => path.startsWith('/api/search') ? Promise.resolve([]) : pendingHome,
+      esc: String,
+      document: {getElementById: () => { throw new Error('stale DOM access'); }},
+    };
+    const homeAndSearch = source.slice(source.indexOf('async function renderHome()'), source.indexOf('/* ── artist'));
+    const result = runInNewContext(`${homeAndSearch}\nrenderHome();\ndoSearch('Alice Cooper');`, context);
+    settleHome(new Error('request failed'));
+    await expect(result).resolves.toBeUndefined();
+  });
 });
 
 
