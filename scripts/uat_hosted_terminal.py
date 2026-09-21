@@ -8,7 +8,10 @@ and that the important SPA routes render against that generation.
 
 The script owns no server process: the URL is supplied by the deployment
 workflow, while Playwright owns the browser lifecycle. Access service-token
-headers are optional and are read from environment variables only.
+headers are optional and are read from environment variables only. A
+production secret access path can be supplied via --access-path or
+TERMINAL_ACCESS_PATH; it is used for requests but never written to the result
+artifact.
 """
 
 from __future__ import annotations
@@ -219,15 +222,26 @@ def _browser_uat(
     return {"checks": checks, "screenshots": screenshots, "console_errors": console_errors, "page_errors": page_errors}
 
 
-def run(url: str, out_dir: Path, timeout_seconds: float) -> int:
-    base = url.rstrip("/")
+def _authorized_base(url: str, access_path: str | None) -> tuple[str, str]:
+    public_base = url.rstrip("/")
+    path = (access_path or os.environ.get("TERMINAL_ACCESS_PATH", "")).strip()
+    if not path:
+        return public_base, public_base
+    if not path.startswith("/"):
+        path = "/" + path
+    return public_base, public_base + path.rstrip("/")
+
+
+def run(url: str, out_dir: Path, timeout_seconds: float, access_path: str | None = None) -> int:
+    public_base, base = _authorized_base(url, access_path)
     health, status, current = _poll_health(base, timeout_seconds)
     generation = _assert_exact_generation(health, status, current)
     left, right = _choose_artists(base)
     browser = _browser_uat(base, out_dir, left, right)
     result = {
         "status": "PASS",
-        "url": base,
+        "url": public_base,
+        "access_path_configured": base != public_base,
         "generation": generation,
         "artists": [left, right],
         "health": health,
@@ -249,10 +263,11 @@ def main() -> int:
         default=Path("artifacts/hosted_terminal_uat"),
     )
     parser.add_argument("--timeout", type=float, default=900.0)
+    parser.add_argument("--access-path", default=None)
     args = parser.parse_args()
     if not args.url:
         parser.error("--url or STAGING_URL is required")
-    return run(args.url, args.out_dir, args.timeout)
+    return run(args.url, args.out_dir, args.timeout, args.access_path)
 
 
 if __name__ == "__main__":
