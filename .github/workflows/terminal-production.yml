@@ -68,45 +68,80 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
-      - name: Smoke test hosted terminal
-        env:
-          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
-          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+      - name: Verify production fail-closed boundary
         run: |
           set -euo pipefail
           URL="${{ steps.deploy.outputs.PRODUCTION_URL }}"
-          CURL_HEADERS=()
-          if [ -n "${CF_ACCESS_CLIENT_ID:-}" ] && [ -n "${CF_ACCESS_CLIENT_SECRET:-}" ]; then
-            CURL_HEADERS+=( -H "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" )
-            CURL_HEADERS+=( -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}" )
-          fi
-          ok=""
-          for i in $(seq 1 60); do
-            code="$(curl "${CURL_HEADERS[@]}" -sS --max-time 20 -o /tmp/health.json -w '%{http_code}' "$URL/health" || true)"
-            if [ "$code" = "200" ]; then
-              ok=1
-              break
+          for path in / /health /api/status; do
+            code="$(curl -sS --max-time 30 -o /tmp/fail_closed.json -w '%{http_code}' "$URL$path" || true)"
+            if [ "$code" != "401" ] || ! grep -q "TERMINAL_AUTH_REQUIRED" /tmp/fail_closed.json 2>/dev/null; then
+              echo "PRODUCTION_FAIL_CLOSED_FAILED path=$path code=$code" >&2
+              head -c 400 /tmp/fail_closed.json >&2 || true
+              exit 1
             fi
-            if [ "$code" = "401" ] && grep -q "TERMINAL_AUTH_REQUIRED" /tmp/health.json 2>/dev/null; then
-              # PRODUCTION_PRIVATE fails closed by design: an authenticated-401
-              # proves the Worker is live, enforcing access, and serving the
-              # product build. Treat it as a healthy smoke result.
-              ok=1
-              echo "production fail-closed healthy: TERMINAL_AUTH_REQUIRED (401) as designed"
-              echo "PRODUCTION_ACCESS=TEMPORARY_SECRET_PATH_OR_CLOUDFLARE_ACCESS"
-              break
-            fi
-            echo "waiting for terminal cold start (attempt $i)..."
-            sleep 20
           done
-          if [ -z "$ok" ]; then
-            echo "TERMINAL_HEALTH_TIMEOUT" >&2
+          echo "PRODUCTION_FAIL_CLOSED=PASS"
+
+      - name: Verify authorized production health and status
+        env:
+          TERMINAL_ACCESS_PATH: ${{ secrets.TERMINAL_ACCESS_PATH }}
+        run: |
+          set -euo pipefail
+          URL="${{ steps.deploy.outputs.PRODUCTION_URL }}"
+          if [ -z "${TERMINAL_ACCESS_PATH:-}" ]; then
+            echo "TERMINAL_ACCESS_PATH secret is required for production authorized smoke." >&2
             exit 1
           fi
-          cat /tmp/health.json
-          # In PRODUCTION_PRIVATE mode /api/status intentionally 401s without
-          # credentials — record it as the designed response instead of failing.
-          status_code="$(curl "${CURL_HEADERS[@]}" -sS --max-time 30 -o /tmp/status.json -w '%{http_code}' "$URL/api/status" || true)"
-          echo "api/status -> $status_code (401 = designed fail-closed)"
-          head -c 400 /tmp/status.json
-          echo
+          ACCESS_PATH="${TERMINAL_ACCESS_PATH#/}"
+          AUTH_BASE="$URL/$ACCESS_PATH"
+          for i in $(seq 1 60); do
+            code="$(curl -sS --max-time 30 -o /tmp/health.json -w '%{http_code}' "$AUTH_BASE/health" || true)"
+            if [ "$code" = "200" ]; then
+              break
+            fi
+            echo "waiting for authorized terminal cold start (attempt $i, code=$code)..."
+            sleep 20
+          done
+          if [ "${code:-}" != "200" ]; then
+            echo "PRODUCTION_AUTHORIZED_HEALTH_TIMEOUT code=${code:-none}" >&2
+            head -c 400 /tmp/health.json >&2 || true
+            exit 1
+          fi
+          node -e 'const fs=require("fs"); const h=JSON.parse(fs.readFileSync("/tmp/health.json","utf8")); if(h.status!=="ok" || !h.generation || !h.sha256) { console.error(h); process.exit(1); } console.log(JSON.stringify({status:h.status,generation:h.generation,sha256:h.sha256}));'
+          status_code="$(curl -sS --max-time 45 -o /tmp/status.json -w '%{http_code}' "$AUTH_BASE/api/status" || true)"
+          if [ "$status_code" != "200" ]; then
+            echo "PRODUCTION_STATUS_FAILED code=$status_code" >&2
+            head -c 400 /tmp/status.json >&2 || true
+            exit 1
+          fi
+          node -e 'const fs=require("fs"); const s=JSON.parse(fs.readFileSync("/tmp/status.json","utf8")); if(!s.generation || !s.sha256) { console.error(s); process.exit(1); } console.log(JSON.stringify({generation:s.generation,sha256:s.sha256}));'
+
+      - name: Setup hosted UAT Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install hosted UAT dependencies
+        run: |
+          python -m pip install --quiet duckdb playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Hosted browser UAT
+        env:
+          TERMINAL_ACCESS_PATH: ${{ secrets.TERMINAL_ACCESS_PATH }}
+        run: |
+          set -euo pipefail
+          URL="${{ steps.deploy.outputs.PRODUCTION_URL }}"
+          python scripts/uat_hosted_terminal.py \
+            --url "$URL" \
+            --access-path "$TERMINAL_ACCESS_PATH" \
+            --out-dir artifacts/production_hosted_terminal_uat \
+            --timeout 900
+
+      - name: Upload production UAT evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-hosted-terminal-uat
+          path: artifacts/production_hosted_terminal_uat/
+          if-no-files-found: ignore
