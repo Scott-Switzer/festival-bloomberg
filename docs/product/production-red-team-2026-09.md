@@ -218,6 +218,12 @@ speculative ML, no new vendors, no redesign in this cycle.
 
 * Fix branch verified locally on production code path: 71-interaction battery,
   0 page errors, races eliminated, XSS escaped, template + favicon 200.
-* Production deploy via `.github/workflows/terminal-production.yml` from merged
-  main; CI UAT (authorized browser smoke + generation pin) must pass; naked
-  fail-closed re-probed post-deploy. (Deploy + post-deploy probe recorded in PR.)
+* Merged as PR #79 (`e327320` on main); all CI checks green
+  (browser-uat, node, python, cloud-runtime, security).
+* Production deploy via `.github/workflows/terminal-production.yml` from main:
+  Actions run `35673104505` → **success**. New serving generation
+  `terminal_v1_20260921T195313Z` (health matches CURRENT pin).
+* Post-deploy authorized CI UAT on the new build: **PASS** — all 14 browser
+  checks true, zero console/page errors.
+* Post-deploy naked re-probe: `/`, `/health`, `/api/status`, `/api/search`,
+  `/_bootstrap` all 401; denied prefixes 404. Fail-closed confirmed.
