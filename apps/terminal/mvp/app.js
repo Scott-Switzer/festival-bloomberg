@@ -285,9 +285,11 @@ function demoCard(d) {
 async function doSearch(q) {
   if (!q.trim()) return;
   routeVersion += 1;
+  const renderVersion = routeVersion;
   view.innerHTML = `<h1>Search: ${esc(q)}</h1><div class="empty">searching…</div>`;
   try {
     const hits = await api("/api/search?q=" + encodeURIComponent(q) + "&limit=25");
+    if (renderVersion !== routeVersion) return;
     if (!hits.length) {
       view.innerHTML = `<h1>Search: ${esc(q)}</h1><div class="empty">No artist matched. Try a different spelling or a demo artist.</div>`;
       return;
@@ -313,6 +315,7 @@ async function doSearch(q) {
         const row = el.closest(".result");
         try {
           await api("/api/shortlist", { method: "POST", body: JSON.stringify({ name: row.dataset.name, artist_key: row.dataset.k, notes: "added from search" }) });
+          if (renderVersion !== routeVersion) return;
           toast("Added " + row.dataset.name + " to shortlist.");
         } catch (e) { toast(e.message); }
       };
@@ -324,11 +327,12 @@ async function doSearch(q) {
 let compareDraft = [];
 
 async function renderArtist(key) {
+  const renderVersion = routeVersion;
   setNav("");
   view.innerHTML = `<h1>Artist</h1><div class="empty">loading ${esc(key)}…</div>`;
   let p;
-  try { p = await api("/api/artist-security/" + encodeURIComponent(key)); }
-  catch (e) { view.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  try { p = await api("/api/artist-security/" + encodeURIComponent(key)); if (renderVersion !== routeVersion) return; }
+  catch (e) { if (renderVersion !== routeVersion) return; view.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
   const a = p.artist || {};
   const qf = p.quick_facts || {};
   const cov = a.coverage_state || {};
@@ -647,6 +651,7 @@ function renderAlts(alts) {
       ev.stopPropagation();
       try {
         await api("/api/shortlist", { method: "POST", body: JSON.stringify({ name: el.dataset.name, artist_key: el.dataset.sl, notes: "added from alternatives" }) });
+        if (renderVersion !== routeVersion) return;
         toast("Added " + el.dataset.name + " to shortlist.");
       } catch (e) { toast(e.message); }
     };
@@ -777,17 +782,20 @@ function renderEvidence(evidence) {
 
 /* ── shortlist helpers ───────────────────────────────────── */
 async function quickShortlist(a, p) {
+  const renderVersion = routeVersion;
   const topMarket = (p.markets && p.markets.items && p.markets.items[0]);
   const market = topMarket ? (topMarket.market || topMarket.market_name || topMarket.market_key) : "";
   try {
     await api("/api/shortlist", { method: "POST",
       body: JSON.stringify({ name: a.name, artist_key: a.artist_key, market: market, notes: "" }) });
+    if (renderVersion !== routeVersion) return;
     toast("Added " + a.name + " to shortlist.");
   } catch (e) { toast("Shortlist failed: " + e.message); }
 }
 
 /* ── markets ─────────────────────────────────────────────── */
 async function renderMarkets() {
+  const renderVersion = routeVersion;
   setNav("markets");
   view.innerHTML = `<h1>Markets</h1><input id="marketFilter" type="search" placeholder="Filter markets…" style="width:320px;margin-bottom:14px">
     <div id="marketList" class="empty">loading…</div>`;
@@ -795,6 +803,7 @@ async function renderMarkets() {
   const load = async () => {
     const q = document.getElementById("marketFilter").value;
     const m = await api("/api/markets?q=" + encodeURIComponent(q) + "&limit=400");
+    if (renderVersion !== routeVersion) return;
     if (!m.items.length) { listEl.innerHTML = `<div class="empty">No markets match.</div>`; return; }
     listEl.innerHTML = m.items.map((r) => `
       <div class="market-row" data-m="${esc(r.market_key)}">
@@ -806,14 +815,16 @@ async function renderMarkets() {
     });
   };
   document.getElementById("marketFilter").addEventListener("input", () => load().catch(() => {}));
-  try { await load(); } catch (e) { listEl.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  try { await load(); if (renderVersion !== routeVersion) return; } catch (e) { if (renderVersion !== routeVersion) return; listEl.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
 }
 
 async function renderMarket(key) {
+  const renderVersion = routeVersion;
   setNav("markets");
   view.innerHTML = `<h1>Market</h1><div class="empty">loading…</div>`;
   try {
     const m = await api("/api/market/" + encodeURIComponent(key));
+    if (renderVersion !== routeVersion) return;
     view.innerHTML = `<h1>${esc(m.pretty)} <span class="badge">${m.count} artists</span></h1>
       <div class="panel"><table><thead><tr><th>Artist</th><th>Tier</th><th>Observed shows</th><th>First play</th><th>Last play</th><th>Forward</th></tr></thead><tbody>
       ${m.items.map((r) => `<tr>
@@ -824,11 +835,12 @@ async function renderMarket(key) {
         <td>${esc(fmtDate(r.last_play_date))}</td>
         <td>${r.future_events ? r.future_events : "—"}</td>
       </tr>`).join("")}</tbody></table></div>`;
-  } catch (e) { view.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  } catch (e) { if (renderVersion !== routeVersion) return; view.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
 }
 
 /* ── compare ─────────────────────────────────────────────── */
 async function renderCompare() {
+  const renderVersion = routeVersion;
   setNav("compare");
   view.innerHTML = `<h1>Compare</h1>
     <div class="grid cols2">
@@ -845,6 +857,7 @@ async function renderCompare() {
     input.addEventListener("keydown", async (ev) => {
       if (ev.key !== "Enter" || !input.value.trim()) return;
       const hits = await api("/api/search?q=" + encodeURIComponent(input.value.trim()) + "&limit=5");
+      if (renderVersion !== routeVersion) return;
       const box = document.getElementById(resultsId);
       box.innerHTML = hits.map((h) => `<div class="result" data-k="${esc(h.entity_id)}"><b>${esc(h.name)}</b></div>`).join("");
       box.querySelectorAll(".result").forEach((el) => {
@@ -863,8 +876,10 @@ async function renderCompare() {
     const [a, b] = compareDraft;
     try {
       const c = await api("/api/artist-security/compare?a=" + encodeURIComponent(a) + "&b=" + encodeURIComponent(b));
+      if (renderVersion !== routeVersion) return;
       document.getElementById("cmpOut").innerHTML = renderComparison(c);
     } catch (e) {
+      if (renderVersion !== routeVersion) return;
       document.getElementById("cmpOut").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
     }
   };
@@ -930,6 +945,7 @@ function renderComparison(c) {
 
 /* ── shortlist ───────────────────────────────────────────── */
 async function renderShortlist() {
+  const renderVersion = routeVersion;
   setNav("shortlist");
   view.innerHTML = `<h1>Shortlist</h1>
     <div class="panel" style="max-width:520px;margin-bottom:14px">
@@ -953,6 +969,7 @@ async function renderShortlist() {
         venue: document.getElementById("slVenue").value.trim(),
         notes: document.getElementById("slNotes").value.trim(),
       })});
+      if (renderVersion !== routeVersion) return;
       toast("Added " + name + ".");
       document.getElementById("slName").value = document.getElementById("slNotes").value = "";
       loadList();
@@ -962,6 +979,7 @@ async function renderShortlist() {
   const loadList = async () => {
     try {
       const items = await api("/api/shortlist");
+      if (renderVersion !== routeVersion) return;
       const box = document.getElementById("slList");
       if (!items.length) { box.innerHTML = `<div class="empty">Shortlist is empty — add candidates from an artist page or above.</div>`; return; }
       box.innerHTML = `<div style="margin-bottom:8px"><button class="btn" id="slCompare">Compare selected (2)</button></div>
@@ -983,17 +1001,18 @@ async function renderShortlist() {
       };
       box.querySelectorAll("[data-del]").forEach((el) => {
         el.onclick = async () => {
-          try { await api("/api/shortlist/" + encodeURIComponent(el.dataset.del), { method: "DELETE" }); toast("Removed."); loadList(); }
+          try { await api("/api/shortlist/" + encodeURIComponent(el.dataset.del), { method: "DELETE" }); if (renderVersion !== routeVersion) return; toast("Removed."); loadList(); }
           catch (e) { toast(e.message); }
         };
       });
-    } catch (e) { document.getElementById("slList").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+    } catch (e) { if (renderVersion !== routeVersion) return; document.getElementById("slList").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
   };
   loadList();
 }
 
 /* ── demo ────────────────────────────────────────────────── */
 async function renderDemo() {
+  const renderVersion = routeVersion;
   setNav("demo");
   view.innerHTML = `<h1>Demo</h1>
     <div class="panel hero" style="margin-bottom:14px">
@@ -1007,6 +1026,7 @@ async function renderDemo() {
       <div id="demoGrid" class="demo-grid"><div class="empty">loading…</div></div></div>`;
   try {
     const demo = await api("/api/demo");
+    if (renderVersion !== routeVersion) return;
     if (demo.length) {
       const a = demo[0];            // Artist A — Alice Cooper
       const b = demo[1] || demo[0]; // Artist B — Barry Manilow
@@ -1018,9 +1038,10 @@ async function renderDemo() {
         { n: 5, label: "Add Artist B to your shortlist", text: `Save ${b.name} as a candidate, then reload — it persists.`, go: async () => {
             try {
               await api("/api/shortlist", { method: "POST", body: JSON.stringify({ name: b.name, artist_key: b.artist_key, notes: "added from guided demo" }) });
+              if (renderVersion !== routeVersion) return;
               toast("Added " + b.name + " to shortlist.");
               location.hash = "#/shortlist";
-            } catch (e) { toast(e.message); }
+            } catch (e) { if (renderVersion !== routeVersion) return; toast(e.message); }
           } },
       ];
       document.getElementById("demoSteps").innerHTML =
@@ -1034,17 +1055,19 @@ async function renderDemo() {
   } catch (e) { /* grid below still loads */ }
   try {
     const demo = await api("/api/demo");
+    if (renderVersion !== routeVersion) return;
     const grid = document.getElementById("demoGrid");
     if (!demo.length) { grid.innerHTML = `<div class="empty">No demo artists yet.</div>`; return; }
     grid.innerHTML = demo.map(demoCard).join("");
     grid.querySelectorAll(".demo-card").forEach((el, i) => {
       el.onclick = () => location.hash = "#/artist/" + encodeURIComponent(demo[i].artist_key);
     });
-  } catch (e) { document.getElementById("demoGrid").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  } catch (e) { if (renderVersion !== routeVersion) return; document.getElementById("demoGrid").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
 }
 
 /* ── monitor ─────────────────────────────────────────────── */
 async function renderMonitor() {
+  const renderVersion = routeVersion;
   setNav("monitor");
   view.innerHTML = `<h1>Monitor</h1>
     <p class="muted">What changed for your watchlist since the last time you looked at this evidence generation.</p>
@@ -1056,6 +1079,7 @@ async function renderMonitor() {
     <div class="panel"><h3>Model readiness — nothing trained yet</h3><div id="readyBox" class="empty">loading…</div></div>`;
   try {
     const mon = await api("/api/monitor");
+    if (renderVersion !== routeVersion) return;
     const box = document.getElementById("monBox");
     if (!mon.artists || !mon.artists.length) {
       box.innerHTML = `<div class="empty">No watched artists. Add artists to your shortlist — they are watched automatically.</div>`;
@@ -1068,18 +1092,20 @@ async function renderMonitor() {
             `<span class="chip obs">${esc(c.detail)}</span>`).join(" ") : `<span class="small muted">no changes since last look</span>`)}
         </div>`).join("");
     }
-  } catch (e) { document.getElementById("monBox").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  } catch (e) { if (renderVersion !== routeVersion) return; document.getElementById("monBox").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
   try {
     const v = await api("/api/vault");
+    if (renderVersion !== routeVersion) return;
     document.getElementById("vaultBox").innerHTML =
       `<table><tbody>
          <tr><td class="muted">Private outcome entries</td><td><b>${esc(v.entries)}</b></td></tr>
          <tr><td class="muted">Hidden (not yet revealed)</td><td><b>${esc(v.hidden)}</b></td></tr>
        </tbody></table>
        <p class="note">${esc(v.privacy)}</p>`;
-  } catch (e) { document.getElementById("vaultBox").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  } catch (e) { if (renderVersion !== routeVersion) return; document.getElementById("vaultBox").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
   try {
     const r = await api("/api/readiness");
+    if (renderVersion !== routeVersion) return;
     document.getElementById("readyBox").innerHTML =
       `<table><tbody>
          ${[["Private settled shows", r.private_settled_shows], ["With booking/announcement/on-sale cutoff", r.with_booking_cutoff],
@@ -1090,7 +1116,7 @@ async function renderMonitor() {
            `<tr><td class="muted">${esc(k)}</td><td><b>${v == null ? "—" : esc(v)}</b></td></tr>`).join("")}
        </tbody></table>
        <p class="note">${esc(r.note)} · progression: ${Object.entries(r.progression || {}).map(([k, v]) => `${esc(k)} → ${esc(v)}`).join(" · ")}</p>`;
-  } catch (e) { document.getElementById("readyBox").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  } catch (e) { if (renderVersion !== routeVersion) return; document.getElementById("readyBox").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
 }
 
 /* ── underwrite ──────────────────────────────────────────── */
@@ -1109,6 +1135,7 @@ const uwInputs = {
 };
 
 async function renderUnderwrite() {
+  const renderVersion = routeVersion;
   setNav("underwrite");
   const qp = new URLSearchParams(location.hash.split("?")[1] || "");
   const aKey = qp.get("a") || "";
@@ -1184,12 +1211,17 @@ async function renderUnderwrite() {
   if (aKey) {
     try {
       const p = await api("/api/artist-security/" + encodeURIComponent(aKey));
+      if (renderVersion !== routeVersion) return;
       uwA.value = (p.artist || {}).name || aKey;
-    } catch (e) { /* keep key */ }
+    } catch (e) { if (renderVersion !== routeVersion) return; /* keep key */ }
   }
   // Scenario template buttons (SYSTEM_TEMPLATE_ASSUMPTION until accepted).
-  // Delegated so innerHTML rebuilds can never orphan the handlers.
-  view.addEventListener("click", (ev) => {
+  // Delegated so innerHTML rebuilds can never orphan the handlers. Wired once:
+  // #view persists across routes, so re-wiring on every visit would stack
+  // duplicate handlers.
+  if (!view.dataset.uwWired) {
+    view.dataset.uwWired = "1";
+    view.addEventListener("click", (ev) => {
     const btn = ev.target.closest && ev.target.closest("[data-tpl]");
     if (!btn) return;
     const rates = { CONSERVATIVE: ["0.25", "0.45", "0.65"], MODERATE: ["0.35", "0.55", "0.75"], AGGRESSIVE: ["0.45", "0.65", "0.85"] }[btn.dataset.tpl];
@@ -1200,7 +1232,8 @@ async function renderUnderwrite() {
     uwInputs.template = btn.dataset.tpl;
     uwInputs.accept_template = "accept";
     toast(`Template ${btn.dataset.tpl} applied — SYSTEM_TEMPLATE_ASSUMPTION. Build the brief to accept.`);
-  });
+    });
+  }
 
   uwA.addEventListener("input", async () => {
     const q = uwA.value.trim();
@@ -1208,12 +1241,13 @@ async function renderUnderwrite() {
     if (q.length < 2) { hits.innerHTML = ""; return; }
     try {
       const res = await api("/api/search?q=" + encodeURIComponent(q) + "&limit=6");
+      if (renderVersion !== routeVersion) return;
       hits.innerHTML = res.map((h) =>
         `<div class="result" data-k="${esc(h.entity_id)}" data-name="${esc(h.name)}"><b>${esc(h.name)}</b></div>`).join("");
       hits.querySelectorAll(".result").forEach((el) => {
         el.onclick = () => { uwKey = el.dataset.k; uwA.value = el.dataset.name; hits.innerHTML = ""; };
       });
-    } catch (e) { hits.innerHTML = `<span class="empty">${esc(e.message)}</span>`; }
+    } catch (e) { if (renderVersion !== routeVersion) return; hits.innerHTML = `<span class="empty">${esc(e.message)}</span>`; }
   });
 
   // A deep link with a key but no fetch hit still needs uwKey set (pickup from earlier).
@@ -1261,13 +1295,16 @@ function collectUwInputs() {
 }
 
 async function runUnderwrite() {
+  const renderVersion = routeVersion;
   const req = collectUwInputs();
   if (!req.artist_key) { toast("Pick an artist from search first."); return; }
   document.getElementById("briefOut").innerHTML = `<div class="empty">building buyer brief…</div>`;
   try {
     const b = await api("/api/underwrite", { method: "POST", body: JSON.stringify(req) });
-    renderBrief(b);
+    if (renderVersion !== routeVersion) return;
+    renderBrief(b, renderVersion);
   } catch (e) {
+    if (renderVersion !== routeVersion) return;
     document.getElementById("briefOut").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
   }
 }
@@ -1278,7 +1315,7 @@ function prov(chip) {
   return `<span class="chip ${cls}">${esc(label)}</span>`;
 }
 
-function renderBrief(b) {
+function renderBrief(b, renderVersion) {
   const m = b.market || {};
   const row = (k, v, provLabel) => `<tr><td class="muted">${esc(k)}</td><td>${v == null || v === "" ? "—" : esc(v)}</td>${provLabel ? `<td>${prov(provLabel)}</td>` : ""}</tr>`;
   const economicsRows = (label, sc) => {
@@ -1381,9 +1418,10 @@ function renderBrief(b) {
         artist_key: b.artist_key, artist_name: b.artist.name, market_key: (b.market || {}).market_key,
         venue: "", event_date: uwInputs.event_date, inputs: uwInputs, brief: b, status: "RESEARCHING",
       }) });
+      if (renderVersion !== routeVersion) return;
       toast("Snapshot saved: " + snap.snapshot_id);
       loadDecisions();
-    } catch (e) { toast(e.message); }
+    } catch (e) { if (renderVersion !== routeVersion) return; toast(e.message); }
   };
   document.getElementById("uwCompare").onclick = () => {
     const first = (b.comparables || [])[0];
@@ -1404,10 +1442,12 @@ function _pretty(marketKey) {
 }
 
 async function loadDecisions() {
+  const renderVersion = routeVersion;
   const box = document.getElementById("decList");
   if (!box) return;
   try {
     const items = await api("/api/decisions");
+    if (renderVersion !== routeVersion) return;
     if (!items.length) { box.innerHTML = `<div class="empty">No saved decisions yet. Save a brief to revisit it later.</div>`; return; }
     box.innerHTML = `<table><thead><tr><th>Artist</th><th>Market</th><th>Date</th><th>Status</th><th></th><th></th></tr></thead><tbody>
       ${items.map((d) => `<tr>
@@ -1421,8 +1461,8 @@ async function loadDecisions() {
     let closeTarget = null;
     box.querySelectorAll("[data-status]").forEach((el) => {
       el.onchange = async () => {
-        try { await api("/api/decisions/" + encodeURIComponent(el.dataset.status) + "/status", { method: "POST", body: JSON.stringify({ status: el.value }) }); toast("Status → " + el.value); }
-        catch (e) { toast(e.message); }
+        try { await api("/api/decisions/" + encodeURIComponent(el.dataset.status) + "/status", { method: "POST", body: JSON.stringify({ status: el.value }) }); if (renderVersion !== routeVersion) return; toast("Status → " + el.value); }
+        catch (e) { if (renderVersion !== routeVersion) return; toast(e.message); }
       };
     });
     box.querySelectorAll("[data-close]").forEach((el) => {
@@ -1448,15 +1488,17 @@ async function loadDecisions() {
         toast("Snapshots are append-only in this version.");
       };
     });
-  } catch (e) { box.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  } catch (e) { if (renderVersion !== routeVersion) return; box.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
 }
 const DECISION_STATUSES = ["RESEARCHING", "INTEREST", "HOLD", "OFFER_SENT", "PASSED", "CONFIRMED"];
 
 async function renderPIT(showId) {
+  const renderVersion = routeVersion;
   setNav("backtest");
   view.innerHTML = `<h1>Backtest — show</h1><div class="empty">loading…</div>`;
   try {
     const s = await api("/api/backtest/show/" + encodeURIComponent(showId));
+    if (renderVersion !== routeVersion) return;
     const pit = s.pit || {};
     let pitHTML;
     if (pit.status === "PIT_INSUFFICIENT") {
@@ -1483,11 +1525,12 @@ async function renderPIT(showId) {
       <div class="panel"><h3>Realized outcome</h3>${outcomeHTML}</div>
     </div>
     <p class="note">${esc(s.note || "")}</p>`;
-  } catch (e) { view.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  } catch (e) { if (renderVersion !== routeVersion) return; view.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
 }
 
 /* ── backtest ────────────────────────────────────────────── */
 async function renderBacktest() {
+  const renderVersion = routeVersion;
   setNav("backtest");
   view.innerHTML = `<h1>Backtest my shows</h1>
     <p class="muted">Upload your historical show history (CSV/TSV/XLSX→CSV). Columns are mapped conservatively; buyer-level PII is quarantined and never read. Stays <b>PRIVATE_ONLY</b> in your workspace.</p>
@@ -1514,16 +1557,19 @@ async function renderBacktest() {
     } else {
       body.content = await file.text();
     }
+    if (renderVersion !== routeVersion) return;
     document.getElementById("btPreview").innerHTML = `<div class="empty">previewing ${esc(file.name)}…</div>`;
     try {
       const p = await api("/api/backtest/preview", { method: "POST", body: JSON.stringify(body) });
-      renderBacktestPreview(p, body);
-    } catch (e) { document.getElementById("btPreview").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+      if (renderVersion !== routeVersion) return;
+      renderBacktestPreview(p, body, renderVersion);
+    } catch (e) { if (renderVersion !== routeVersion) return; document.getElementById("btPreview").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
   });
   loadRetro();
 }
 
-function renderBacktestPreview(p, contentBody) {
+function renderBacktestPreview(p, contentBody, renderVersion) {
+  if (renderVersion !== routeVersion) return;
   const mapRows = (p.mapping || []).map((m) => `
     <tr>
       <td>${esc(m.header)}</td>
@@ -1558,17 +1604,20 @@ function renderBacktestPreview(p, contentBody) {
         content_b64: contentBody.content_b64 || "",
         mapping: p.mapping, forced_mapping: forced,
       }) });
+      if (renderVersion !== routeVersion) return;
       toast(`Imported ${r.rows_imported} shows · ${r.artists_resolved} VERIFIED_EXACT · ${r.identity_review_required || 0} need review`);
       loadRetro();
-    } catch (e) { toast(e.message); }
+    } catch (e) { if (renderVersion !== routeVersion) return; toast(e.message); }
   };
 }
 
 async function loadRetro() {
+  const renderVersion = routeVersion;
   const box = document.getElementById("btRetro");
   if (!box) return;
   try {
     const r = await api("/api/backtest");
+    if (renderVersion !== routeVersion) return;
     if (r.status === "NO_PRIVATE_HISTORY") { box.innerHTML = `<div class="empty">No private show history connected — import a file above. Public MVP never requires it.</div>`; document.getElementById("btPit").innerHTML = `<div class="empty">No shows yet.</div>`; return; }
     const distRow = (name, d) => d.count ? `<tr><td class="muted">${esc(name)}</td><td>${d.count} shows</td><td>${money(d.p25)}</td><td>${money(d.median)}</td><td>${money(d.p75)}</td><td>${money(d.max)}</td></tr>` : `<tr><td class="muted">${esc(name)}</td><td colspan="5">UNKNOWN — no observed private values</td></tr>`;
     box.innerHTML = `<p class="small muted">Distributions are OBSERVED_PRIVATE only — never mixed with public serving numbers.</p>
@@ -1585,7 +1634,7 @@ async function loadRetro() {
       </div>
       <p class="small muted" style="margin-top:8px">Point-in-time drill-down:</p>
       ${(r.show_ids || []).length ? r.show_ids.map((id) => `<a class="whychip link" href="#/backtest/show/${encodeURIComponent(id)}">${esc(id)}</a>`).join("") : `<span class="muted">no shows with PIT view yet</span>`}`;
-  } catch (e) { box.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  } catch (e) { if (renderVersion !== routeVersion) return; box.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
 }
 
 /* ── wire up ─────────────────────────────────────────────── */
@@ -1630,6 +1679,7 @@ function _exposureTable(ex) {
 }
 
 async function renderPortfolio() {
+  const renderVersion = routeVersion;
   setNav("portfolio");
   view.innerHTML = `<h1>Portfolio / Lineup Risk</h1>
     <p class="muted">Aggregate your saved decision briefs into portfolio-level guarantee exposure, breakeven exposure and concentration — then stress the book with deterministic re-runs of your own scenarios.</p>
@@ -1664,9 +1714,10 @@ async function renderPortfolio() {
     if (!name) { toast("lineup needs a name"); return; }
     try {
       const lp = await api("/api/portfolio/lineup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, budget: document.getElementById("lpBudget").value.trim() || null }) });
+      if (renderVersion !== routeVersion) return;
       toast("lineup created — add decisions to it");
       loadLineups();
-    } catch (e) { toast(e.message); }
+    } catch (e) { if (renderVersion !== routeVersion) return; toast(e.message); }
   };
 
   document.getElementById("paceImport").onclick = async () => {
@@ -1679,9 +1730,10 @@ async function renderPortfolio() {
     });
     try {
       const res = await api("/api/pace/import", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rows }) });
+      if (renderVersion !== routeVersion) return;
       toast(`imported ${res.snapshots} snapshots across ${res.events} events (${res.skipped} skipped)`);
       loadPace();
-    } catch (e) { toast(e.message); }
+    } catch (e) { if (renderVersion !== routeVersion) return; toast(e.message); }
   };
 
   loadLineups();
@@ -1690,8 +1742,10 @@ async function renderPortfolio() {
 }
 
 async function loadPortfolio() {
+  const renderVersion = routeVersion;
   try {
     const pf = await api("/api/portfolio");
+    if (renderVersion !== routeVersion) return;
     const all = pf.all_decisions || {};
     const ex = all.exposure || {};
     document.getElementById("pfExposure").innerHTML = ex.events
@@ -1729,15 +1783,18 @@ async function loadPortfolio() {
           <td><span class="chip">${esc(e.status || "")}</span></td></tr>`).join("") + `</tbody></table>`
       : `<div class="empty">No events.</div>`;
     const lps = pf.lineups || [];
-    if (lps.length) { await loadLineups(); }
+    if (lps.length) { await loadLineups(); if (renderVersion !== routeVersion) return; }
   } catch (e) {
+    if (renderVersion !== routeVersion) return;
     document.getElementById("pfExposure").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
   }
 }
 
 async function loadLineups() {
+  const renderVersion = routeVersion;
   try {
     const raw = await api("/api/portfolio");
+    if (renderVersion !== routeVersion) return;
     const box = document.getElementById("lpList");
     if (!raw.lineups.length) {
       box.innerHTML = `<div class="empty">No lineups yet. Create one, then add decisions from the table below.</div>`;
@@ -1752,16 +1809,19 @@ async function loadLineups() {
       b.onclick = async () => {
         try {
           const risk = await api("/api/portfolio/lineup/" + encodeURIComponent(b.dataset.lp));
+          if (renderVersion !== routeVersion) return;
           document.getElementById("lpDetail").innerHTML = `<div class="alt-card"><b>${esc((raw.lineups.find((x) => x.lineup_id === b.dataset.lp) || {}).name)}</b>${_exposureTable(risk.exposure || {})}</div>`;
-        } catch (e) { toast(e.message); }
+        } catch (e) { if (renderVersion !== routeVersion) return; toast(e.message); }
       };
     });
-  } catch (e) { document.getElementById("lpList").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  } catch (e) { if (renderVersion !== routeVersion) return; document.getElementById("lpList").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
 }
 
 async function loadPace() {
+  const renderVersion = routeVersion;
   try {
     const data = await api("/api/pace");
+    if (renderVersion !== routeVersion) return;
     const box = document.getElementById("paceList");
     if (!data.events.length) {
       box.innerHTML = `<div class="empty">No private pace tape yet. Paste observed snapshots above (one row per snapshot) — or use the <a href="#/backtest">Backtest</a> show-history import for settled outcomes.</div>`;
@@ -1777,6 +1837,7 @@ async function loadPace() {
       b.onclick = async () => {
         try {
           const curve = await api("/api/pace/event/" + encodeURIComponent(b.dataset.pe));
+          if (renderVersion !== routeVersion) return;
           const snaps = (curve.snapshots || []).map((s) => `<tr><td class="muted">${esc(s.snapshot_at)}</td><td>${esc(s.days_to_event ?? "")}</td><td>${esc(s.tickets_sold ?? "")}</td><td>${esc(s.tickets_available ?? "")}</td><td>${esc(s.sell_through_derived ?? "UNKNOWN")}</td><td>${esc(s.atp_derived ?? "UNKNOWN")}</td><td class="muted">${esc(s.source || "")}</td></tr>`).join("");
           const markers = (curve.pace_markers || []).map((m) => `<span class="chip obs" title="${esc(m.basis)}">${esc(m.label)}: ${esc(m.tickets_sold ?? "UNKNOWN")} sold (nearest actual)</span>`).join(" ");
           document.getElementById("paceDetail").innerHTML =
@@ -1785,10 +1846,10 @@ async function loadPace() {
              ${markers}
              <table style="margin-top:6px"><thead><tr><th>Snapshot</th><th>Days to event</th><th>Sold</th><th>Available</th><th>Sell-through (derived)</th><th>ATP (derived)</th><th>Source</th></tr></thead><tbody>${snaps || `<tr><td colspan="7" class="muted">no snapshots</td></tr>`}</tbody></table>
              </div>`;
-        } catch (e) { toast(e.message); }
+        } catch (e) { if (renderVersion !== routeVersion) return; toast(e.message); }
       };
     });
-  } catch (e) { document.getElementById("paceList").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  } catch (e) { if (renderVersion !== routeVersion) return; document.getElementById("paceList").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
 }
 
 route();
