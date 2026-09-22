@@ -1,0 +1,3008 @@
+[
+ {
+  "artist": "!!!",
+  "venue": "Middelalderparken",
+  "city": null,
+  "date": "2006-08-10"
+ },
+ {
+  "artist": "!!!",
+  "venue": "Marquee",
+  "city": null,
+  "date": "2006-08-19"
+ },
+ {
+  "artist": "!!!",
+  "venue": "The Hideout",
+  "city": null,
+  "date": "2006-09-08"
+ },
+ {
+  "artist": "$OHO BANI",
+  "venue": "Red Stage",
+  "city": null,
+  "date": "2024-06-21"
+ },
+ {
+  "artist": "$OHO BANI",
+  "venue": "Mountain Stage",
+  "city": null,
+  "date": "2024-06-23"
+ },
+ {
+  "artist": "$OHO BANI",
+  "venue": "Blue Stage",
+  "city": null,
+  "date": "2024-08-18"
+ },
+ {
+  "artist": "(h\u0259d) p.e.",
+  "venue": "Max\u2010Morlock\u2010Stadion",
+  "city": null,
+  "date": "2001-06-01"
+ },
+ {
+  "artist": "(h\u0259d) p.e.",
+  "venue": "N\u00fcrburgring",
+  "city": null,
+  "date": "2001-06-01"
+ },
+ {
+  "artist": "(h\u0259d) p.e.",
+  "venue": "Main Stage",
+  "city": null,
+  "date": "2001-08-23"
+ },
+ {
+  "artist": "(run) SOFA",
+  "venue": "Le Labo",
+  "city": null,
+  "date": "2018-07-12"
+ },
+ {
+  "artist": "(run) SOFA",
+  "venue": "Farrm",
+  "city": null,
+  "date": "2020-02-13"
+ },
+ {
+  "artist": "*NSYNC",
+  "venue": "Shrine Auditorium",
+  "city": null,
+  "date": "1999-01-11"
+ },
+ {
+  "artist": "*NSYNC",
+  "venue": "Barker Hangar",
+  "city": null,
+  "date": "1999-08-01"
+ },
+ {
+  "artist": "*NSYNC",
+  "venue": "Madison Square Garden",
+  "city": null,
+  "date": "2000-07-25"
+ },
+ {
+  "artist": "+/-",
+  "venue": "El Mocambo",
+  "city": null,
+  "date": "2003-02-14"
+ },
+ {
+  "artist": "+/-",
+  "venue": "Rivoli",
+  "city": null,
+  "date": "2003-05-02"
+ },
+ {
+  "artist": "+/-",
+  "venue": "Blender Bar at the Ritz",
+  "city": null,
+  "date": "2005-03-19"
+ },
+ {
+  "artist": "01099",
+  "venue": "Flugplatz Neuhausen ob Eck",
+  "city": null,
+  "date": "2025-06-20"
+ },
+ {
+  "artist": "01099",
+  "venue": "Mountain Stage",
+  "city": null,
+  "date": "2025-06-21"
+ },
+ {
+  "artist": "01099",
+  "venue": "Red Stage",
+  "city": null,
+  "date": "2025-06-22"
+ },
+ {
+  "artist": "04 Limited Sazabys",
+  "venue": "GRASS STAGE",
+  "city": null,
+  "date": "2018-08-12"
+ },
+ {
+  "artist": "04 Limited Sazabys",
+  "venue": "SKY STAGE",
+  "city": null,
+  "date": "2022-05-05"
+ },
+ {
+  "artist": "04 Limited Sazabys",
+  "venue": "LOTUS STAGE",
+  "city": null,
+  "date": "2022-08-11"
+ },
+ {
+  "artist": "070 Shake",
+  "venue": "Minnesota State Fairgrounds",
+  "city": null,
+  "date": "2017-05-28"
+ },
+ {
+  "artist": "070 Shake",
+  "venue": "Le Labo",
+  "city": null,
+  "date": "2018-07-13"
+ },
+ {
+  "artist": "070 Shake",
+  "venue": "Coachella Stage",
+  "city": null,
+  "date": "2023-04-15"
+ },
+ {
+  "artist": "10",
+  "venue": "La Casa Encendida",
+  "city": null,
+  "date": "2007-10-06"
+ },
+ {
+  "artist": "10",
+  "venue": "Hidden Agenda",
+  "city": null,
+  "date": "2011-06-26"
+ },
+ {
+  "artist": "10 Years",
+  "venue": "Teatro Caupolic\u00e1n",
+  "city": null,
+  "date": "2011-11-23"
+ },
+ {
+  "artist": "10 Years",
+  "venue": "Espa\u00e7o Lux",
+  "city": null,
+  "date": "2011-11-27"
+ },
+ {
+  "artist": "10 Years",
+  "venue": "El Teatro Flores",
+  "city": null,
+  "date": "2011-11-29"
+ },
+ {
+  "artist": "10,000 Maniacs",
+  "venue": "Cherry Hinton Hall Grounds",
+  "city": null,
+  "date": "1988-07-29"
+ },
+ {
+  "artist": "10,000 Maniacs",
+  "venue": "WeatherTech Raceway Laguna Seca",
+  "city": null,
+  "date": "1993-05-29"
+ },
+ {
+  "artist": "10-FEET",
+  "venue": "GRASS STAGE",
+  "city": null,
+  "date": "2019-08-04"
+ },
+ {
+  "artist": "10-FEET",
+  "venue": "SKY STAGE",
+  "city": null,
+  "date": "2022-05-07"
+ },
+ {
+  "artist": "10-FEET",
+  "venue": "LOTUS STAGE",
+  "city": null,
+  "date": "2022-08-11"
+ },
+ {
+  "artist": "100 Kilo Herz",
+  "venue": "Vainstream Rockfest Festival Grounds",
+  "city": null,
+  "date": "2023-06-23"
+ },
+ {
+  "artist": "100 Kilo Herz",
+  "venue": "EMP Stage",
+  "city": null,
+  "date": "2023-08-19"
+ },
+ {
+  "artist": "100 Kilo Herz",
+  "venue": "Blue Stage",
+  "city": null,
+  "date": "2024-06-20"
+ },
+ {
+  "artist": "100 gecs",
+  "venue": "Empire Polo Club",
+  "city": null,
+  "date": "2020-04-11"
+ },
+ {
+  "artist": "100 gecs",
+  "venue": "The Junk Yard",
+  "city": null,
+  "date": "2022-08-06"
+ },
+ {
+  "artist": "100 gecs",
+  "venue": "Castello",
+  "city": null,
+  "date": "2022-08-20"
+ },
+ {
+  "artist": "1000mods",
+  "venue": "Valley",
+  "city": null,
+  "date": "2018-06-23"
+ },
+ {
+  "artist": "1000mods",
+  "venue": "Muziekodroom",
+  "city": null,
+  "date": "2022-05-06"
+ },
+ {
+  "artist": "1000mods",
+  "venue": "Gr\u00fcnspan",
+  "city": null,
+  "date": "2022-07-30"
+ },
+ {
+  "artist": "100blumen",
+  "venue": "zakk",
+  "city": null,
+  "date": "2017-04-16"
+ },
+ {
+  "artist": "100blumen",
+  "venue": "Ratinger Hof",
+  "city": null,
+  "date": "2023-01-21"
+ },
+ {
+  "artist": "100blumen",
+  "venue": "Weltkunstzimmer",
+  "city": null,
+  "date": "2023-12-22"
+ },
+ {
+  "artist": "102 Boyz",
+  "venue": "Blue Stage",
+  "city": null,
+  "date": "2024-06-20"
+ },
+ {
+  "artist": "102 Boyz",
+  "venue": "Seeb\u00fchne",
+  "city": null,
+  "date": "2024-08-08"
+ },
+ {
+  "artist": "102 Boyz",
+  "venue": "Flughafen Weeze",
+  "city": null,
+  "date": "2024-08-16"
+ },
+ {
+  "artist": "10cc",
+  "venue": "Sunshine In Concert Hall",
+  "city": null,
+  "date": "1974-03-29"
+ },
+ {
+  "artist": "10cc",
+  "venue": "BBC Television Centre, Studio 4",
+  "city": null,
+  "date": "1975-04-10"
+ },
+ {
+  "artist": "10cc",
+  "venue": "Knebworth House",
+  "city": null,
+  "date": "1976-08-21"
+ },
+ {
+  "artist": "120 Days",
+  "venue": "Middelalderparken",
+  "city": null,
+  "date": "2006-08-11"
+ },
+ {
+  "artist": "120 Days",
+  "venue": "Sin\u2010\u00e9",
+  "city": null,
+  "date": "2006-11-02"
+ },
+ {
+  "artist": "120 Days",
+  "venue": "Flamingo Cantina",
+  "city": null,
+  "date": "2007-03-15"
+ },
+ {
+  "artist": "12th Planet",
+  "venue": "Aces Lounge",
+  "city": null,
+  "date": "2010-03-19"
+ },
+ {
+  "artist": "12th Planet",
+  "venue": "Mohawk Patio",
+  "city": null,
+  "date": "2012-03-16"
+ },
+ {
+  "artist": "12th Planet",
+  "venue": "Beauty Bar Backyard",
+  "city": null,
+  "date": "2012-03-17"
+ },
+ {
+  "artist": "1349",
+  "venue": "Headbanger's Ballroom Tent",
+  "city": null,
+  "date": "2007-08-04"
+ },
+ {
+  "artist": "1349",
+  "venue": "Party Stage",
+  "city": null,
+  "date": "2010-08-06"
+ },
+ {
+  "artist": "1349",
+  "venue": "Royal Caribbean\u2019s Liberty of the Seas",
+  "city": null,
+  "date": "2015-01-22"
+ },
+ {
+  "artist": "16 Horsepower",
+  "venue": "Dance Hall",
+  "city": null,
+  "date": "1996-08-24"
+ },
+ {
+  "artist": "16 Horsepower",
+  "venue": "Main Stage",
+  "city": null,
+  "date": "1997-08-23"
+ },
+ {
+  "artist": "16 Horsepower",
+  "venue": "Bluebird Theater",
+  "city": null,
+  "date": "1997-09-28"
+ },
+ {
+  "artist": "17 Hippies",
+  "venue": "G\u00fcnther\u2010Klotz\u2010Anlage",
+  "city": null,
+  "date": "2003-07-18"
+ },
+ {
+  "artist": "17 Hippies",
+  "venue": "Stade Colette Besson",
+  "city": null,
+  "date": "2007-06-22"
+ },
+ {
+  "artist": "17 Hippies",
+  "venue": "Hof Huhnstadt",
+  "city": null,
+  "date": "2007-07-22"
+ },
+ {
+  "artist": "1914",
+  "venue": "Dong Open Air Festival Grounds",
+  "city": null,
+  "date": "2022-07-16"
+ },
+ {
+  "artist": "1914",
+  "venue": "Ficken Party Stage",
+  "city": null,
+  "date": "2022-08-17"
+ },
+ {
+  "artist": "1914",
+  "venue": "!FESTrepublic",
+  "city": null,
+  "date": "2024-08-02"
+ },
+ {
+  "artist": "1990s",
+  "venue": "O\u2082 ABC Glasgow",
+  "city": null,
+  "date": "2006-12-31"
+ },
+ {
+  "artist": "1990s",
+  "venue": "Club",
+  "city": null,
+  "date": "2007-08-16"
+ },
+ {
+  "artist": "1990s",
+  "venue": "Little John\u2019s Farm",
+  "city": null,
+  "date": "2007-08-24"
+ },
+ {
+  "artist": "2 Chainz",
+  "venue": "The Ballroom at Warehouse Live",
+  "city": null,
+  "date": "2012-03-01"
+ },
+ {
+  "artist": "2 Chainz",
+  "venue": "The Belmont",
+  "city": null,
+  "date": "2012-03-14"
+ },
+ {
+  "artist": "2 Chainz",
+  "venue": "Shrine Auditorium",
+  "city": null,
+  "date": "2012-07-01"
+ },
+ {
+  "artist": "2 Unlimited",
+  "venue": "De Oosterpoort",
+  "city": null,
+  "date": "1995-01-07"
+ },
+ {
+  "artist": "2 Unlimited",
+  "venue": "Westfalenhalle 1",
+  "city": null,
+  "date": "1995-02-09"
+ },
+ {
+  "artist": "2 Unlimited",
+  "venue": "Zinkensdamms IP",
+  "city": null,
+  "date": "2017-07-08"
+ },
+ {
+  "artist": "20 Watt Tombstone",
+  "venue": "Flicker Theatre & Bar",
+  "city": null,
+  "date": "2023-09-29"
+ },
+ {
+  "artist": "20 Watt Tombstone",
+  "venue": "The Pour House Music Hall",
+  "city": null,
+  "date": "2024-04-15"
+ },
+ {
+  "artist": "20 Watt Tombstone",
+  "venue": "Tribble's Bar",
+  "city": null,
+  "date": "2024-04-20"
+ },
+ {
+  "artist": "200 Stab Wounds",
+  "venue": "Granada Theater",
+  "city": null,
+  "date": "2023-05-15"
+ },
+ {
+  "artist": "200 Stab Wounds",
+  "venue": "Cobra Lounge",
+  "city": null,
+  "date": "2023-07-22"
+ },
+ {
+  "artist": "200 Stab Wounds",
+  "venue": "South Side Ballroom",
+  "city": null,
+  "date": "2023-08-19"
+ },
+ {
+  "artist": "2020k",
+  "venue": "Garfield Artworks",
+  "city": null,
+  "date": "2014-05-21"
+ },
+ {
+  "artist": "2020k",
+  "venue": "The Government Center",
+  "city": null,
+  "date": "2022-07-15"
+ },
+ {
+  "artist": "2020k",
+  "venue": "Cattivo",
+  "city": null,
+  "date": "2023-08-23"
+ },
+ {
+  "artist": "21 Savage",
+  "venue": "Empire Polo Club",
+  "city": null,
+  "date": "2020-04-11"
+ },
+ {
+  "artist": "21 Savage",
+  "venue": "NBC Studios: Studio 8H",
+  "city": null,
+  "date": "2024-02-24"
+ },
+ {
+  "artist": "21 Savage",
+  "venue": "Orange",
+  "city": null,
+  "date": "2024-07-04"
+ },
+ {
+  "artist": "22\u2010Pistepirkko",
+  "venue": "Kuusisaari",
+  "city": null,
+  "date": "1983-07-24"
+ },
+ {
+  "artist": "22\u2010Pistepirkko",
+  "venue": "Green",
+  "city": null,
+  "date": "1993-07-03"
+ },
+ {
+  "artist": "22\u2010Pistepirkko",
+  "venue": "Little John\u2019s Farm",
+  "city": null,
+  "date": "1996-08-23"
+ },
+ {
+  "artist": "257ers",
+  "venue": "Centerstage",
+  "city": null,
+  "date": "2014-06-07"
+ },
+ {
+  "artist": "257ers",
+  "venue": "Flughafen Weeze",
+  "city": null,
+  "date": "2025-08-15"
+ },
+ {
+  "artist": "257ers",
+  "venue": "Green Stage",
+  "city": null,
+  "date": "2025-08-15"
+ },
+ {
+  "artist": "2:54",
+  "venue": "Bar 96",
+  "city": null,
+  "date": "2012-03-14"
+ },
+ {
+  "artist": "2:54",
+  "venue": "Latitude 30",
+  "city": null,
+  "date": "2012-03-16"
+ },
+ {
+  "artist": "2:54",
+  "venue": "Congress Theater",
+  "city": null,
+  "date": "2012-10-20"
+ },
+ {
+  "artist": "2manydjs",
+  "venue": "Plaine de la Machine \u00e0 Feu",
+  "city": null,
+  "date": "2002-07-12"
+ },
+ {
+  "artist": "2manydjs",
+  "venue": "Festivalpark Werchter",
+  "city": null,
+  "date": "2003-06-27"
+ },
+ {
+  "artist": "2manydjs",
+  "venue": "Ferropolis",
+  "city": null,
+  "date": "2006-07-14"
+ },
+ {
+  "artist": "2raumwohnung",
+  "venue": "WERK 2 - Kulturfabrik Leipzig",
+  "city": null,
+  "date": "2007-03-07"
+ },
+ {
+  "artist": "2raumwohnung",
+  "venue": "Der Hirsch",
+  "city": null,
+  "date": "2007-03-08"
+ },
+ {
+  "artist": "2raumwohnung",
+  "venue": "Bahnhof Fischbach",
+  "city": null,
+  "date": "2007-03-10"
+ },
+ {
+  "artist": "3",
+  "venue": "South Stage",
+  "city": null,
+  "date": "1994-08-12"
+ },
+ {
+  "artist": "3",
+  "venue": "Bowery Poetry Club",
+  "city": null,
+  "date": "2006-11-03"
+ },
+ {
+  "artist": "3",
+  "venue": "Orpheum",
+  "city": null,
+  "date": "2008-05-06"
+ },
+ {
+  "artist": "3 Colours Red",
+  "venue": "Finsbury Park",
+  "city": null,
+  "date": "1996-06-23"
+ },
+ {
+  "artist": "3 Colours Red",
+  "venue": "Kerrang! Stage",
+  "city": null,
+  "date": "1996-08-17"
+ },
+ {
+  "artist": "3 Colours Red",
+  "venue": "Little John\u2019s Farm",
+  "city": null,
+  "date": "1996-08-25"
+ },
+ {
+  "artist": "3 Daft Monkeys",
+  "venue": "Worthy Farm",
+  "city": null,
+  "date": "2007-06-23"
+ },
+ {
+  "artist": "3 Daft Monkeys",
+  "venue": "St Mary's Church",
+  "city": null,
+  "date": "2021-09-23"
+ },
+ {
+  "artist": "3 Daft Monkeys",
+  "venue": "Deepdale Camping & Rooms",
+  "city": null,
+  "date": "2026-09-24"
+ },
+ {
+  "artist": "3 Doors Down",
+  "venue": "Shrine Auditorium",
+  "city": null,
+  "date": "2001-01-08"
+ },
+ {
+  "artist": "3 Doors Down",
+  "venue": "Max\u2010Morlock\u2010Stadion",
+  "city": null,
+  "date": "2001-06-01"
+ },
+ {
+  "artist": "3 Doors Down",
+  "venue": "N\u00fcrburgring",
+  "city": null,
+  "date": "2001-06-01"
+ },
+ {
+  "artist": "3 Inches of Blood",
+  "venue": "The Back Room",
+  "city": null,
+  "date": "2005-03-19"
+ },
+ {
+  "artist": "3 Inches of Blood",
+  "venue": "Muziekodroom",
+  "city": null,
+  "date": "2005-12-07"
+ },
+ {
+  "artist": "3 Inches of Blood",
+  "venue": "Double Main Stage",
+  "city": null,
+  "date": "2008-08-02"
+ },
+ {
+  "artist": "30,000 Monkies",
+  "venue": "Club",
+  "city": null,
+  "date": "2013-07-13"
+ },
+ {
+  "artist": "30,000 Monkies",
+  "venue": "XPRMNT",
+  "city": null,
+  "date": "2014-08-02"
+ },
+ {
+  "artist": "30,000 Monkies",
+  "venue": "Jeugdhuis Sojo",
+  "city": null,
+  "date": "2015-05-27"
+ },
+ {
+  "artist": "311",
+  "venue": "Irvine Meadows Amphitheatre",
+  "city": null,
+  "date": "1996-06-15"
+ },
+ {
+  "artist": "311",
+  "venue": "Madison Square Garden",
+  "city": null,
+  "date": "1996-07-27"
+ },
+ {
+  "artist": "311",
+  "venue": "Beasley Coliseum",
+  "city": null,
+  "date": "1997-11-06"
+ },
+ {
+  "artist": "35007",
+  "venue": "De Oosterpoort",
+  "city": null,
+  "date": "1995-01-07"
+ },
+ {
+  "artist": "35007",
+  "venue": "Jeugdhuis Sojo",
+  "city": null,
+  "date": "2001-04-15"
+ },
+ {
+  "artist": "35007",
+  "venue": "Mutua Fides",
+  "city": null,
+  "date": "2003-01-09"
+ },
+ {
+  "artist": "36 Crazyfists",
+  "venue": "Marquee II",
+  "city": null,
+  "date": "2006-06-23"
+ },
+ {
+  "artist": "36 Crazyfists",
+  "venue": "Zeppelinfeld",
+  "city": null,
+  "date": "2008-06-06"
+ },
+ {
+  "artist": "36 Crazyfists",
+  "venue": "Main Stage",
+  "city": null,
+  "date": "2008-06-14"
+ },
+ {
+  "artist": "38 Special",
+  "venue": "Casino Miami Jai\u2010Alai",
+  "city": null,
+  "date": "1976-03-21"
+ },
+ {
+  "artist": "38 Special",
+  "venue": "Atlanta-Fulton County Stadium",
+  "city": null,
+  "date": "1976-08-29"
+ },
+ {
+  "artist": "38 Special",
+  "venue": "Little John\u2019s Farm",
+  "city": null,
+  "date": "1981-08-30"
+ },
+ {
+  "artist": "3OH!3",
+  "venue": "Irvine Meadows Amphitheatre",
+  "city": null,
+  "date": "2008-04-05"
+ },
+ {
+  "artist": "3OH!3",
+  "venue": "Sutter Health Park",
+  "city": null,
+  "date": "2009-05-10"
+ },
+ {
+  "artist": "3OH!3",
+  "venue": "Xfinity Center",
+  "city": null,
+  "date": "2009-05-17"
+ },
+ {
+  "artist": "47SOUL",
+  "venue": "Festivalgel\u00e4nde am H\u00fclltofter Tief",
+  "city": null,
+  "date": "2017-08-03"
+ },
+ {
+  "artist": "47SOUL",
+  "venue": "VERA: Mainstage",
+  "city": null,
+  "date": "2018-11-10"
+ },
+ {
+  "artist": "47SOUL",
+  "venue": "Victoria Park",
+  "city": null,
+  "date": "2025-06-06"
+ },
+ {
+  "artist": "49 Winchester",
+  "venue": "Which Stage",
+  "city": null,
+  "date": "2024-06-14"
+ },
+ {
+  "artist": "49 Winchester",
+  "venue": "OVO Hydro",
+  "city": null,
+  "date": "2025-03-16"
+ },
+ {
+  "artist": "49 Winchester",
+  "venue": "T\u2010Mobile Mane Stage",
+  "city": null,
+  "date": "2025-04-25"
+ },
+ {
+  "artist": "4LYN",
+  "venue": "Max\u2010Morlock\u2010Stadion",
+  "city": null,
+  "date": "2001-06-01"
+ },
+ {
+  "artist": "4LYN",
+  "venue": "N\u00fcrburgring",
+  "city": null,
+  "date": "2001-06-01"
+ },
+ {
+  "artist": "4LYN",
+  "venue": "Huize Maas",
+  "city": null,
+  "date": "2002-01-11"
+ },
+ {
+  "artist": "5 Seconds of Summer",
+  "venue": "Galen Center",
+  "city": null,
+  "date": "2015-08-16"
+ },
+ {
+  "artist": "5 Seconds of Summer",
+  "venue": "MARINE STAGE",
+  "city": null,
+  "date": "2017-08-19"
+ },
+ {
+  "artist": "5 Seconds of Summer",
+  "venue": "OCEAN STAGE",
+  "city": null,
+  "date": "2017-08-20"
+ },
+ {
+  "artist": "50 Cent",
+  "venue": "Shrine Auditorium",
+  "city": null,
+  "date": "2003-05-31"
+ },
+ {
+  "artist": "50 Cent",
+  "venue": "Earls Court Exhibition Centre",
+  "city": null,
+  "date": "2004-02-17"
+ },
+ {
+  "artist": "50 Cent",
+  "venue": "Docklands",
+  "city": null,
+  "date": "2009-07-10"
+ },
+ {
+  "artist": "54-40",
+  "venue": "New York Theatre",
+  "city": null,
+  "date": "1985-07-07"
+ },
+ {
+  "artist": "54-40",
+  "venue": "Commodore Ballroom",
+  "city": null,
+  "date": "1985-11-18"
+ },
+ {
+  "artist": "54-40",
+  "venue": "McPherson Playhouse",
+  "city": null,
+  "date": "1999-10-08"
+ },
+ {
+  "artist": "65daysofstatic",
+  "venue": "Marquee",
+  "city": null,
+  "date": "2006-08-19"
+ },
+ {
+  "artist": "65daysofstatic",
+  "venue": "Elysium",
+  "city": null,
+  "date": "2007-03-17"
+ },
+ {
+  "artist": "65daysofstatic",
+  "venue": "KOKO",
+  "city": null,
+  "date": "2007-05-20"
+ },
+ {
+  "artist": "7038634357",
+  "venue": "HECK",
+  "city": null,
+  "date": "2018-02-14"
+ },
+ {
+  "artist": "7038634357",
+  "venue": "Secret Project Robot",
+  "city": null,
+  "date": "2018-03-16"
+ },
+ {
+  "artist": "7038634357",
+  "venue": "Pianos",
+  "city": null,
+  "date": "2018-04-19"
+ },
+ {
+  "artist": "7Seconds",
+  "venue": "Irvine Meadows Amphitheatre",
+  "city": null,
+  "date": "2008-04-05"
+ },
+ {
+  "artist": "7Seconds",
+  "venue": "Marina de Montebello",
+  "city": null,
+  "date": "2013-06-15"
+ },
+ {
+  "artist": "7Seconds",
+  "venue": "Vainstream Rockfest Festival Grounds",
+  "city": null,
+  "date": "2013-07-06"
+ },
+ {
+  "artist": "7\u0440\u0430\u0441\u0430",
+  "venue": "Sin City",
+  "city": null,
+  "date": "2017-05-12"
+ },
+ {
+  "artist": "7\u0440\u0430\u0441\u0430",
+  "venue": "\u041c\u0443\u0437 \u041f\u043e\u0440\u0442",
+  "city": null,
+  "date": "2026-07-17"
+ },
+ {
+  "artist": "7\u0440\u0430\u0441\u0430",
+  "venue": "Pravda Club",
+  "city": null,
+  "date": "2026-07-19"
+ },
+ {
+  "artist": "808 State",
+  "venue": "BBC Television Centre, Studio 4",
+  "city": null,
+  "date": "1989-11-16"
+ },
+ {
+  "artist": "808 State",
+  "venue": "Lydd Airport",
+  "city": null,
+  "date": "1994-04-30"
+ },
+ {
+  "artist": "808 State",
+  "venue": "Dance Hall",
+  "city": null,
+  "date": "1996-08-24"
+ },
+ {
+  "artist": "98\u00b0",
+  "venue": "Shrine Auditorium",
+  "city": null,
+  "date": "1999-01-11"
+ },
+ {
+  "artist": "98\u00b0",
+  "venue": "Barker Hangar",
+  "city": null,
+  "date": "2000-08-06"
+ },
+ {
+  "artist": "98\u00b0",
+  "venue": "American Family Insurance Amphitheater",
+  "city": null,
+  "date": "2013-07-02"
+ },
+ {
+  "artist": "9mm Parabellum Bullet",
+  "venue": "\u821e\u6d32\u30a2\u30ea\u30fc\u30ca",
+  "city": null,
+  "date": "2007-08-12"
+ },
+ {
+  "artist": "9mm Parabellum Bullet",
+  "venue": "\u5e55\u5f35\u30e1\u30c3\u30bb",
+  "city": null,
+  "date": "2015-06-27"
+ },
+ {
+  "artist": "9mm Parabellum Bullet",
+  "venue": "\u5e55\u5f35\u30e1\u30c3\u30bb \u30a4\u30d9\u30f3\u30c8\u30db\u30fc\u30eb",
+  "city": null,
+  "date": "2015-11-22"
+ },
+ {
+  "artist": "9nine",
+  "venue": "\u6771\u4eac\u30ad\u30cd\u30de\u5036\u697d\u90e8",
+  "city": null,
+  "date": "2007-07-27"
+ },
+ {
+  "artist": "9nine",
+  "venue": "\u3055\u3044\u305f\u307e\u30b9\u30fc\u30d1\u30fc\u30a2\u30ea\u30fc\u30ca",
+  "city": null,
+  "date": "2014-08-29"
+ },
+ {
+  "artist": "9nine",
+  "venue": "\u81fa\u5317\u5357\u6e2f\u5c55\u89bd\u9928",
+  "city": null,
+  "date": "2019-01-19"
+ },
+ {
+  "artist": "9th Wonder",
+  "venue": "Empire Polo Club",
+  "city": null,
+  "date": "2006-04-30"
+ },
+ {
+  "artist": "9th Wonder",
+  "venue": "Scoot Inn",
+  "city": null,
+  "date": "2010-03-19"
+ },
+ {
+  "artist": "9th Wonder",
+  "venue": "Kiss & Fly",
+  "city": null,
+  "date": "2012-03-17"
+ },
+ {
+  "artist": ":papercutz",
+  "venue": "Prague",
+  "city": null,
+  "date": "2010-03-20"
+ },
+ {
+  "artist": ":papercutz",
+  "venue": "Speakeasy Kabaret",
+  "city": null,
+  "date": "2012-03-16"
+ },
+ {
+  "artist": ":papercutz",
+  "venue": "Moapa River Indian Reservation",
+  "city": null,
+  "date": "2016-05-01"
+ },
+ {
+  "artist": "?uestlove",
+  "venue": "Dolby Theatre",
+  "city": null,
+  "date": "2004-06-29"
+ },
+ {
+  "artist": "?uestlove",
+  "venue": "1100 Warehouse",
+  "city": null,
+  "date": "2012-03-15"
+ },
+ {
+  "artist": "?uestlove",
+  "venue": "This Tent",
+  "city": null,
+  "date": "2012-06-09"
+ },
+ {
+  "artist": "A",
+  "venue": "Parque el Soto",
+  "city": null,
+  "date": "1998-05-01"
+ },
+ {
+  "artist": "A",
+  "venue": "Worthy Farm",
+  "city": null,
+  "date": "1998-06-27"
+ },
+ {
+  "artist": "A",
+  "venue": "Alternastage",
+  "city": null,
+  "date": "2002-05-17"
+ },
+ {
+  "artist": "A Brand",
+  "venue": "The Jackalope",
+  "city": null,
+  "date": "2005-03-18"
+ },
+ {
+  "artist": "A Brand",
+  "venue": "VERA",
+  "city": null,
+  "date": "2006-04-14"
+ },
+ {
+  "artist": "A Brand",
+  "venue": "Wablief?!",
+  "city": null,
+  "date": "2006-08-17"
+ },
+ {
+  "artist": "A Classic Education",
+  "venue": "Friends",
+  "city": null,
+  "date": "2010-03-18"
+ },
+ {
+  "artist": "A Classic Education",
+  "venue": "VERA: Mainstage",
+  "city": null,
+  "date": "2011-10-06"
+ },
+ {
+  "artist": "A Classic Education",
+  "venue": "The Studio by HGTV",
+  "city": null,
+  "date": "2012-03-16"
+ },
+ {
+  "artist": "A Day to Remember",
+  "venue": "Gilde Parkb\u00fchne",
+  "city": null,
+  "date": "2015-06-09"
+ },
+ {
+  "artist": "A Day to Remember",
+  "venue": "Main Stage",
+  "city": null,
+  "date": "2015-06-13"
+ },
+ {
+  "artist": "A Day to Remember",
+  "venue": "Mainstage 1",
+  "city": null,
+  "date": "2015-06-20"
+ },
+ {
+  "artist": "A Deer A Horse",
+  "venue": "Little Skips",
+  "city": null,
+  "date": "2018-06-08"
+ },
+ {
+  "artist": "A Deer A Horse",
+  "venue": "The Gutter",
+  "city": null,
+  "date": "2018-06-09"
+ },
+ {
+  "artist": "A Deer A Horse",
+  "venue": "The Pour House Music Hall",
+  "city": null,
+  "date": "2022-04-21"
+ },
+ {
+  "artist": "A Flock of Seagulls",
+  "venue": "Butlin\u2019s Bognor Regis Resort",
+  "city": null,
+  "date": "2017-12-01"
+ },
+ {
+  "artist": "A Flock of Seagulls",
+  "venue": "U.S. Cellular Connection Stage",
+  "city": null,
+  "date": "2018-07-01"
+ },
+ {
+  "artist": "A Flock of Seagulls",
+  "venue": "Sh\u00f4ko Madrid",
+  "city": null,
+  "date": "2022-03-26"
+ },
+ {
+  "artist": "A Guy Called Gerald",
+  "venue": "Deeday",
+  "city": null,
+  "date": "1996-06-29"
+ },
+ {
+  "artist": "A Guy Called Gerald",
+  "venue": "Ferropolis",
+  "city": null,
+  "date": "2006-07-14"
+ },
+ {
+  "artist": "A Guy Called Gerald",
+  "venue": "Worthy Farm",
+  "city": null,
+  "date": "2007-06-22"
+ },
+ {
+  "artist": "A Hawk and a Hacksaw",
+  "venue": "Copa Bar & Grill",
+  "city": null,
+  "date": "2005-03-17"
+ },
+ {
+  "artist": "A Hawk and a Hacksaw",
+  "venue": "Blender Balcony at the Ritz",
+  "city": null,
+  "date": "2006-03-17"
+ },
+ {
+  "artist": "A Hawk and a Hacksaw",
+  "venue": "Roskilde Festival",
+  "city": null,
+  "date": "2007-07-07"
+ },
+ {
+  "artist": "A Life Divided",
+  "venue": "Airport Hildesheim",
+  "city": null,
+  "date": "2011-08-13"
+ },
+ {
+  "artist": "A Life Divided",
+  "venue": "Rock Stage",
+  "city": null,
+  "date": "2023-07-08"
+ },
+ {
+  "artist": "A Life Divided",
+  "venue": "Theater am Tanzbrunnen",
+  "city": null,
+  "date": "2023-07-29"
+ },
+ {
+  "artist": "A Life Once Lost",
+  "venue": "Polanka Park",
+  "city": null,
+  "date": "2001-09-14"
+ },
+ {
+  "artist": "A Life Once Lost",
+  "venue": "Sloss Furnaces",
+  "city": null,
+  "date": "2003-08-15"
+ },
+ {
+  "artist": "A Life Once Lost",
+  "venue": "4G\u2019s Tire & Auto Repair",
+  "city": null,
+  "date": "2003-08-18"
+ },
+ {
+  "artist": "A Loss for Words",
+  "venue": "Studio at Waiting Room",
+  "city": null,
+  "date": "2015-11-05"
+ },
+ {
+  "artist": "A Loss for Words",
+  "venue": "Big Night Live",
+  "city": null,
+  "date": "2025-12-06"
+ },
+ {
+  "artist": "A Loss for Words",
+  "venue": "Palladium",
+  "city": null,
+  "date": "2026-07-11"
+ },
+ {
+  "artist": "A Perfect Circle",
+  "venue": "Accor Arena",
+  "city": null,
+  "date": "2003-09-27"
+ },
+ {
+  "artist": "A Perfect Circle",
+  "venue": "Jockey Club de S\u00e3o Paulo",
+  "city": null,
+  "date": "2013-03-30"
+ },
+ {
+  "artist": "A Perfect Circle",
+  "venue": "Metropolitan Stage",
+  "city": null,
+  "date": "2017-04-29"
+ },
+ {
+  "artist": "A Perfect Murder",
+  "venue": "Restaurant Rainbow-Ites",
+  "city": null,
+  "date": "2003-04-05"
+ },
+ {
+  "artist": "A Perfect Murder",
+  "venue": "Parc de la Francophonie",
+  "city": null,
+  "date": "2012-07-15"
+ },
+ {
+  "artist": "A Perfect Murder",
+  "venue": "Marina de Montebello",
+  "city": null,
+  "date": "2013-06-15"
+ },
+ {
+  "artist": "A Place to Bury Strangers",
+  "venue": "Sony Club @ Red 7 Patio",
+  "city": null,
+  "date": "2007-03-14"
+ },
+ {
+  "artist": "A Place to Bury Strangers",
+  "venue": "Music Hall of Williamsburg",
+  "city": null,
+  "date": "2007-10-17"
+ },
+ {
+  "artist": "A Place to Bury Strangers",
+  "venue": "VERA",
+  "city": null,
+  "date": "2009-11-27"
+ },
+ {
+  "artist": "A Primitive Evolution",
+  "venue": "Bovine Sex Club",
+  "city": null,
+  "date": "2010-03-10"
+ },
+ {
+  "artist": "A Primitive Evolution",
+  "venue": "The Hideout",
+  "city": null,
+  "date": "2010-03-13"
+ },
+ {
+  "artist": "A Primitive Evolution",
+  "venue": "Corktown Pub",
+  "city": null,
+  "date": "2015-10-31"
+ },
+ {
+  "artist": "A Projection",
+  "venue": "Dainuvos sl\u0117nis",
+  "city": null,
+  "date": "2019-07-12"
+ },
+ {
+  "artist": "A Projection",
+  "venue": "Kulturpark Deutzen",
+  "city": null,
+  "date": "2022-09-02"
+ },
+ {
+  "artist": "A Projection",
+  "venue": "Theater am Tanzbrunnen",
+  "city": null,
+  "date": "2024-07-27"
+ },
+ {
+  "artist": "A Silver Mt. Zion",
+  "venue": "VERA",
+  "city": null,
+  "date": "2004-03-18"
+ },
+ {
+  "artist": "A Silver Mt. Zion",
+  "venue": "Ukrainian National Federation of Canada",
+  "city": null,
+  "date": "2007-10-03"
+ },
+ {
+  "artist": "A Silver Mt. Zion",
+  "venue": "Centrum Reanimacji Kultury",
+  "city": null,
+  "date": "2008-10-11"
+ },
+ {
+  "artist": "A Storm of Light",
+  "venue": "Muziekodroom",
+  "city": null,
+  "date": "2011-10-15"
+ },
+ {
+  "artist": "A Storm of Light",
+  "venue": "Dirty Dog Bar",
+  "city": null,
+  "date": "2012-03-14"
+ },
+ {
+  "artist": "A Storm of Light",
+  "venue": "Virgin Hotels Las Vegas",
+  "city": null,
+  "date": "2016-08-27"
+ },
+ {
+  "artist": "A Wilhelm Scream",
+  "venue": "Campo de f\u00fatbol de Celeiro",
+  "city": null,
+  "date": "2014-08-01"
+ },
+ {
+  "artist": "A Wilhelm Scream",
+  "venue": "Ruhrpott Stage",
+  "city": null,
+  "date": "2026-07-25"
+ },
+ {
+  "artist": "A Wilhelm Scream",
+  "venue": "Afdreiht un Buten Festival Grounds",
+  "city": null,
+  "date": "2026-07-31"
+ },
+ {
+  "artist": "A$AP Rocky",
+  "venue": "The Madison",
+  "city": null,
+  "date": "2012-03-17"
+ },
+ {
+  "artist": "A$AP Rocky",
+  "venue": "Empire Polo Club",
+  "city": null,
+  "date": "2012-04-14"
+ },
+ {
+  "artist": "A$AP Rocky",
+  "venue": "Parc Jean-Drapeau",
+  "city": null,
+  "date": "2012-08-04"
+ },
+ {
+  "artist": "A$AP Twelvyy",
+  "venue": "Miles Davis Hall",
+  "city": null,
+  "date": "2018-07-11"
+ },
+ {
+  "artist": "A$AP Twelvyy",
+  "venue": "Adelaide Showground",
+  "city": null,
+  "date": "2019-04-26"
+ },
+ {
+  "artist": "A$AP Twelvyy",
+  "venue": "Maitland Showground",
+  "city": null,
+  "date": "2019-04-27"
+ },
+ {
+  "artist": "A.A. Williams",
+  "venue": "The Dogtooth Stage",
+  "city": null,
+  "date": "2022-06-10"
+ },
+ {
+  "artist": "A.A. Williams",
+  "venue": "Luxor",
+  "city": null,
+  "date": "2022-08-26"
+ },
+ {
+  "artist": "A.A. Williams",
+  "venue": "Bumann & Sohn",
+  "city": null,
+  "date": "2022-12-20"
+ },
+ {
+  "artist": "AB6IX",
+  "venue": "SBS \ub4f1\ucd0c\ub3d9\uacf5\uac1c\ud640",
+  "city": null,
+  "date": "2021-01-31"
+ },
+ {
+  "artist": "AB6IX",
+  "venue": "SK\uc62c\ub9bc\ud53d\ud578\ub4dc\ubcfc\uacbd\uae30\uc7a5",
+  "city": null,
+  "date": "2021-07-17"
+ },
+ {
+  "artist": "AB6IX",
+  "venue": "Deutsche Bank Park",
+  "city": null,
+  "date": "2022-05-14"
+ },
+ {
+  "artist": "ABBA",
+  "venue": "Brighton Dome",
+  "city": null,
+  "date": "1974-04-06"
+ },
+ {
+  "artist": "ABBA",
+  "venue": "BBC Television Centre, Studio 4",
+  "city": null,
+  "date": "1974-04-11"
+ },
+ {
+  "artist": "ABBA",
+  "venue": "\u65e5\u672c\u6b66\u9053\u9928",
+  "city": null,
+  "date": "1980-03-12"
+ },
+ {
+  "artist": "ABC",
+  "venue": "BBC Television Centre, Studio 4",
+  "city": null,
+  "date": "1983-11-03"
+ },
+ {
+  "artist": "ABC",
+  "venue": "Utilita Arena Cardiff",
+  "city": null,
+  "date": "1998-12-09"
+ },
+ {
+  "artist": "ABC",
+  "venue": "Merkur Spiel\u2010Arena",
+  "city": null,
+  "date": "2020-11-14"
+ },
+ {
+  "artist": "AC Slater",
+  "venue": "Yuma Tent",
+  "city": null,
+  "date": "2016-04-17"
+ },
+ {
+  "artist": "AC Slater",
+  "venue": "Flughafen Weeze",
+  "city": null,
+  "date": "2024-07-17"
+ },
+ {
+  "artist": "AC/DC",
+  "venue": "Amway Arena",
+  "city": null,
+  "date": "2001-03-20"
+ },
+ {
+  "artist": "AC/DC",
+  "venue": "Benchmark International Arena",
+  "city": null,
+  "date": "2001-03-21"
+ },
+ {
+  "artist": "AC/DC",
+  "venue": "Bridgestone Arena",
+  "city": null,
+  "date": "2001-03-23"
+ },
+ {
+  "artist": "ACIDMAN",
+  "venue": "PARK STAGE",
+  "city": null,
+  "date": "2018-08-12"
+ },
+ {
+  "artist": "ACIDMAN",
+  "venue": "LAKE STAGE",
+  "city": null,
+  "date": "2019-08-12"
+ },
+ {
+  "artist": "ACIDMAN",
+  "venue": "HILLSIDE STAGE",
+  "city": null,
+  "date": "2022-08-12"
+ },
+ {
+  "artist": "ACTORS",
+  "venue": "Brillobox",
+  "city": null,
+  "date": "2019-05-01"
+ },
+ {
+  "artist": "ACTORS",
+  "venue": "Spirit Lodge (1st floor)",
+  "city": null,
+  "date": "2022-03-30"
+ },
+ {
+  "artist": "ACTORS",
+  "venue": "Theater am Tanzbrunnen",
+  "city": null,
+  "date": "2023-07-29"
+ },
+ {
+  "artist": "ADULT.",
+  "venue": "Brillobox",
+  "city": null,
+  "date": "2018-02-27"
+ },
+ {
+  "artist": "ADULT.",
+  "venue": "Spirit Hall (upstairs)",
+  "city": null,
+  "date": "2019-04-12"
+ },
+ {
+  "artist": "ADULT.",
+  "venue": "Stereo",
+  "city": null,
+  "date": "2025-02-13"
+ },
+ {
+  "artist": "AFI",
+  "venue": "Somerset Amphitheater",
+  "city": null,
+  "date": "2001-07-14"
+ },
+ {
+  "artist": "AFI",
+  "venue": "Jacobs Pavilion at Nautica",
+  "city": null,
+  "date": "2001-08-07"
+ },
+ {
+  "artist": "AFI",
+  "venue": "American Family Insurance Amphitheater",
+  "city": null,
+  "date": "2007-07-03"
+ },
+ {
+  "artist": "AI",
+  "venue": "\u5e55\u5f35\u30e1\u30c3\u30bb",
+  "city": null,
+  "date": "2007-08-11"
+ },
+ {
+  "artist": "AI",
+  "venue": "\u821e\u6d32\u30a2\u30ea\u30fc\u30ca",
+  "city": null,
+  "date": "2007-08-12"
+ },
+ {
+  "artist": "AI",
+  "venue": "\u30ed\u30fc\u30e0\u30b7\u30a2\u30bf\u30fc\u4eac\u90fd",
+  "city": null,
+  "date": "2025-05-21"
+ },
+ {
+  "artist": "AJ Tracey",
+  "venue": "Boombox",
+  "city": null,
+  "date": "2017-07-14"
+ },
+ {
+  "artist": "AJ Tracey",
+  "venue": "Red Bull Elektropedia Room",
+  "city": null,
+  "date": "2017-08-10"
+ },
+ {
+  "artist": "AJ Tracey",
+  "venue": "Stewart Park",
+  "city": null,
+  "date": "2019-05-26"
+ },
+ {
+  "artist": "AJR",
+  "venue": "Peacock Theater",
+  "city": null,
+  "date": "2021-05-23"
+ },
+ {
+  "artist": "AJR",
+  "venue": "Basilica of Saint Mary",
+  "city": null,
+  "date": "2021-09-10"
+ },
+ {
+  "artist": "AJR",
+  "venue": "Little Caesars Arena",
+  "city": null,
+  "date": "2022-12-06"
+ },
+ {
+  "artist": "AKB48",
+  "venue": "\u65e5\u672c\u9752\u5e74\u9928",
+  "city": null,
+  "date": "2006-11-03"
+ },
+ {
+  "artist": "AKB48",
+  "venue": "\u6771\u4eac\u539a\u751f\u5e74\u91d1\u4f1a\u9928 \u5927\u30db\u30fc\u30eb",
+  "city": null,
+  "date": "2007-03-10"
+ },
+ {
+  "artist": "AKB48",
+  "venue": "SHIBUYA\u2010AX",
+  "city": null,
+  "date": "2008-01-21"
+ },
+ {
+  "artist": "AKS",
+  "venue": "Plaine de la Machine \u00e0 Feu",
+  "city": null,
+  "date": "2010-07-16"
+ },
+ {
+  "artist": "AKS",
+  "venue": "VERA",
+  "city": null,
+  "date": "2011-02-11"
+ },
+ {
+  "artist": "AKS",
+  "venue": "Dance Hall",
+  "city": null,
+  "date": "2012-08-17"
+ },
+ {
+  "artist": "ALI",
+  "venue": "\u5e55\u5f35\u30e1\u30c3\u30bb \u56fd\u969b\u5c55\u793a\u58349-11\u30db\u30fc\u30eb",
+  "city": null,
+  "date": "2023-12-08"
+ },
+ {
+  "artist": "ALI",
+  "venue": "Messe D\u00fcsseldorf",
+  "city": null,
+  "date": "2026-05-29"
+ },
+ {
+  "artist": "ALI",
+  "venue": "Crypto.com Arena",
+  "city": null,
+  "date": "2026-07-02"
+ },
+ {
+  "artist": "ALI PROJECT",
+  "venue": "\u6b66\u8535\u91ce\u5e02\u6c11\u6587\u5316\u4f1a\u9928 \u5c0f\u30db\u30fc\u30eb",
+  "city": null,
+  "date": "2002-12-20"
+ },
+ {
+  "artist": "ALI PROJECT",
+  "venue": "\u6b66\u8535\u91ce\u5e02\u6c11\u6587\u5316\u4f1a\u9928 \u5927\u30db\u30fc\u30eb",
+  "city": null,
+  "date": "2003-12-12"
+ },
+ {
+  "artist": "ALI PROJECT",
+  "venue": "\u65e5\u672c\u6b66\u9053\u9928",
+  "city": null,
+  "date": "2006-07-08"
+ },
+ {
+  "artist": "ALMA",
+  "venue": "Worthy Farm",
+  "city": null,
+  "date": "2019-06-30"
+ },
+ {
+  "artist": "ALMA",
+  "venue": "G\u00fcnther\u2010Klotz\u2010Anlage",
+  "city": null,
+  "date": "2019-07-21"
+ },
+ {
+  "artist": "ALMA",
+  "venue": "Little John\u2019s Farm",
+  "city": null,
+  "date": "2019-08-24"
+ },
+ {
+  "artist": "ANNA",
+  "venue": "Empire Polo Club",
+  "city": null,
+  "date": "2020-04-11"
+ },
+ {
+  "artist": "ANNA",
+  "venue": "Boiler Room",
+  "city": null,
+  "date": "2022-08-21"
+ },
+ {
+  "artist": "ANNA",
+  "venue": "!FESTrepublic",
+  "city": null,
+  "date": "2025-08-01"
+ },
+ {
+  "artist": "ASG",
+  "venue": "Encore",
+  "city": null,
+  "date": "2010-03-20"
+ },
+ {
+  "artist": "ASG",
+  "venue": "Handy Park",
+  "city": null,
+  "date": "2013-06-01"
+ },
+ {
+  "artist": "ASG",
+  "venue": "Astra Kulturhaus",
+  "city": null,
+  "date": "2014-04-24"
+ },
+ {
+  "artist": "ASIAN KUNG-FU GENERATION",
+  "venue": "SKY STAGE",
+  "city": null,
+  "date": "2022-05-01"
+ },
+ {
+  "artist": "ASIAN KUNG-FU GENERATION",
+  "venue": "EARTH STAGE",
+  "city": null,
+  "date": "2022-12-30"
+ },
+ {
+  "artist": "ASIAN KUNG-FU GENERATION",
+  "venue": "Pavilh\u00e3o de Exposi\u00e7\u00f5es do Anhembi",
+  "city": null,
+  "date": "2026-07-05"
+ },
+ {
+  "artist": "ASP",
+  "venue": "Alter Schlachthof",
+  "city": null,
+  "date": "2007-11-04"
+ },
+ {
+  "artist": "ASP",
+  "venue": "Lukaskirche",
+  "city": null,
+  "date": "2008-10-03"
+ },
+ {
+  "artist": "ASP",
+  "venue": "Airport Hildesheim",
+  "city": null,
+  "date": "2011-08-13"
+ },
+ {
+  "artist": "ASTERISM",
+  "venue": "Los Angeles Convention Center",
+  "city": null,
+  "date": "2023-07-01"
+ },
+ {
+  "artist": "ASTERISM",
+  "venue": "The Observatory",
+  "city": null,
+  "date": "2023-07-09"
+ },
+ {
+  "artist": "ASTERISM",
+  "venue": "S.O.B.\u2019s",
+  "city": null,
+  "date": "2023-07-11"
+ },
+ {
+  "artist": "ASTR",
+  "venue": "Merriweather Post Pavilion",
+  "city": null,
+  "date": "2014-05-10"
+ },
+ {
+  "artist": "ASTR",
+  "venue": "Gotham Tent",
+  "city": null,
+  "date": "2015-06-06"
+ },
+ {
+  "artist": "ASTR",
+  "venue": "The Mod Club",
+  "city": null,
+  "date": "2015-11-16"
+ },
+ {
+  "artist": "ASTRO",
+  "venue": "Seoul World Cup Stadium",
+  "city": null,
+  "date": "2018-05-12"
+ },
+ {
+  "artist": "ASTRO",
+  "venue": "SBS \ub4f1\ucd0c\ub3d9\uacf5\uac1c\ud640",
+  "city": null,
+  "date": "2021-08-08"
+ },
+ {
+  "artist": "ATB",
+  "venue": "Bayfront Park",
+  "city": null,
+  "date": "2012-03-25"
+ },
+ {
+  "artist": "ATB",
+  "venue": "The Circus",
+  "city": null,
+  "date": "2013-11-23"
+ },
+ {
+  "artist": "ATB",
+  "venue": "Flughafen Weeze",
+  "city": null,
+  "date": "2025-07-19"
+ },
+ {
+  "artist": "ATEEZ",
+  "venue": "\u30d0\u30f3\u30c6\u30ea\u30f3\u30c9\u30fc\u30e0 \u30ca\u30b4\u30e4",
+  "city": null,
+  "date": "2019-12-05"
+ },
+ {
+  "artist": "ATEEZ",
+  "venue": "SBS \ub4f1\ucd0c\ub3d9\uacf5\uac1c\ud640",
+  "city": null,
+  "date": "2020-08-30"
+ },
+ {
+  "artist": "ATEEZ",
+  "venue": "\ud30c\uc8fc \ud1b5\uc77c\ub3d9\uc0b0 CJ ENM \ucf58\ud150\uce20 \uc6d4\ub4dc",
+  "city": null,
+  "date": "2020-12-06"
+ },
+ {
+  "artist": "AUDREY NUNA",
+  "venue": "Arena",
+  "city": null,
+  "date": "2026-07-04"
+ },
+ {
+  "artist": "AUDREY NUNA",
+  "venue": "MARINE STAGE",
+  "city": null,
+  "date": "2026-08-14"
+ },
+ {
+  "artist": "AUDREY NUNA",
+  "venue": "Wave",
+  "city": null,
+  "date": "2026-08-23"
+ },
+ {
+  "artist": "AURORA",
+  "venue": "Hoxton Bar & Kitchen",
+  "city": null,
+  "date": "2015-09-18"
+ },
+ {
+  "artist": "AURORA",
+  "venue": "O\u2082 Academy Brixton",
+  "city": null,
+  "date": "2015-11-24"
+ },
+ {
+  "artist": "AURORA",
+  "venue": "Henham Park",
+  "city": null,
+  "date": "2016-07-17"
+ },
+ {
+  "artist": "AViVA",
+  "venue": "Stage 4",
+  "city": null,
+  "date": "2024-06-21"
+ },
+ {
+  "artist": "AViVA",
+  "venue": "Atmos Stage",
+  "city": null,
+  "date": "2025-06-07"
+ },
+ {
+  "artist": "AViVA",
+  "venue": "Metal Dome",
+  "city": null,
+  "date": "2025-06-22"
+ },
+ {
+  "artist": "AWOLNATION",
+  "venue": "Empire Polo Club",
+  "city": null,
+  "date": "2012-04-14"
+ },
+ {
+  "artist": "AWOLNATION",
+  "venue": "Clubstage",
+  "city": null,
+  "date": "2012-06-02"
+ },
+ {
+  "artist": "AWOLNATION",
+  "venue": "River Stage",
+  "city": null,
+  "date": "2012-07-04"
+ },
+ {
+  "artist": "A_Rival",
+  "venue": "Hilton Alexandria Mark Center",
+  "city": null,
+  "date": "2009-01-01"
+ },
+ {
+  "artist": "Aa",
+  "venue": "The Velvet Spade Patio",
+  "city": null,
+  "date": "2005-03-19"
+ },
+ {
+  "artist": "Aa",
+  "venue": "Cake Shop",
+  "city": null,
+  "date": "2006-11-04"
+ },
+ {
+  "artist": "Aa",
+  "venue": "The Parish II",
+  "city": null,
+  "date": "2007-03-15"
+ },
+ {
+  "artist": "AaRON",
+  "venue": "Port de Cognac",
+  "city": null,
+  "date": "2007-07-13"
+ },
+ {
+  "artist": "AaRON",
+  "venue": "L\u2019Asse",
+  "city": null,
+  "date": "2007-07-25"
+ },
+ {
+  "artist": "AaRON",
+  "venue": "Les Arches",
+  "city": null,
+  "date": "2016-07-19"
+ },
+ {
+  "artist": "Aaron Lee Tasjan",
+  "venue": "Banjo Jim\u2019s",
+  "city": null,
+  "date": "2007-10-17"
+ },
+ {
+  "artist": "Aaron Lee Tasjan",
+  "venue": "Harley\u2013Davidson Roadhouse with Miller High Life",
+  "city": null,
+  "date": "2018-06-29"
+ },
+ {
+  "artist": "Aaron Lee Tasjan",
+  "venue": "Luck Ranch",
+  "city": null,
+  "date": "2025-03-13"
+ },
+ {
+  "artist": "Aaron Neville",
+  "venue": "BBC Television Centre, Studio 4",
+  "city": null,
+  "date": "1989-11-09"
+ },
+ {
+  "artist": "Aaron Neville",
+  "venue": "Golden Gate Park",
+  "city": null,
+  "date": "1991-11-03"
+ },
+ {
+  "artist": "Aaron Neville",
+  "venue": "Gentilly Stage",
+  "city": null,
+  "date": "2019-05-04"
+ },
+ {
+  "artist": "Abbath",
+  "venue": "Temple",
+  "city": null,
+  "date": "2016-06-17"
+ },
+ {
+  "artist": "Abbath",
+  "venue": "Marquee",
+  "city": null,
+  "date": "2016-06-18"
+ },
+ {
+  "artist": "Abbath",
+  "venue": "Hades",
+  "city": null,
+  "date": "2016-06-24"
+ },
+ {
+  "artist": "Abbie Falls",
+  "venue": "B\u00e9i Ch\u00e9z Heinz",
+  "city": null,
+  "date": "2023-05-05"
+ },
+ {
+  "artist": "Abbie Falls",
+  "venue": "Club Puschkin",
+  "city": null,
+  "date": "2023-05-06"
+ },
+ {
+  "artist": "Abbie Falls",
+  "venue": "Logo",
+  "city": null,
+  "date": "2023-05-07"
+ },
+ {
+  "artist": "Abby",
+  "venue": "Karma Lounge",
+  "city": null,
+  "date": "2012-03-17"
+ },
+ {
+  "artist": "Abby",
+  "venue": "Flugplatz Neuhausen ob Eck",
+  "city": null,
+  "date": "2014-06-20"
+ },
+ {
+  "artist": "Abby",
+  "venue": "Bergheider See",
+  "city": null,
+  "date": "2016-08-20"
+ },
+ {
+  "artist": "Abdullah Ibrahim",
+  "venue": "Rathaus Willisau",
+  "city": null,
+  "date": "1990-09-01"
+ },
+ {
+  "artist": "Abdullah Ibrahim",
+  "venue": "University of East Anglia",
+  "city": null,
+  "date": "1991-05-31"
+ },
+ {
+  "artist": "Abdullah Ibrahim",
+  "venue": "Ahoy Arena",
+  "city": null,
+  "date": "2008-07-11"
+ },
+ {
+  "artist": "Abdullah Miniawy",
+  "venue": "Trauma Bar und Kino",
+  "city": null,
+  "date": "2022-04-22"
+ },
+ {
+  "artist": "Abdullah Miniawy",
+  "venue": "Labirinto della Masone",
+  "city": null,
+  "date": "2025-07-04"
+ },
+ {
+  "artist": "Abigail",
+  "venue": "The Steeple",
+  "city": null,
+  "date": "2000-11-01"
+ },
+ {
+  "artist": "Abigail",
+  "venue": "Valhalla",
+  "city": null,
+  "date": "2025-05-10"
+ },
+ {
+  "artist": "Abigail",
+  "venue": "Earthdom",
+  "city": null,
+  "date": "2026-04-13"
+ },
+ {
+  "artist": "Abigail Washburn",
+  "venue": "Maggie Mae\u2019s",
+  "city": null,
+  "date": "2006-03-16"
+ },
+ {
+  "artist": "Abigail Washburn",
+  "venue": "Great Stage Park",
+  "city": null,
+  "date": "2006-06-18"
+ },
+ {
+  "artist": "Abigail Washburn",
+  "venue": "Fitzgerald Theater",
+  "city": null,
+  "date": "2011-01-15"
+ },
+ {
+  "artist": "Aborted",
+  "venue": "Plaine de la Machine \u00e0 Feu",
+  "city": null,
+  "date": "2002-07-14"
+ },
+ {
+  "artist": "Aborted",
+  "venue": "Marquee II",
+  "city": null,
+  "date": "2003-07-04"
+ },
+ {
+  "artist": "Aborted",
+  "venue": "VERA",
+  "city": null,
+  "date": "2006-02-03"
+ },
+ {
+  "artist": "Above & Beyond",
+  "venue": "De Schorre",
+  "city": null,
+  "date": "2012-07-27"
+ },
+ {
+  "artist": "Above & Beyond",
+  "venue": "Dance Hall",
+  "city": null,
+  "date": "2015-08-21"
+ },
+ {
+  "artist": "Above & Beyond",
+  "venue": "Dockyards",
+  "city": null,
+  "date": "2022-09-10"
+ },
+ {
+  "artist": "Abra Moore",
+  "venue": "Hersheypark Stadium",
+  "city": null,
+  "date": "1998-08-10"
+ },
+ {
+  "artist": "Abra Moore",
+  "venue": "Xfinity Center",
+  "city": null,
+  "date": "1998-08-11"
+ },
+ {
+  "artist": "Abra Moore",
+  "venue": "Lansdowne Park",
+  "city": null,
+  "date": "1998-08-14"
+ },
+ {
+  "artist": "Abrahma",
+  "venue": "Astra Kulturhaus",
+  "city": null,
+  "date": "2012-04-21"
+ },
+ {
+  "artist": "Abrahma",
+  "venue": "VERA: Mainstage",
+  "city": null,
+  "date": "2013-04-22"
+ },
+ {
+  "artist": "Abrahma",
+  "venue": "AWO\u2010Gel\u00e4nde",
+  "city": null,
+  "date": "2013-06-01"
+ },
+ {
+  "artist": "Absolutely Free",
+  "venue": "Drake Underground",
+  "city": null,
+  "date": "2013-06-14"
+ },
+ {
+  "artist": "Absolutely Free",
+  "venue": "Arlene\u2019s Grocery",
+  "city": null,
+  "date": "2023-03-09"
+ },
+ {
+  "artist": "Absolutely Free",
+  "venue": "Pianos showroom",
+  "city": null,
+  "date": "2023-03-10"
+ },
+ {
+  "artist": "Absu",
+  "venue": "Joe's Garage",
+  "city": null,
+  "date": "1992-05-05"
+ },
+ {
+  "artist": "Absu",
+  "venue": "The Place",
+  "city": null,
+  "date": "1993-10-31"
+ },
+ {
+  "artist": "Absu",
+  "venue": "Zaal Van Dijck",
+  "city": null,
+  "date": "1995-04-21"
+ },
+ {
+  "artist": "Absurd Minds",
+  "venue": "Alter Schlachthof",
+  "city": null,
+  "date": "2008-11-01"
+ },
+ {
+  "artist": "Absurd Minds",
+  "venue": "Reithalle",
+  "city": null,
+  "date": "2011-10-22"
+ },
+ {
+  "artist": "Absurd Minds",
+  "venue": "Turbinenhalle",
+  "city": null,
+  "date": "2021-11-13"
+ },
+ {
+  "artist": "Absynthe Minded",
+  "venue": "Festivalpark Werchter",
+  "city": null,
+  "date": "2006-07-02"
+ },
+ {
+  "artist": "Absynthe Minded",
+  "venue": "Wablief?!",
+  "city": null,
+  "date": "2007-08-18"
+ },
+ {
+  "artist": "Absynthe Minded",
+  "venue": "La Bellevilloise",
+  "city": null,
+  "date": "2008-06-27"
+ },
+ {
+  "artist": "Ab\u2010Soul",
+  "venue": "Clive Bar",
+  "city": null,
+  "date": "2012-03-15"
+ },
+ {
+  "artist": "Ab\u2010Soul",
+  "venue": "Canterbury Park",
+  "city": null,
+  "date": "2014-05-25"
+ },
+ {
+  "artist": "Ab\u2010Soul",
+  "venue": "Kia Forum",
+  "city": null,
+  "date": "2024-06-19"
+ },
+ {
+  "artist": "Academy of St Martin in the Fields",
+  "venue": "St. Lawrence Centre for the Arts",
+  "city": null,
+  "date": "1981-07-15"
+ },
+ {
+  "artist": "Academy of St Martin in the Fields",
+  "venue": "Revelin Fortress",
+  "city": null,
+  "date": "2010-09-12"
+ },
+ {
+  "artist": "Academy of St Martin in the Fields",
+  "venue": "Royal Albert Hall",
+  "city": null,
+  "date": "2021-08-25"
+ },
+ {
+  "artist": "Accept",
+  "venue": "Kuusisaari",
+  "city": null,
+  "date": "1983-07-23"
+ },
+ {
+  "artist": "Accept",
+  "venue": "DCU Center",
+  "city": null,
+  "date": "1984-02-24"
+ },
+ {
+  "artist": "Accept",
+  "venue": "Hampton Coliseum",
+  "city": null,
+  "date": "1984-02-26"
+ },
+ {
+  "artist": "Acceptance",
+  "venue": "HM Stage",
+  "city": null,
+  "date": "2000-07-08"
+ },
+ {
+  "artist": "Acceptance",
+  "venue": "Las Vegas Festival Grounds",
+  "city": null,
+  "date": "2022-10-22"
+ },
+ {
+  "artist": "Accessory",
+  "venue": "Ostragehege",
+  "city": null,
+  "date": "2000-08-19"
+ },
+ {
+  "artist": "Accessory",
+  "venue": "Kohlrabizirkus Leipzig",
+  "city": null,
+  "date": "2015-05-22"
+ },
+ {
+  "artist": "Accessory",
+  "venue": "Turbinenhalle",
+  "city": null,
+  "date": "2024-03-02"
+ },
+ {
+  "artist": "Ace Frehley",
+  "venue": "Billboard Live OSAKA",
+  "city": null,
+  "date": "2018-09-06"
+ },
+ {
+  "artist": "Ace Frehley",
+  "venue": "Norwegian Jade: Pool Deck",
+  "city": null,
+  "date": "2018-10-31"
+ },
+ {
+  "artist": "Ace Frehley",
+  "venue": "Norwegian Jade: Stardust Theater",
+  "city": null,
+  "date": "2018-11-04"
+ },
+ {
+  "artist": "Achille Lauro",
+  "venue": "Pala Alpitour",
+  "city": null,
+  "date": "2022-05-12"
+ },
+ {
+  "artist": "Achille Lauro",
+  "venue": "Teatro Ariston",
+  "city": null,
+  "date": "2025-02-11"
+ },
+ {
+  "artist": "Achille Lauro",
+  "venue": "Stadio Giuseppe Meazza",
+  "city": null,
+  "date": "2025-06-08"
+ },
+ {
+  "artist": "Acid Arab",
+  "venue": "Wablief?!",
+  "city": null,
+  "date": "2015-08-21"
+ },
+ {
+  "artist": "Acid Arab",
+  "venue": "La petite maison dans la prairie",
+  "city": null,
+  "date": "2016-07-17"
+ },
+ {
+  "artist": "Acid Arab",
+  "venue": "Wirtshaus im Schlachthof",
+  "city": null,
+  "date": "2017-10-28"
+ },
+ {
+  "artist": "Acid Bath",
+  "venue": "Las Vegas Festival Grounds",
+  "city": null,
+  "date": "2025-04-12"
+ },
+ {
+  "artist": "Acid Bath",
+  "venue": "Brooklyn Paramount",
+  "city": null,
+  "date": "2025-07-11"
+ },
+ {
+  "artist": "Acid Bath",
+  "venue": "South Side Ballroom",
+  "city": null,
+  "date": "2026-04-04"
+ },
+ {
+  "artist": "Acid King",
+  "venue": "Emo\u2019s",
+  "city": null,
+  "date": "2000-03-18"
+ },
+ {
+  "artist": "Acid King",
+  "venue": "Room 710",
+  "city": null,
+  "date": "2005-03-18"
+ },
+ {
+  "artist": "Acid King",
+  "venue": "Jeugdcentrum De Klinker",
+  "city": null,
+  "date": "2005-10-21"
+ },
+ {
+  "artist": "Acid Mothers Temple & The Melting Paraiso U.F.O.",
+  "venue": "The Garage",
+  "city": null,
+  "date": "2001-05-31"
+ },
+ {
+  "artist": "Acid Mothers Temple & The Melting Paraiso U.F.O.",
+  "venue": "Tokuzo",
+  "city": null,
+  "date": "2003-12-13"
+ },
+ {
+  "artist": "Acid Mothers Temple & The Melting Paraiso U.F.O.",
+  "venue": "The Old Blue Last",
+  "city": null,
+  "date": "2007-11-07"
+ },
+ {
+  "artist": "Acid Mothers Temple SWR",
+  "venue": "VERA",
+  "city": null,
+  "date": "2008-11-23"
+ },
+ {
+  "artist": "Acid Mothers Temple SWR",
+  "venue": "CHAOTIC NOISE",
+  "city": null,
+  "date": "2010-03-01"
+ },
+ {
+  "artist": "Acid Mothers Temple SWR",
+  "venue": "PEPPERLAND",
+  "city": null,
+  "date": "2012-03-08"
+ },
+ {
+  "artist": "Acoustical South",
+  "venue": "Hohentwiel",
+  "city": null,
+  "date": "2014-07-21"
+ },
+ {
+  "artist": "Acoustical South",
+  "venue": "Erlenhof",
+  "city": null,
+  "date": "2020-07-18"
+ },
+ {
+  "artist": "Acoustical South",
+  "venue": "Kulturzentrum Gems",
+  "city": null,
+  "date": "2020-08-29"
+ },
+ {
+  "artist": "Acranius",
+  "venue": "Headbangers Stage",
+  "city": null,
+  "date": "2019-08-01"
+ },
+ {
+  "artist": "Acranius",
+  "venue": "Wera Tool Rebel Stage",
+  "city": null,
+  "date": "2022-08-20"
+ },
+ {
+  "artist": "Acranius",
+  "venue": "Flugplatz des Aeroclubs Dinkelsb\u00fchl",
+  "city": null,
+  "date": "2024-08-14"
+ },
+ {
+  "artist": "Act of Rage",
+  "venue": "Flughafen Weeze",
+  "city": null,
+  "date": "2017-09-09"
+ },
+ {
+  "artist": "Act of Rage",
+  "venue": "Brabanthallen",
+  "city": null,
+  "date": "2017-09-30"
+ },
+ {
+  "artist": "Act of Rage",
+  "venue": "Radical Dome",
+  "city": null,
+  "date": "2017-11-04"
+ },
+ {
+  "artist": "Action Action",
+  "venue": "Bigsby's",
+  "city": null,
+  "date": "2005-03-19"
+ },
+ {
+  "artist": "Action Action",
+  "venue": "Redrum",
+  "city": null,
+  "date": "2006-03-17"
+ },
+ {
+  "artist": "Action Action",
+  "venue": "Bowery Poetry Club",
+  "city": null,
+  "date": "2006-11-02"
+ },
+ {
+  "artist": "Action Bronson",
+  "venue": "Lustre Pearl",
+  "city": null,
+  "date": "2012-03-14"
+ },
+ {
+  "artist": "Action Bronson",
+  "venue": "The Other Tent",
+  "city": null,
+  "date": "2013-06-16"
+ },
+ {
+  "artist": "Action Bronson",
+  "venue": "The Last Arena",
+  "city": null,
+  "date": "2019-07-14"
+ },
+ {
+  "artist": "Actress",
+  "venue": "Club Soda",
+  "city": null,
+  "date": "2010-06-04"
+ },
+ {
+  "artist": "Actress",
+  "venue": "London Pleasure Gardens",
+  "city": null,
+  "date": "2012-07-06"
+ },
+ {
+  "artist": "Actress",
+  "venue": "Castello",
+  "city": null,
+  "date": "2014-08-15"
+ },
+ {
+  "artist": "Ad Infinitum",
+  "venue": "Wackinger Stage",
+  "city": null,
+  "date": "2023-08-03"
+ },
+ {
+  "artist": "Ad Infinitum",
+  "venue": "Wera Tool Rebel Stage",
+  "city": null,
+  "date": "2023-08-16"
+ },
+ {
+  "artist": "Ad Infinitum",
+  "venue": "Rock in Rautheim Festival Grounds",
+  "city": null,
+  "date": "2024-05-10"
+ },
+ {
+  "artist": "Adam Angst",
+  "venue": "Alternastage",
+  "city": null,
+  "date": "2019-06-09"
+ },
+ {
+  "artist": "Adam Angst",
+  "venue": "Red Stage",
+  "city": null,
+  "date": "2024-06-21"
+ },
+ {
+  "artist": "Adam Angst",
+  "venue": "Mountain Stage",
+  "city": null,
+  "date": "2024-06-23"
+ },
+ {
+  "artist": "Adam Ant",
+  "venue": "Wembley Stadium",
+  "city": null,
+  "date": "1985-07-13"
+ },
+ {
+  "artist": "Adam Ant",
+  "venue": "BBC Television Centre, Studio 4",
+  "city": null,
+  "date": "1990-02-22"
+ },
+ {
+  "artist": "Adam Ant",
+  "venue": "Hyde Park",
+  "city": null,
+  "date": "2011-06-26"
+ },
+ {
+  "artist": "Adam Ben Ezra",
+  "venue": "\u05d0\u05d5\u05dc\u05dd \u05e2\u05e0\u05d1\u05dc",
+  "city": null,
+  "date": "2009-11-12"
+ },
+ {
+  "artist": "Adam Ben Ezra",
+  "venue": "\u05d0\u05d5\u05dc\u05dd \u05e1\u05d5\u05d6\u05df \u05d3\u05dc\u05dc",
+  "city": null,
+  "date": "2012-11-07"
+ },
+ {
+  "artist": "Adam Ben Ezra",
+  "venue": "\u05de\u05e8\u05db\u05d6 \u05e2\u05e0\u05d1 \u05dc\u05ea\u05e8\u05d1\u05d5\u05ea",
+  "city": null,
+  "date": "2013-11-07"
+ },
+ {
+  "artist": "Adam Beyer",
+  "venue": "Bayfront Park",
+  "city": null,
+  "date": "2012-03-25"
+ },
+ {
+  "artist": "Adam Beyer",
+  "venue": "Boiler Room",
+  "city": null,
+  "date": "2015-08-21"
+ },
+ {
+  "artist": "Adam Beyer",
+  "venue": "Yuma Tent",
+  "city": null,
+  "date": "2016-04-17"
+ },
+ {
+  "artist": "Adam Carroll",
+  "venue": "Gallery Lombardi Lounge",
+  "city": null,
+  "date": "2000-03-15"
+ },
+ {
+  "artist": "Adam Carroll",
+  "venue": "Kennedy Outdoor Theater",
+  "city": null,
+  "date": "2005-05-26"
+ },
+ {
+  "artist": "Adam Carroll",
+  "venue": "Whisky Bar",
+  "city": null,
+  "date": "2007-03-15"
+ },
+ {
+  "artist": "Adam Cohen",
+  "venue": "L\u2019Imp\u00e9rial de Qu\u00e9bec",
+  "city": null,
+  "date": "2012-07-06"
+ },
+ {
+  "artist": "Adam Cohen",
+  "venue": "Maidstone Studios",
+  "city": null,
+  "date": "2014-10-16"
+ },
+ {
+  "artist": "Adam Cohen",
+  "venue": "Centre Bell",
+  "city": null,
+  "date": "2017-11-06"
+ },
+ {
+  "artist": "Adam Freeland",
+  "venue": "The Metro Theatre",
+  "city": null,
+  "date": "2001-03-10"
+ },
+ {
+  "artist": "Adam Freeland",
+  "venue": "Empire Polo Club",
+  "city": null,
+  "date": "2007-04-29"
+ },
+ {
+  "artist": "Adam Freeland",
+  "venue": "Worthy Farm",
+  "city": null,
+  "date": "2007-06-22"
+ },
+ {
+  "artist": "Adam Green",
+  "venue": "Alter Reitplatz Haldern",
+  "city": null,
+  "date": "2004-08-06"
+ },
+ {
+  "artist": "Adam Green",
+  "venue": "Hackney Empire",
+  "city": null,
+  "date": "2007-07-14"
+ },
+ {
+  "artist": "Adam Green",
+  "venue": "VERA",
+  "city": null,
+  "date": "2007-09-06"
+ },
+ {
+  "artist": "Adam Kesher",
+  "venue": "Lac Baron-Desqueyroux",
+  "city": null,
+  "date": "2006-07-08"
+ },
+ {
+  "artist": "Adam Kesher",
+  "venue": "Club Tent",
+  "city": null,
+  "date": "2007-07-27"
+ },
+ {
+  "artist": "Adam Kesher",
+  "venue": "Parc Jean-Drapeau",
+  "city": null,
+  "date": "2007-09-08"
+ },
+ {
+  "artist": "Adam Lambert",
+  "venue": "RBC Amphitheatre",
+  "city": null,
+  "date": "2010-06-19"
+ },
+ {
+  "artist": "Adam Lambert",
+  "venue": "Capital Region International Airport Stage",
+  "city": null,
+  "date": "2010-07-13"
+ },
+ {
+  "artist": "Adam Lambert",
+  "venue": "Odyssey",
+  "city": null,
+  "date": "2011-11-06"
+ },
+ {
+  "artist": "Adamo",
+  "venue": "Sporting de Pontaillac",
+  "city": null,
+  "date": "1966-08-01"
+ },
+ {
+  "artist": "Adamo",
+  "venue": "Casino Municipal de Royan",
+  "city": null,
+  "date": "1966-08-02"
+ },
+ {
+  "artist": "Adamo",
+  "venue": "Espace Colette Besson",
+  "city": null,
+  "date": "2005-11-10"
+ },
+ {
+  "artist": "Adamski",
+  "venue": "BBC Television Centre, Studio 4",
+  "city": null,
+  "date": "1990-01-26"
+ },
+ {
+  "artist": "Adamski",
+  "venue": "Cambridge Corn Exchange",
+  "city": null,
+  "date": "1990-10-16"
+ },
+ {
+  "artist": "Adamski",
+  "venue": "The Dominion Theatre",
+  "city": null,
+  "date": "1991-02-10"
+ },
+ {
+  "artist": "Add N to (X)",
+  "venue": "Southbank Centre",
+  "city": null,
+  "date": "1998-07-04"
+ },
+ {
+  "artist": "Add N to (X)",
+  "venue": "Finsbury Park",
+  "city": null,
+  "date": "1998-07-25"
+ },
+ {
+  "artist": "Add N to (X)",
+  "venue": "Mainstage",
+  "city": null,
+  "date": "2001-06-07"
+ },
+ {
+  "artist": "Addictia",
+  "venue": "Gateway Ballroom",
+  "city": null,
+  "date": "2012-08-18"
+ },
+ {
+  "artist": "Addictia",
+  "venue": "Bridgewater Hall",
+  "city": null,
+  "date": "2013-08-23"
+ },
+ {
+  "artist": "Addictia",
+  "venue": "Manchester Central Convention Complex",
+  "city": null,
+  "date": "2014-08-22"
+ }
+]
