@@ -254,7 +254,7 @@ class MvpTerminalApp:
             return self._ok(self._markets(params.get("q", ""), int(params.get("limit", 200))))
         if path.startswith("/api/market/"):
             market_key = unquote(path[len("/api/market/"):])
-            return self._ok(self._market_detail(market_key))
+            return self._market_detail(market_key)
 
         if path == "/api/shortlist" and method == "GET":
             return self._ok(self._list_shortlist())
@@ -495,12 +495,16 @@ class MvpTerminalApp:
                LIMIT 300""",
             [market_key],
         )
-        return {
+        if not rows:
+            # UNKNOWN market key: standard not-found, never a synthesized
+            # pretty name (a fabricated display name misleads buyers).
+            return self._not_found()
+        return self._ok({
             "market_key": market_key,
             "pretty": _market_pretty(market_key),
             "count": len(rows),
             "items": rows,
-        }
+        })
 
     # ── shortlist workspace ──────────────────────────────────────
 

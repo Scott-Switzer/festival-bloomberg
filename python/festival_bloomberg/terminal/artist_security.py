@@ -88,7 +88,9 @@ def search_artists(conn, query: str, limit: int = 25) -> list[dict[str, Any]]:
     limit = max(1, min(int(limit), 100))
     rows = _rows(conn, """
         WITH candidates AS (
-            SELECT st.artist_key, a.name, a.musicbrainz_id, a.tier, st.term_type,
+            SELECT st.artist_key, a.name, a.musicbrainz_id, a.tier,
+                   a.artist_type, a.area, a.historical_event_count, a.market_count,
+                   st.term_type,
                    CASE
                      WHEN st.normalized_term = ? THEN 0
                      WHEN st.normalized_term LIKE ? THEN 1
@@ -104,7 +106,8 @@ def search_artists(conn, query: str, limit: int = 25) -> list[dict[str, Any]]:
             ) AS artist_rank
             FROM candidates
         )
-        SELECT artist_key, name, musicbrainz_id, tier, term_type, match_priority
+        SELECT artist_key, name, musicbrainz_id, tier, artist_type, area,
+               historical_event_count, market_count, term_type, match_priority
         FROM ranked WHERE artist_rank = 1
         ORDER BY match_priority, length(name), lower(name), artist_key
         LIMIT ?
@@ -115,6 +118,13 @@ def search_artists(conn, query: str, limit: int = 25) -> list[dict[str, Any]]:
         "name": row["name"],
         "mbid": row.get("musicbrainz_id"),
         "tier": row.get("tier"),
+        # Disambiguation metadata: only stored facts, never invented. NULLs
+        # stay NULL so identical display names remain distinguishable by
+        # coverage instead of being silently merged.
+        "artist_type": row.get("artist_type"),
+        "area": row.get("area"),
+        "historical_event_count": row.get("historical_event_count"),
+        "market_count": row.get("market_count"),
         "matched_term_type": row.get("term_type"),
     } for row in rows]
 

@@ -675,6 +675,262 @@ def _materialize_attention(conn: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def create_area_market_map(conn: duckdb.DuckDBPyConnection) -> int:
+    """Create TEMP area→market mapping from the canonical Python maps.
+
+    Mirrors ``artist_market_scale.market_from_city/market_from_state`` in SQL
+    form so serving builds can attribute dated events to market slugs without
+    duplicating the mapping. Returns the number of mapping rows. City names
+    win over state names on collision (same precedence as the Python path).
+    """
+    from festival_bloomberg.security.artist_market_scale import (
+        CITY_MARKET_MAP,
+        MARKET_MAP,
+        STATE_NAME_TO_CODE,
+    )
+    conn.execute(
+        "CREATE OR REPLACE TEMP TABLE area_market_map (area_norm VARCHAR PRIMARY KEY, market_key VARCHAR NOT NULL)"
+    )
+    rows: dict[str, str] = {}
+    for name, code in STATE_NAME_TO_CODE.items():
+        slug = MARKET_MAP.get(code)
+        if slug:
+            rows.setdefault(name.strip().lower(), slug)
+    for code, slug in MARKET_MAP.items():
+        rows.setdefault(code.strip().lower(), slug)
+    for city, slug in CITY_MARKET_MAP.items():
+        rows[city.strip().lower()] = slug  # cities take precedence
+    conn.executemany(
+        "INSERT INTO area_market_map VALUES (?, ?)", list(rows.items())
+    )
+    return len(rows)
+
+
+def fill_market_timing_from_evidence(
+    conn: duckdb.DuckDBPyConnection, evidence_sql: str, as_of: str
+) -> dict[str, int]:
+    """Fill first/last play dates on existing artist_markets links.
+
+    ``evidence_sql`` must return (artist_key, market_key, event_date DATE)
+    rows of admissible dated event evidence. Only links that already exist
+    are updated (no invented market links); dates strictly after ``as_of``
+    never become first/last play (PIT: current serving cutoff). NULL stays
+    NULL where no dated evidence exists. Returns fill counts.
+    """
+    conn.execute(
+        """
+        CREATE OR REPLACE TEMP TABLE timing_evidence AS
+        SELECT DISTINCT artist_key, market_key, event_date
+        FROM (""" + evidence_sql + """)
+        WHERE artist_key IS NOT NULL AND market_key IS NOT NULL AND event_date IS NOT NULL
+        """
+    )
+    conn.execute(
+        """
+        UPDATE artist_markets AS m
+        SET first_play_date = agg.first_play,
+            last_play_date = agg.last_play,
+            explanation = m.explanation || ' Market first/last play derived from dated event evidence at serving build.'
+        FROM (
+            SELECT artist_key, market_key,
+                   MIN(event_date) AS first_play,
+                   MAX(event_date) AS last_play
+            FROM timing_evidence
+            WHERE event_date <= CAST(? AS DATE)
+            GROUP BY artist_key, market_key
+        ) AS agg
+        WHERE m.artist_key = agg.artist_key AND m.market_key = agg.market_key
+        """,
+        [as_of],
+    )
+    updated = conn.execute(
+        "SELECT COUNT(*) FROM artist_markets WHERE explanation LIKE '%derived from dated event evidence%'"
+    ).fetchone()[0]
+    conn.execute("DROP TABLE timing_evidence")
+    return {"rows_updated": int(updated or 0)}
+
+
+def fill_market_futures(conn: duckdb.DuckDBPyConnection, as_of: str) -> dict[str, int]:
+    """Fill future_events per market link from serving future_events rows.
+
+    A future event counts when its date is after the serving cutoff; rows
+    without a resolvable market or date are ignored (UNKNOWN stays NULL).
+    """
+    create_area_market_map(conn)
+    conn.execute(
+        """
+        UPDATE artist_markets AS m
+        SET future_events = agg.future_count
+        FROM (
+            SELECT f.artist_key, mp.market_key, COUNT(*) AS future_count
+            FROM future_events f
+            JOIN area_market_map mp ON lower(f.city) = mp.area_norm
+            WHERE f.event_date > CAST(? AS DATE)
+            GROUP BY f.artist_key, mp.market_key
+        ) AS agg
+        WHERE m.artist_key = agg.artist_key AND m.market_key = agg.market_key
+        """,
+        [as_of],
+    )
+    updated = conn.execute(
+        "SELECT COUNT(*) FROM artist_markets WHERE future_events IS NOT NULL"
+    ).fetchone()[0]
+    return {"rows_updated": int(updated or 0)}
+
+
+def _mb_timing_evidence(
+    conn: duckdb.DuckDBPyConnection,
+) -> list[tuple[str, str, str]]:
+    """Collect (artist_key, market_key, event_date) from src MB event graph.
+
+    Mirrors the estate's market attribution (Strategy 1: EVENT_AT_PLACE
+    entity links; Strategy 2: event-payload place relations) using the same
+    canonical area→market maps — but returns evidence rows instead of writing
+    warehouse state. Pure read path for serving builds.
+    """
+    from festival_bloomberg.security.artist_market_scale import (
+        market_from_city,
+        market_from_state,
+    )
+    out: list[tuple[str, str, str]] = []
+
+    def _has(schema: str, table: str) -> bool:
+        try:
+            return _source_table_exists(conn, schema, table)
+        except Exception:
+            return False
+
+    if not (_has("core", "event_performers") and _has("raw", "musicbrainz_event")):
+        return out
+    # Strategy 1: entity-relationship place links.
+    if _has("core", "entity_relationships") and _has("raw", "musicbrainz_place"):
+        try:
+            rows = conn.execute(
+                """
+                SELECT ep.artist_mbid, SUBSTR(e.begin_date, 1, 10), p.area
+                FROM src.core.event_performers ep
+                JOIN src.raw.musicbrainz_event e ON e.mbid = ep.event_mbid
+                JOIN src.core.entity_relationships r
+                  ON r.subject_key = 'mbid::' || ep.event_mbid
+                 AND r.predicate = 'EVENT_AT_PLACE'
+                 AND r.object_entity_type = 'PLACE'
+                JOIN src.raw.musicbrainz_place p
+                  ON p.mbid = replace(r.object_key, 'mbid::', '')
+                WHERE ep.artist_mbid IS NOT NULL
+                  AND e.begin_date IS NOT NULL AND p.area IS NOT NULL
+                  AND 'mbid::' || lower(ep.artist_mbid) IN (SELECT artist_key FROM selected_artists)
+                """
+            ).fetchall()
+        except Exception:
+            rows = []
+        for mbid, begin, area in rows:
+            market = market_from_city(area) or market_from_state(area)
+            if market:
+                out.append((f"mbid::{str(mbid).lower()}", market, str(begin)[:10]))
+    # Strategy 2: place relations inside event payloads.
+    try:
+        payload_rows = conn.execute(
+            """
+            SELECT ep.artist_mbid, SUBSTR(e.begin_date, 1, 10), e.payload
+            FROM src.core.event_performers ep
+            JOIN src.raw.musicbrainz_event e ON e.mbid = ep.event_mbid
+            WHERE ep.artist_mbid IS NOT NULL
+              AND e.begin_date IS NOT NULL AND e.payload IS NOT NULL
+              AND 'mbid::' || lower(ep.artist_mbid) IN (SELECT artist_key FROM selected_artists)
+            """
+        ).fetchall()
+    except Exception:
+        payload_rows = []
+    place_ids: set[str] = set()
+    parsed: list[tuple[str, str, str]] = []
+    for mbid, begin, payload_raw in payload_rows:
+        try:
+            payload = json.loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
+        except Exception:
+            continue
+        for rel in (payload or {}).get("relations") or []:
+            if not isinstance(rel, dict):
+                continue
+            if rel.get("target-type") != "place" or rel.get("type") != "held at":
+                continue
+            place = rel.get("place") or {}
+            pid = place.get("id") if isinstance(place, dict) else None
+            if pid:
+                place_ids.add(pid)
+                parsed.append((str(mbid).lower(), str(begin)[:10], pid))
+    areas: dict[str, str] = {}
+    if place_ids and _has("raw", "musicbrainz_place"):
+        try:
+            ids = list(place_ids)
+            for i in range(0, len(ids), 500):
+                chunk = ids[i:i + 500]
+                qmarks = ",".join("?" for _ in chunk)
+                for pid, area in conn.execute(
+                    f"SELECT mbid, area FROM src.raw.musicbrainz_place WHERE mbid IN ({qmarks})",
+                    chunk,
+                ).fetchall():
+                    if area:
+                        areas[pid] = area
+        except Exception:
+            areas = {}
+    for mbid, begin, pid in parsed:
+        area = areas.get(pid)
+        market = (market_from_city(area) or market_from_state(area)) if area else None
+        if market:
+            out.append((f"mbid::{mbid}", market, begin))
+    return out
+
+
+def _boxoffice_timing_evidence(
+    conn: duckdb.DuckDBPyConnection,
+) -> list[tuple[str, str, str]]:
+    """Collect (artist_key, market_key, start_date) from src boxoffice engagements."""
+    from festival_bloomberg.security.artist_market_scale import market_from_city
+    out: list[tuple[str, str, str]] = []
+    try:
+        has_table = _source_table_exists(conn, "research", "canonical_boxoffice_engagements")
+    except Exception:
+        has_table = False
+    if not has_table:
+        return out
+    try:
+        rows = conn.execute(
+            """
+            SELECT a.artist_key, b.city, b.market, b.start_date
+            FROM src.research.canonical_boxoffice_engagements b
+            JOIN artists a ON lower(a.name) = lower(b.artist)
+            WHERE b.start_date IS NOT NULL
+              AND (b.city IS NOT NULL OR b.market IS NOT NULL)
+            """
+        ).fetchall()
+    except Exception:
+        return out
+    for artist_key, city, market, start in rows:
+        slug = market_from_city(city) or market_from_city(market)
+        if slug:
+            out.append((artist_key, slug, str(start)[:10]))
+    return out
+
+
+def _materialize_market_timing(conn: duckdb.DuckDBPyConnection, as_of: str) -> dict[str, int]:
+    """Fill market first/last play + futures on existing artist_markets links."""
+    evidence = _mb_timing_evidence(conn) + _boxoffice_timing_evidence(conn)
+    conn.execute(
+        "CREATE OR REPLACE TEMP TABLE timing_evidence_input (artist_key VARCHAR, market_key VARCHAR, event_date DATE)"
+    )
+    if evidence:
+        conn.executemany(
+            "INSERT INTO timing_evidence_input VALUES (?, ?, TRY_CAST(? AS DATE))",
+            evidence,
+        )
+    filled = fill_market_timing_from_evidence(
+        conn, "SELECT artist_key, market_key, event_date FROM timing_evidence_input", as_of
+    )
+    conn.execute("DROP TABLE timing_evidence_input")
+    futures = fill_market_futures(conn, as_of)
+    return {"timing_rows": len(evidence), **filled, **{"future_rows": futures["rows_updated"]}}
+
+
 def _materialize_markets(
     conn: duckdb.DuckDBPyConnection, artists: list[dict[str, Any]], as_of: str
 ) -> None:
@@ -1032,6 +1288,8 @@ def build(
         _materialize_event_history(conn, max_events_per_artist)
         _materialize_festivals(conn)
         _materialize_future(conn)
+        timing_stats = _materialize_market_timing(
+            conn, str(report.get("created_at", ""))[:10] or "1970-01-01")
         _create_indexes(conn)
 
         counts = {
@@ -1069,6 +1327,7 @@ def build(
             "unknown_preserved": True,
             "ticket_zero_prices_null": True,
             "browser_reads_compact_file_only": True,
+            "market_timing": timing_stats,
         }
         if counts["artists"] != len(artists):
             raise ValueError(f"materialized {counts['artists']} artists; expected {len(artists)}")
