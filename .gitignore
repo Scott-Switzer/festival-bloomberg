@@ -64,6 +64,8 @@ cloud-runtime/worker-configuration.d.ts
 artifacts/*.duckdb
 # Jev eval results (may contain usage metadata; regenerated per run)
 artifacts/jev_eval/
+# Jev triage eval results (regenerated per run)
+artifacts/jev_triage/
 
 # terminal-runtime deploy assembly (generated in CI, never committed)
 terminal-runtime/public/
