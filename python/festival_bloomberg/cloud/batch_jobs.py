@@ -947,6 +947,9 @@ def _materialize_r2_parquet_terminal(
         _create_schema,
         _create_selected_table,
         _materialize_markets,
+        create_area_market_map,
+        fill_market_futures,
+        fill_market_timing_from_evidence,
     )
     _create_schema(conn)
     _create_selected_table(conn, artists)
@@ -1444,6 +1447,57 @@ def _materialize_r2_parquet_terminal(
                 )
                 """
             )
+
+    # ── market first/last play + futures from dated silver evidence ──
+    # Estate links carry counts only; dates come from the silver event graph
+    # (events → artist edges → place edges → venue areas) mapped through the
+    # same canonical area→market table. Existing links only; as_of-gated.
+    as_of_day = (estate_created_at or "1970-01-01")[:10]
+    timing_stats: dict[str, int] = {"rows_updated": 0}
+    if events_path and edges_path:
+        _ev = _parquet_cols(conn, events_path)
+        _ed = _parquet_cols(conn, edges_path)
+        _e_id = _pick(_ev, "event_mbid")
+        _e_begin = _pick(_ev, "begin_date")
+        _d_event = _pick(_ed, "event_mbid")
+        _d_artist = _pick(_ed, "artist_mbid")
+        _area_join = ""
+        _area_from = ""
+        _place_edges_path = parquets.get("event_place_edges")
+        _venues_path = parquets.get("venues")
+        if _place_edges_path and _venues_path:
+            _pc = _parquet_cols(conn, _place_edges_path)
+            _vc = _parquet_cols(conn, _venues_path)
+            _pe_event = _pick(_pc, "event_mbid")
+            _pe_place = _pick(_pc, "place_mbid")
+            _v_id = _pick(_vc, "place_mbid", "place_id", "venue_mbid")
+            _v_area = _pick(_vc, "area_name")
+            if _pe_event and _pe_place and _v_id and _v_area:
+                _area_from = (
+                    f"LEFT JOIN read_parquet({q(_place_edges_path)}) pe "
+                    f"ON CAST(pe.{_pe_event} AS VARCHAR) = CAST(e.{_e_id} AS VARCHAR)\n"
+                    f"LEFT JOIN read_parquet({q(_venues_path)}) v "
+                    f"ON CAST(v.{_v_id} AS VARCHAR) = CAST(pe.{_pe_place} AS VARCHAR)\n"
+                )
+                _area_join = "mp.market_key"
+        if _e_id and _e_begin and _d_event and _d_artist and _area_join:
+            create_area_market_map(conn)
+            _evidence_sql = f"""
+                SELECT DISTINCT 'mbid::' || lower(p.{_d_artist}) AS artist_key,
+                       mp.market_key,
+                       TRY_CAST(CAST(e.{_e_begin} AS VARCHAR) AS DATE) AS event_date
+                FROM read_parquet({q(edges_path)}) p
+                JOIN read_parquet({q(events_path)}) e
+                  ON CAST(e.{_e_id} AS VARCHAR) = CAST(p.{_d_event} AS VARCHAR)
+                {_area_from}
+                JOIN area_market_map mp ON lower(v.{_v_area}) = mp.area_norm
+                WHERE 'mbid::' || lower(p.{_d_artist}) IN (SELECT artist_key FROM selected_artists)
+                  AND v.{_v_area} IS NOT NULL
+            """
+            timing_stats = fill_market_timing_from_evidence(conn, _evidence_sql, as_of_day)
+    futures_stats = fill_market_futures(conn, as_of_day)
+    rows_honest["markets_with_first_last_play"] = int(timing_stats.get("rows_updated", 0))
+    rows_honest["markets_with_future_events"] = int(futures_stats.get("rows_updated", 0))
 
     # ── provenance / product_meta ──
     rows_honest.update({

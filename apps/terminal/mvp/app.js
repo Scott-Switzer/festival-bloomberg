@@ -59,6 +59,29 @@ function money(p) {
   return Number.isFinite(n) ? (n % 1 === 0 ? n.toLocaleString() : n.toFixed(2)) : "";
 }
 
+/* Identity disambiguation: identical display names stay distinguishable
+   using only stored facts (type, area, observed counts). NULLs are omitted,
+   never invented. */
+function disambig(h) {
+  const parts = [];
+  if (h.artist_type) parts.push(h.artist_type);
+  if (h.area) parts.push(h.area);
+  if (h.historical_event_count != null) parts.push(`${Number(h.historical_event_count).toLocaleString()} observed events`);
+  if (h.market_count != null) parts.push(`${h.market_count} markets`);
+  return parts.map(esc).join(" · ");
+}
+
+function submitSearch(q) {
+  q = String(q || "").trim();
+  if (!q) return;
+  // Bookmarkable search state: the hash carries the query, so reload,
+  // back/forward, and copied links all restore the search. The route()
+  // dispatch (with its stale-render guard) performs the actual search.
+  const target = "#/search?q=" + encodeURIComponent(q);
+  if (location.hash === target) doSearch(q);
+  else location.hash = target;
+}
+
 /* ── router ──────────────────────────────────────────────── */
 const view = document.getElementById("view");
 
@@ -71,12 +94,14 @@ function setNav(active) {
 let routeVersion = 0;
 function route() {
   routeVersion += 1;
-  const raw = location.hash.replace(/^#\/?/, "").split("?")[0];
-  const parts = raw.split("/").map(decodeURIComponent).filter((p) => p.length);
+  const hash = location.hash.replace(/^#\/?/, "");
+  const [pathPart, queryPart] = hash.split("?");
+  const parts = pathPart.split("/").map(decodeURIComponent).filter((p) => p.length);
+  const params = new URLSearchParams(queryPart || "");
   if (!parts.length) { renderHome(); return; }
   const [head, ...rest] = parts;
   if (head === "artist" && rest.length) renderArtist(rest.join("/"));
-  else if (head === "search" && rest.length) doSearch(rest.join(" "));
+  else if (head === "search" && (params.get("q") || rest.length)) doSearch(params.get("q") || rest.join(" "));
   else if (head === "market" && rest.length) renderMarket(rest.join("/"));
   else if (head === "markets") renderMarkets();
   else if (head === "underwrite") renderUnderwrite();
@@ -301,6 +326,7 @@ async function doSearch(q) {
             <div><b>${esc(h.name)}</b>
               ${h.tier ? `<span class="badge">${esc(h.tier)}</span>` : ""}</div>
             <div class="meta">${esc(h.mbid ? h.mbid.slice(0, 8) : "")} · ${esc(h.matched_term_type || "canonical name")}</div>
+            ${disambig(h) ? `<div class="meta">${disambig(h)}</div>` : ""}
             <button class="btn small" data-sl>＋ Shortlist</button>
           </div>`).join("")}
       </div>`;
@@ -665,10 +691,11 @@ function renderArtistMarkets(markets) {
     box.innerHTML = `<div class="empty">No market evidence for this artist.</div>`;
     return;
   }
-  box.innerHTML = `<table><thead><tr><th>Market</th><th>Shows</th><th>Last played</th><th>Forward</th></tr></thead><tbody>
+  box.innerHTML = `<table><thead><tr><th>Market</th><th>Shows</th><th>First played</th><th>Last played</th><th>Forward</th></tr></thead><tbody>
     ${markets.items.slice(0, 12).map((m) => `<tr>
       <td><a href="#/market/${encodeURIComponent(m.market_key || m.market || m.market_name)}">${esc(m.market || m.market_name || m.market_key)}</a></td>
       <td>${money(m.observed_shows ?? m.historical_shows)}</td>
+      <td>${esc(fmtDate(m.first_play_date))}</td>
       <td>${esc(fmtDate(m.last_play_date || m.last_played))}</td>
       <td>${m.future_events != null ? m.future_events : (m.next_event ? "next " + esc(fmtDate(m.next_event.date)) : "—")}</td>
     </tr>`).join("")}</tbody></table>`;
@@ -835,7 +862,7 @@ async function renderMarket(key) {
         <td>${esc(fmtDate(r.last_play_date))}</td>
         <td>${r.future_events ? r.future_events : "—"}</td>
       </tr>`).join("")}</tbody></table></div>`;
-  } catch (e) { if (renderVersion !== routeVersion) return; view.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  } catch (e) { if (renderVersion !== routeVersion) return; view.innerHTML = `<div class="empty">${/^(404|not found)/i.test(e.message || "") ? "Market not found." : esc(e.message)}</div>`; }
 }
 
 /* ── compare ─────────────────────────────────────────────── */
@@ -859,7 +886,7 @@ async function renderCompare() {
       const hits = await api("/api/search?q=" + encodeURIComponent(input.value.trim()) + "&limit=5");
       if (renderVersion !== routeVersion) return;
       const box = document.getElementById(resultsId);
-      box.innerHTML = hits.map((h) => `<div class="result" data-k="${esc(h.entity_id)}"><b>${esc(h.name)}</b></div>`).join("");
+      box.innerHTML = hits.map((h) => `<div class="result" data-k="${esc(h.entity_id)}"><b>${esc(h.name)}</b>${disambig(h) ? ` <span class="meta">${disambig(h)}</span>` : ""}</div>`).join("");
       box.querySelectorAll(".result").forEach((el) => {
         el.onclick = () => { slot[slot.length > 1 ? 1 : 0] = el.dataset.k; loadCompare(); };
       });
@@ -1642,15 +1669,13 @@ window.addEventListener("hashchange", route);
 
 document.getElementById("searchForm").addEventListener("submit", (ev) => {
   ev.preventDefault();
-  const q = document.getElementById("searchInput").value;
-  if (q.trim()) doSearch(q);
+  submitSearch(document.getElementById("searchInput").value);
 });
 
 document.getElementById("searchInput").addEventListener("keydown", (ev) => {
   if (ev.key === "Enter") {
     ev.preventDefault();
-    const q = document.getElementById("searchInput").value;
-    if (q.trim()) doSearch(q);
+    submitSearch(document.getElementById("searchInput").value);
   }
 });
 
