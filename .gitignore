@@ -62,6 +62,8 @@ cloud-runtime/worker-configuration.d.ts
 .pytest-tmp/
 # Atomic UAT scratch (regenerated per run)
 artifacts/*.duckdb
+# Jev eval results (may contain usage metadata; regenerated per run)
+artifacts/jev_eval/
 
 # terminal-runtime deploy assembly (generated in CI, never committed)
 terminal-runtime/public/
